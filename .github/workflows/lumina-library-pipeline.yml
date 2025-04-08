@@ -13,6 +13,7 @@ permissions:
 # env:
 #   ACTIONS_STEP_DEBUG: ${{ secrets.ACTIONS_STEP_DEBUG }}  # Set debug mode globally
 
+
 jobs:
   build_and_test:
     runs-on: ubuntu-latest
@@ -37,3 +38,4 @@ jobs:
       # Test the Go application
       - name: Test
         run: go test -v ./... 
+
