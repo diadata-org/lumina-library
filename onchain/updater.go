@@ -6,6 +6,8 @@ import (
 	"math"
 	"math/big"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	diaOracleV2MultiupdateService "github.com/diadata-org/diadata/pkg/dia/scraper/blockchain-scrapers/blockchains/ethereum/diaOracleV2MultiupdateService"
@@ -98,9 +100,19 @@ func OracleUpdateExecutor(
 			// keys = append(keys, fp.Pair.QuoteToken.Symbol+"/USD")
 			values = append(values, int64(fp.Value*math.Pow10(int(DECIMALS_ORACLE_VALUE))))
 		}
+		log.Infof("updater - Attempting to update oracle with %d values to endpoint %s (backup: %s)",
+			len(values), os.Getenv("BLOCKCHAIN_NODE"), os.Getenv("BACKUP_NODE"))
+
 		err := updateOracleMultiValues(conn, contract, auth, chainId, keys, values, timestamp)
 		if err != nil {
-			log.Warnf("updater - Failed to update Oracle: %v.", err)
+			log.Warnf("updater - Failed to update Oracle: %v. ChainID: %v",
+				err, chainId)
+
+			// Try to analyze the error for more details
+			if strings.Contains(err.Error(), "404 Not Found") {
+				log.Warnf("updater - Connection error details: Primary node: %s, Backup node: %s",
+					os.Getenv("BLOCKCHAIN_NODE"), os.Getenv("BACKUP_NODE"))
+			}
 			return
 		}
 	}
