@@ -128,6 +128,9 @@ func updateOracleMultiValues(
 	values []int64,
 	timestamp int64) error {
 
+	// Add additional context for debugging
+	log.Infof("updater - Attempting updateOracleMultiValues with chainId: %d, keys count: %d", chainId, len(keys))
+
 	var cValues []*big.Int
 	var gasPrice *big.Int
 	var err error
@@ -157,7 +160,14 @@ func updateOracleMultiValues(
 		// Get gas price suggestion
 		gasPrice, err = client.SuggestGasPrice(context.Background())
 		if err != nil {
-			log.Errorf("updater - SuggestGasPrice: %v.", err)
+			log.Errorf("updater - SuggestGasPrice failed: %v. This often indicates RPC connection issues.", err)
+			// Try to further diagnose the connection error
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err := client.HeaderByNumber(ctx, nil)
+			if err != nil {
+				log.Errorf("updater - RPC connection test failed: %v", err)
+			}
 			return err
 		}
 
