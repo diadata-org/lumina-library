@@ -1,6 +1,7 @@
 package uniswap
 
 import (
+	"fmt"
 	"math"
 	"math/big"
 
@@ -56,6 +57,9 @@ func (c *Simulator) quoteTokens(input string, token0 *coreEntities.Token, token1
 	var out []interface{}
 
 	rawCaller := &contract.Uniswapv3QuoterRaw{Contract: quoterContract}
+
+	fmt.Printf("================================\n")
+	fmt.Printf("token0.Address: %v, token1.Address: %v\n", token0.Address, token1.Address)
 
 	err = rawCaller.Call(&bind.CallOpts{}, &out, "quoteExactInputSingle", token0.Address, token1.Address,
 		fees, amountIn, sqrtPriceLimitX96)
