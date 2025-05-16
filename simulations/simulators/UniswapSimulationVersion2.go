@@ -138,10 +138,10 @@ func NewUniswapSimulatorVersion2(exchangepairs []models.ExchangePair, tradesChan
 		log.Fatal("initAssetsAndMaps: ", err)
 	}
 
-	scraper.thresholdSlippage, err = strconv.ParseFloat(utils.Getenv("UNISWAPV3_THRESHOLD_SLIPPAGE", "5e-14"), 64)
+	scraper.thresholdSlippage, err = strconv.ParseFloat(utils.Getenv("UNISWAPV3_THRESHOLD_SLIPPAGE", "0.1"), 64)
 	if err != nil {
 		log.Error("Parse THRESHOLD_SLIPPAGE: ", err)
-		scraper.thresholdSlippage = 0.001
+		scraper.thresholdSlippage = 0.1
 	}
 
 	var lock sync.RWMutex
@@ -229,26 +229,49 @@ func (scraper *SimulationScraperVersion2) simulateTradesVersion2(tradesChannel c
 					log.Errorf("Failed to get liquidity: %v", err)
 					return
 				}
+
+				token0, err := caller.Token0(&bind.CallOpts{})
+				if err != nil {
+					log.Errorf("Failed to get Token0: %v", err)
+					return
+				}
+				token1, err := caller.Token1(&bind.CallOpts{})
+				if err != nil {
+					log.Errorf("Failed to get Token1: %v", err)
+					return
+				}
+
+				log.Infof("Token0 in Pool: %v , Token1 in Pool: %v\n", token0, token1)
+
 				// Determine amount0/amount1 signs based on trade direction
 				// Assuming simulated trade is Token0 -> Token1
 				// When a user sells Token0, the pool receives Token0 → amount0 should be positive.
 				// amount0In := big.NewInt(int64(poolFee.amountIn * math.Pow10(int(ep.UnderlyingPair.BaseToken.Decimals))))
 				amount0 := big.NewFloat(poolFee.amountIn) // Pool receives positive amount0
+
 				// amount1Out := big.NewInt(int64(amountOut * math.Pow10(int(ep.UnderlyingPair.QuoteToken.Decimals))))
 				// amount1 := new(big.Int).Neg(amount1Out) //The pool pays out Token1 → amount1 should be negative.
-				amount1 := new(big.Float).Neg(big.NewFloat(amountOut))
+				// amount1 := new(big.Float).Neg(big.NewFloat(amountOut))
+				amount1 := big.NewFloat(amountOut)
 
-				slippage := computeSlippageVersion2(
-					slot0.SqrtPriceX96,
-					amount0,
-					amount1,
-					liquidityBig,
-				)
+				log.Infof("amount0: %v, amount1: %v\n", amount0, amount1)
 
-				log.Infof("slippage: %v", slippage)
+				th_dy, err := CalculateDy(amount0, slot0.SqrtPriceX96, liquidityBig,
+					ep.UnderlyingPair.QuoteToken.Decimals, ep.UnderlyingPair.BaseToken.Decimals)
+				if err != nil {
+					log.Errorf("Failed to get theoretical dy: %v", err)
+					return
+				}
+				th_slippage, err := CalculateSlippage(th_dy, amount1)
+				if err != nil {
+					log.Errorf("Failed to get Slippage: %v", err)
+					return
+				}
 
-				if slippage > scraper.thresholdSlippage {
-					log.Warnf("slippage above threshold: %v > %v", slippage, scraper.thresholdSlippage)
+				log.Warnf("Theoretical dy: %v, Actual dy: %v, Slippage: %v", th_dy, amount1, th_slippage)
+
+				if th_slippage > scraper.thresholdSlippage {
+					log.Warnf("slippage above threshold: %v > %v", th_slippage, scraper.thresholdSlippage)
 				} else {
 					t := models.SimulatedTrade{
 						Price:       poolFee.amountIn / amountOut,
@@ -369,31 +392,53 @@ func (scraper *SimulationScraperVersion2) updatePriceMapVersion2(lock *sync.RWMu
 	}
 }
 
-// computeSlippage calculates slippage for simulated trades in Uniswap V3
-func computeSlippageVersion2(sqrtPriceX96 *big.Int, amount0 *big.Float, amount1 *big.Float, liquidity *big.Int) float64 {
-	// Convert sqrtPriceX96 to actual price using formula: price = (sqrtPriceX96 / 2^96)^2
-	log.Infof("sqrtPrice -- amount0 -- amount1 -- liquidity: %s -- %s -- %s -- %s", sqrtPriceX96.String(), amount0.String(), amount1.String(), liquidity.String())
-	price := new(big.Float).Quo(
+func CalculateSlippage(dyTheoretical, dyActual *big.Float) (float64, error) {
+	if dyTheoretical.Sign() <= 0 {
+		dyTheoretical = new(big.Float).Abs(dyTheoretical)
+	}
+
+	// Calculate the ratio: (actual - theoretical) / theoretical
+	numerator := new(big.Float).Abs(new(big.Float).Sub(dyTheoretical, dyActual))
+	ratio := new(big.Float).Quo(numerator, dyTheoretical)
+	ratio64, _ := ratio.Float64()
+	return ratio64, nil
+}
+
+// Calculate theoretical dy (amount of output token1) given input token0 amount dx via Uniswap V3 formula
+func CalculateDy(
+	dx *big.Float,
+	sqrtPriceX96 *big.Int,
+	liquidity *big.Int,
+	token0Decimals, token1Decimals uint8,
+) (*big.Float, error) {
+	dxAdjusted := adjustDecimals(dx, int(token0Decimals), 18) // convert to 18-decimal precision
+
+	log.Printf("dxAdjusted: %v", dxAdjusted)
+
+	// 1. Price Conversion: √P = sqrtPriceX96 / 2^96
+	sqrtPrice := new(big.Float).Quo(
 		new(big.Float).SetInt(sqrtPriceX96),
 		new(big.Float).SetFloat64(math.Pow(2, 96)),
 	)
-	price = new(big.Float).Mul(price, price) // Square the value
 
-	// Calculate slippage based on trade direction
-	if amount0.Sign() < 0 { // Token0 -> Token1
-		amount0Abs := new(big.Float).Abs(amount0)
-		numerator := new(big.Float).Mul(amount0Abs, price)
-		denominator := new(big.Float).SetInt(liquidity)
-		slippage, _ := new(big.Float).Quo(numerator, denominator).Float64()
-		return slippage
-	} else if amount1.Sign() < 0 { // Token1 -> Token0
-		amount1Abs := new(big.Float).Abs(amount1)
-		numerator := amount1Abs
-		denominator := new(big.Float).Mul(new(big.Float).SetInt(liquidity), price)
-		slippage, _ := new(big.Float).Quo(numerator, denominator).Float64()
-		return slippage
-	}
-	return 0
+	L := new(big.Float).SetInt(liquidity)
+
+	// 2. New Price: √P' = (L * √P) / (L + Δx * √P)
+	numerator := L
+	denominator := new(big.Float).Add(L, new(big.Float).Mul(dxAdjusted, sqrtPrice))
+	sqrtPNew := new(big.Float).Quo(numerator, denominator)
+
+	// 3. Output Amount: Δy = L * (√P - √P')
+	deltaY := new(big.Float).Mul(L, new(big.Float).Abs(new(big.Float).Sub(sqrtPrice, sqrtPNew)))
+
+	dyAdjusted := adjustDecimals(deltaY, 18, int(token1Decimals))
+
+	return new(big.Float).Mul(dyAdjusted, big.NewFloat(1e-18)), nil
+}
+
+func adjustDecimals(amount *big.Float, fromDecimals, toDecimals int) *big.Float {
+	factor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(fromDecimals-toDecimals)), nil)
+	return new(big.Float).Quo(amount, new(big.Float).SetInt(factor))
 }
 
 // updateFeesMap updates values in scraper.feesMap.
