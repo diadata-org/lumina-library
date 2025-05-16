@@ -23,5 +23,8 @@ func RunSimulator(
 	switch exchange {
 	case UNISWAP_SIMULATION:
 		NewUniswapSimulator(exchangePairs, tradesChannel)
+	case CURVE_SIMULATION:
+		NewCurveSimulator(exchangePairs, tradesChannel)
 	}
+
 }
