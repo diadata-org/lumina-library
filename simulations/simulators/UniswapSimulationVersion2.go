@@ -138,10 +138,10 @@ func NewUniswapSimulatorVersion2(exchangepairs []models.ExchangePair, tradesChan
 		log.Fatal("initAssetsAndMaps: ", err)
 	}
 
-	scraper.thresholdSlippage, err = strconv.ParseFloat(utils.Getenv("UNISWAPV3_THRESHOLD_SLIPPAGE", "5e-14"), 64)
+	scraper.thresholdSlippage, err = strconv.ParseFloat(utils.Getenv("UNISWAPV3_THRESHOLD_SLIPPAGE", "5e-17"), 64)
 	if err != nil {
 		log.Error("Parse THRESHOLD_SLIPPAGE: ", err)
-		scraper.thresholdSlippage = 0.001
+		scraper.thresholdSlippage = 5e-17
 	}
 
 	var lock sync.RWMutex
@@ -229,14 +229,53 @@ func (scraper *SimulationScraperVersion2) simulateTradesVersion2(tradesChannel c
 					log.Errorf("Failed to get liquidity: %v", err)
 					return
 				}
+
+				PoolToken0, err := caller.Token0(&bind.CallOpts{})
+				if err != nil {
+					log.Errorf("Failed to get Token0: %v", err)
+					return
+				}
+				PoolToken1, err := caller.Token1(&bind.CallOpts{})
+				if err != nil {
+					log.Errorf("Failed to get Token1: %v", err)
+					return
+				}
+
+				log.Infof("Token0 in Pool: %v , Token1 in Pool: %v\n", PoolToken0, PoolToken1)
+
 				// Determine amount0/amount1 signs based on trade direction
 				// Assuming simulated trade is Token0 -> Token1
 				// When a user sells Token0, the pool receives Token0 → amount0 should be positive.
 				// amount0In := big.NewInt(int64(poolFee.amountIn * math.Pow10(int(ep.UnderlyingPair.BaseToken.Decimals))))
-				amount0 := big.NewFloat(poolFee.amountIn) // Pool receives positive amount0
+				// amount0 := big.NewFloat(poolFee.amountIn) // Pool receives positive amount0
+
+				amount0 := new(big.Float).Neg(big.NewFloat(poolFee.amountIn))
+				amount1 := big.NewFloat(amountOut)
+				if common.HexToAddress(ep.UnderlyingPair.QuoteToken.Address) == PoolToken0 {
+					amount0 = big.NewFloat(poolFee.amountIn)
+					amount1 = new(big.Float).Neg(big.NewFloat(amountOut))
+				}
+
 				// amount1Out := big.NewInt(int64(amountOut * math.Pow10(int(ep.UnderlyingPair.QuoteToken.Decimals))))
 				// amount1 := new(big.Int).Neg(amount1Out) //The pool pays out Token1 → amount1 should be negative.
-				amount1 := new(big.Float).Neg(big.NewFloat(amountOut))
+				// amount1 := new(big.Float).Neg(big.NewFloat(amountOut))
+				// amount1 := big.NewFloat(amountOut)
+
+				log.Infof("amount0: %v, amount1: %v\n", amount0, amount1)
+
+				// th_dy, err := CalculateDy(amount0, slot0.SqrtPriceX96, liquidityBig,
+				// 	ep.UnderlyingPair.QuoteToken.Decimals, ep.UnderlyingPair.BaseToken.Decimals)
+				// if err != nil {
+				// 	log.Errorf("Failed to get theoretical dy: %v", err)
+				// 	return
+				// }
+				// th_slippage, err := CalculateSlippage(th_dy, amount1)
+				// if err != nil {
+				// 	log.Errorf("Failed to get Slippage: %v", err)
+				// 	return
+				// }
+
+				// log.Warnf("Theoretical dy: %v, Actual dy: %v, Slippage: %v", th_dy, amount1, th_slippage)
 
 				slippage := computeSlippageVersion2(
 					slot0.SqrtPriceX96,
@@ -245,7 +284,7 @@ func (scraper *SimulationScraperVersion2) simulateTradesVersion2(tradesChannel c
 					liquidityBig,
 				)
 
-				log.Infof("slippage: %v", slippage)
+				log.Infof("slippage in pool %v: %v", address, slippage)
 
 				if slippage > scraper.thresholdSlippage {
 					log.Warnf("slippage above threshold: %v > %v", slippage, scraper.thresholdSlippage)
@@ -269,6 +308,33 @@ func (scraper *SimulationScraperVersion2) simulateTradesVersion2(tradesChannel c
 	}
 	wg.Wait()
 
+}
+
+func computeSlippageVersion2(sqrtPriceX96 *big.Int, amount0 *big.Float, amount1 *big.Float, liquidity *big.Int) float64 {
+	log.Infof("sqrtPrice -- amount0 -- amount1 -- liquidity: %s -- %s -- %s -- %s", sqrtPriceX96.String(), amount0.String(), amount1.String(), liquidity.String())
+
+	// Convert sqrtPriceX96 to actual price using formula: price = (sqrtPriceX96 / 2^96)^2
+	price := new(big.Float).Quo(
+		new(big.Float).SetInt(sqrtPriceX96),
+		new(big.Float).SetFloat64(math.Pow(2, 96)),
+	)
+
+	// Calculate slippage based on trade direction
+	if amount0.Sign() < 0 { // Token0 -> Token1
+		amount0Abs := new(big.Float).Abs(amount0)
+		numerator := new(big.Float).Mul(amount0Abs, price)
+		denominator := new(big.Float).SetInt(liquidity)
+		slippage, _ := new(big.Float).Quo(numerator, denominator).Float64()
+
+		return slippage
+	} else if amount1.Sign() < 0 { // Token1 -> Token0
+		amount1Abs := new(big.Float).Abs(amount1)
+		numerator := amount1Abs
+		denominator := new(big.Float).Mul(new(big.Float).SetInt(liquidity), price)
+		slippage, _ := new(big.Float).Quo(numerator, denominator).Float64()
+		return slippage
+	}
+	return 0
 }
 
 func getSimulationSwapDataVersion2(events []SwapEvents, tokenInDecimal, tokenOutDecimal uint8) (float64, float64) {
@@ -369,32 +435,54 @@ func (scraper *SimulationScraperVersion2) updatePriceMapVersion2(lock *sync.RWMu
 	}
 }
 
-// computeSlippage calculates slippage for simulated trades in Uniswap V3
-func computeSlippageVersion2(sqrtPriceX96 *big.Int, amount0 *big.Float, amount1 *big.Float, liquidity *big.Int) float64 {
-	// Convert sqrtPriceX96 to actual price using formula: price = (sqrtPriceX96 / 2^96)^2
-	log.Infof("sqrtPrice -- amount0 -- amount1 -- liquidity: %s -- %s -- %s -- %s", sqrtPriceX96.String(), amount0.String(), amount1.String(), liquidity.String())
-	price := new(big.Float).Quo(
-		new(big.Float).SetInt(sqrtPriceX96),
-		new(big.Float).SetFloat64(math.Pow(2, 96)),
-	)
-	price = new(big.Float).Mul(price, price) // Square the value
+// func CalculateSlippage(dyTheoretical, dyActual *big.Float) (float64, error) {
+// 	if dyTheoretical.Sign() <= 0 {
+// 		dyTheoretical = new(big.Float).Abs(dyTheoretical)
+// 	}
 
-	// Calculate slippage based on trade direction
-	if amount0.Sign() < 0 { // Token0 -> Token1
-		amount0Abs := new(big.Float).Abs(amount0)
-		numerator := new(big.Float).Mul(amount0Abs, price)
-		denominator := new(big.Float).SetInt(liquidity)
-		slippage, _ := new(big.Float).Quo(numerator, denominator).Float64()
-		return slippage
-	} else if amount1.Sign() < 0 { // Token1 -> Token0
-		amount1Abs := new(big.Float).Abs(amount1)
-		numerator := amount1Abs
-		denominator := new(big.Float).Mul(new(big.Float).SetInt(liquidity), price)
-		slippage, _ := new(big.Float).Quo(numerator, denominator).Float64()
-		return slippage
-	}
-	return 0
-}
+// 	// Calculate the ratio: (actual - theoretical) / theoretical
+// 	numerator := new(big.Float).Abs(new(big.Float).Sub(dyTheoretical, dyActual))
+// 	ratio := new(big.Float).Quo(numerator, dyTheoretical)
+// 	ratio64, _ := ratio.Float64()
+// 	return ratio64, nil
+// }
+
+// Calculate theoretical dy (amount of output token1) given input token0 amount dx via Uniswap V3 formula
+// func CalculateDy(
+// 	dx *big.Float,
+// 	sqrtPriceX96 *big.Int,
+// 	liquidity *big.Int,
+// 	token0Decimals, token1Decimals uint8,
+// ) (*big.Float, error) {
+// 	dxAdjusted := adjustDecimals(dx, int(token0Decimals), 18) // convert to 18-decimal precision
+
+// 	log.Printf("dxAdjusted: %v", dxAdjusted)
+
+// 	// 1. Price Conversion: √P = sqrtPriceX96 / 2^96
+// 	sqrtPrice := new(big.Float).Quo(
+// 		new(big.Float).SetInt(sqrtPriceX96),
+// 		new(big.Float).SetFloat64(math.Pow(2, 96)),
+// 	)
+
+// 	L := new(big.Float).SetInt(liquidity)
+
+// 	// 2. New Price: √P' = (L * √P) / (L + Δx * √P)
+// 	numerator := L
+// 	denominator := new(big.Float).Add(L, new(big.Float).Mul(dxAdjusted, sqrtPrice))
+// 	sqrtPNew := new(big.Float).Quo(numerator, denominator)
+
+// 	// 3. Output Amount: Δy = L * (√P - √P')
+// 	deltaY := new(big.Float).Mul(L, new(big.Float).Abs(new(big.Float).Sub(sqrtPrice, sqrtPNew)))
+
+// 	dyAdjusted := adjustDecimals(deltaY, 18, int(token1Decimals))
+
+// 	return new(big.Float).Mul(dyAdjusted, big.NewFloat(1e-18)), nil
+// }
+
+// func adjustDecimals(amount *big.Float, fromDecimals, toDecimals int) *big.Float {
+// 	factor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(fromDecimals-toDecimals)), nil)
+// 	return new(big.Float).Quo(amount, new(big.Float).SetInt(factor))
+// }
 
 // updateFeesMap updates values in scraper.feesMap.
 func (scraper *SimulationScraperVersion2) updateFeesMapVersion2(lock *sync.RWMutex) {
@@ -448,16 +536,17 @@ func (scraper *SimulationScraperVersion2) updateFeesMapVersion2(lock *sync.RWMut
 				continue
 			}
 
-			// ticksOk, currentTick := scraper.checkTicks(poolAddress, word_Range, considered_tick_range, admissible_Count)
-			// if utils.ContainsAddress(whitelistedPools, poolAddress) {
+			// ticksOk, currentTick := scraper.checkTicksVersion2(poolAddress, word_Range, considered_tick_range, admissible_Count)
+			// log.Infof("currentTick:", currentTick)
+			// if utils.containsAddressVersion2(whitelistedPools, poolAddress) {
 			// 	ticksOk = true
 			// }
 			// if !ticksOk {
 			// 	log.Warnf("ticks not ok for %s with fee %s", poolAddress.Hex(), fee.String())
 			// 	// Remove from scraper.feesMap[ep] if existent.
-			// 	if containsAddress(poolAddress, scraper.feesMap[ep]) {
+			// 	if containsAddressVersion2(poolAddress, scraper.feesMap[ep]) {
 			// 		log.Warn("poor tick distribution - remove pool from set of admissible pools: ", poolAddress)
-			// 		cleanedFees := removeFeeByAddress(poolAddress, scraper.feesMap[ep])
+			// 		cleanedFees := removeFeeByAddressVersion2(poolAddress, scraper.feesMap[ep])
 			// 		scraper.feesMap[ep] = cleanedFees
 			// 	}
 			// 	continue
@@ -473,7 +562,7 @@ func (scraper *SimulationScraperVersion2) updateFeesMapVersion2(lock *sync.RWMut
 			// log.Infof("pool admitted %s for balances and ticks.", poolAddress.Hex())
 			// // --------------------
 
-			// p0, p1, err := scraper.getActivePrices(poolAddress, int8(quoteToken.Decimals), int8(baseToken.Decimals))
+			// p0, p1, err := scraper.getActivePricesVersion2(poolAddress, int8(quoteToken.Decimals), int8(baseToken.Decimals))
 			// if err != nil {
 			// 	log.Errorf("getActivePrices on %s: %v", poolAddress.Hex(), err)
 			// }
@@ -484,13 +573,21 @@ func (scraper *SimulationScraperVersion2) updateFeesMapVersion2(lock *sync.RWMut
 
 		// Outlier detection on prices.
 		// TO DO: Should we also check for prices1?
-		// scraper.checkPrices(prices0, ep, indexFeeMap, poolMap)
+		// scraper.checkPricesVersion2(prices0, ep, indexFeeMap, poolMap)
 		for index, fee := range indexFeeMap {
 			scraper.feesMap[ep] = append(scraper.feesMap[ep], UniV3PoolFee{fee: fee, address: poolMap[index]})
 		}
 
 		// Compute amountIn in such that it corresponds to @amountIn_USD amount in USD.
-		baseTokenPrice := scraper.priceMap[ep.UnderlyingPair.BaseToken].Price
+		// baseTokenPrice := scraper.priceMap[ep.UnderlyingPair.BaseToken].Price
+		baseTokenPrice, err := utils.GetPriceFromDiaAPI(ep.UnderlyingPair.BaseToken.Address, ep.UnderlyingPair.BaseToken.Blockchain)
+
+		if err != nil {
+			log.Errorf("Failed to get baseTokenPrice: %v\n", err)
+			log.Errorf("baseToken Blockchain: %v\n", ep.UnderlyingPair.BaseToken.Blockchain)
+			log.Errorf("baseToken Address: %v\n", ep.UnderlyingPair.BaseToken.Address)
+		}
+
 		if baseTokenPrice == 0 {
 			log.Warnf("Could not determine price of base token %s. Continue with native volume of 1.", ep.UnderlyingPair.BaseToken.Symbol)
 			baseTokenPrice = 100
