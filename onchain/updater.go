@@ -79,7 +79,6 @@ func OracleUpdateExecutor(
 	// compatibilityMode bool,
 	filtersChannel <-chan []models.FilterPointPair,
 ) {
-
 	for filterPoints := range filtersChannel {
 		timestamp := time.Now().Unix()
 		var keys []string
@@ -98,13 +97,15 @@ func OracleUpdateExecutor(
 			// keys = append(keys, fp.Pair.QuoteToken.Symbol+"/USD")
 			values = append(values, int64(fp.Value*math.Pow10(int(DECIMALS_ORACLE_VALUE))))
 		}
-		err := updateOracleMultiValues(conn, contract, auth, chainId, keys, values, timestamp)
-		if err != nil {
-			log.Warnf("updater - Failed to update Oracle: %v.", err)
-			return
-		}
-	}
 
+		go func() {
+			err := updateOracleMultiValues(conn, contract, auth, chainId, keys, values, timestamp)
+			if err != nil {
+				log.Warnf("updater - Failed to update Oracle: %v.", err)
+				return
+			}
+		}()
+	}
 }
 
 func updateOracleMultiValues(
@@ -114,8 +115,8 @@ func updateOracleMultiValues(
 	chainId int64,
 	keys []string,
 	values []int64,
-	timestamp int64) error {
-
+	timestamp int64,
+) error {
 	var cValues []*big.Int
 	var gasPrice *big.Int
 	var err error
@@ -163,6 +164,7 @@ func updateOracleMultiValues(
 		cValues = append(cValues, cValue)
 	}
 
+	t0 := time.Now()
 	// Write values to smart contract
 	tx, err := contract.SetMultipleValues(&bind.TransactOpts{
 		From:     auth.From,
@@ -174,11 +176,13 @@ func updateOracleMultiValues(
 		// backup in here
 		return err
 	}
+	log.Warnf("--------------------------- time elapsed for SetMultipleValues: %v", time.Since(t0))
 
 	log.Infof("updater - Gas price: %d.", tx.GasPrice())
 	// log.Printf("Data: %x\n", tx.Data())
 	log.Infof("updater - Nonce: %d.", tx.Nonce())
 	log.Infof("updater - Tx To: %s.", tx.To().String())
+	log.Infof("updater - tx.Time: %v", tx.Time())
 	log.Infof("updater - Tx Hash: 0x%x.", tx.Hash())
 	return nil
 }

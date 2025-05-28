@@ -33,19 +33,21 @@ func Processor(
 
 		var filterPoints []models.FilterPointPair
 		// Renew the price cache in each iteration. Could be refined by adjusting to the frequency of the source.
-		priceCacheMap := make(map[string]float64)
+		// priceCacheMap := make(map[string]float64)
 
 		// --------------------------------------------------------------------------------------------
 		// 1. Compute an aggregated value for each pair on a given exchange using all collected trades.
 		// --------------------------------------------------------------------------------------------
+		t0 := time.Now()
 		for _, tb := range tradesblocks {
 
 			// Get price of base asset from cache if possible.
-			basePrice, err := models.GetPriceBaseAsset(tb, priceCacheMap)
-			if err != nil {
-				log.Errorf("Processor - GetPriceBaseAsset: %v", err)
-				continue
-			}
+			// basePrice, err := models.GetPriceBaseAsset(tb, priceCacheMap)
+			// if err != nil {
+			// 	log.Errorf("Processor - GetPriceBaseAsset: %v", err)
+			// 	continue
+			// }
+			basePrice := float64(1)
 
 			// filter switch, for instance LastPrice, Median, Average, Minimum, etc.
 			sourceType, err := tb.GetSourceType()
@@ -78,6 +80,7 @@ func Processor(
 			filterPoints = append(filterPoints, filterPoint)
 
 		}
+		log.Infof("time elapsed for tradesblock filter: %v", time.Since(t0))
 
 		var removedFilterPoints int
 		filterPoints, removedFilterPoints = models.RemoveOldFilters(filterPoints, toleranceSeconds, time.Now())
