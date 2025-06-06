@@ -5,25 +5,30 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/diadata-org/lumina-library/contracts/curve/curvefi"
 	"github.com/diadata-org/lumina-library/contracts/curve/curvepool"
 	"github.com/diadata-org/lumina-library/models"
 	simulation "github.com/diadata-org/lumina-library/simulations/simulators/curve"
+	"github.com/diadata-org/lumina-library/utils"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 type CurveSimulator struct {
-	restClient    *ethclient.Client
-	simulator     *simulation.Simulator
-	exchangepairs []models.ExchangePair
+	restClient        *ethclient.Client
+	simulator         *simulation.Simulator
+	exchangepairs     []models.ExchangePair
+	thresholdSlippage float64
 }
 
 var (
-	restDialUrl     = "https://ethereum-mainnet.core.chainstack.com/1ec9bd0dbe3a2d876bfc7bc6ee25d0e6"
-	registryAddress = "0x6A8cbed756804B16E05E741eDaBd5cB544AE21bf"
+	restDialUrl     = ""
+	registryAddress = "0x90E00ACe148ca3b23Ac1bC8C240C2a7Dd9c2d7f5"
 )
 
 func NewCurveSimulator(exchangepairs []models.ExchangePair, tradesChannel chan models.SimulatedTrade) {
@@ -31,7 +36,7 @@ func NewCurveSimulator(exchangepairs []models.ExchangePair, tradesChannel chan m
 		err     error
 		scraper CurveSimulator
 	)
-	scraper.restClient, err = ethclient.Dial(restDialUrl)
+	scraper.restClient, err = ethclient.Dial(utils.Getenv(strings.ToUpper(CURVE_SIMULATION)+"_URI_REST", restDialUrl))
 	if err != nil {
 		log.Error("init rest client: ", err)
 	} else {
@@ -39,14 +44,37 @@ func NewCurveSimulator(exchangepairs []models.ExchangePair, tradesChannel chan m
 	}
 	defer scraper.restClient.Close()
 
+	scraper.thresholdSlippage, err = strconv.ParseFloat(utils.Getenv("CURVE_THRESHOLD_SLIPPAGE", "3"), 64)
+	if err != nil {
+		log.Error("Parse THRESHOLD_SLIPPAGE: ", err)
+		scraper.thresholdSlippage = 3
+	}
+
 	scraper.simulator = simulation.New(scraper.restClient, log)
 	scraper.exchangepairs = exchangepairs
+	scraper.getExchangePairs()
 
 	for _, ep := range scraper.exchangepairs {
 		pools := scraper.getPools(ep)
-		scraper.simulateTrades(ep, pools)
+		scraper.simulateTrades(ep, pools, tradesChannel)
 	}
 
+}
+
+func (scraper *CurveSimulator) getExchangePairs() (err error) {
+	for i, ep := range scraper.exchangepairs {
+		quoteToken, err := models.GetAsset(common.HexToAddress(ep.UnderlyingPair.QuoteToken.Address), Exchanges[CURVE_SIMULATION].Blockchain, scraper.restClient)
+		if err != nil {
+			return err
+		}
+		scraper.exchangepairs[i].UnderlyingPair.QuoteToken = quoteToken
+		baseToken, err := models.GetAsset(common.HexToAddress(ep.UnderlyingPair.BaseToken.Address), Exchanges[CURVE_SIMULATION].Blockchain, scraper.restClient)
+		if err != nil {
+			return err
+		}
+		scraper.exchangepairs[i].UnderlyingPair.BaseToken = baseToken
+	}
+	return
 }
 
 func (scraper *CurveSimulator) getPools(ep models.ExchangePair) []common.Address {
@@ -57,6 +85,13 @@ func (scraper *CurveSimulator) getPools(ep models.ExchangePair) []common.Address
 	} else {
 		log.Info("Successfully created contract instance")
 	}
+
+	poolCount, err := registry.PoolCount(nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Infof("Total # of stable swap pools: %d\n", poolCount)
+
 	// Retrieve all pools
 	var pools []common.Address
 	for i := 0; ; i++ {
@@ -76,18 +111,18 @@ func (scraper *CurveSimulator) getPools(ep models.ExchangePair) []common.Address
 		pools = append(pools, pool)
 	}
 
-	log.Infof("Found %d USDT/USDC liquidity pools:\n", len(pools))
+	log.Infof("Found %d %v/%v liquidity pools:\n", len(pools), ep.UnderlyingPair.QuoteToken.Symbol, ep.UnderlyingPair.BaseToken.Symbol)
 	for i, pool := range pools {
 		log.Infof("%d. %s\n", i+1, pool.Hex())
 	}
 	return pools
 }
 
-func (scraper *CurveSimulator) simulateTrades(ep models.ExchangePair, pools []common.Address) {
+func (scraper *CurveSimulator) simulateTrades(ep models.ExchangePair, pools []common.Address, tradesChannel chan models.SimulatedTrade) {
 	for _, poolAddr := range pools {
 		pool, err := curvepool.NewCurvepool(poolAddr, scraper.restClient)
 		if err != nil {
-			log.Printf("Failed to create pool contract for %s: %v", poolAddr.Hex(), err)
+			log.Infof("Failed to create pool contract for %s: %v", poolAddr.Hex(), err)
 			continue
 		}
 
@@ -96,29 +131,59 @@ func (scraper *CurveSimulator) simulateTrades(ep models.ExchangePair, pools []co
 		if !ok {
 			continue
 		}
-
+		log.Infof("Token validated! token0_index: %v, token1_index: %v\n", quoteTokenIndex, baseTokenIndex)
 		// Prepare trade input (e.g., $100)
-		amountIn := big.NewInt(10000000000)
+		amountIn := big.NewInt(100000000)
+		power := ep.UnderlyingPair.QuoteToken.Decimals
+		exponent := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(power)), nil)
+		amountInAfterDecimalAdjust := new(big.Int).Quo(amountIn, exponent)
+		amountInAfterDecimalAdjustF64, _ := amountInAfterDecimalAdjust.Float64()
+		log.Infof("amountIn: %s\n", amountInAfterDecimalAdjust)
 
 		// Run trade simulation
+		var amountOutFloat *big.Float
 		amountOut, fee, err := scraper.executeTradeSimulation(pool, quoteTokenIndex, baseTokenIndex, amountIn)
 		if err != nil {
 			continue
-		}
+		} else {
+			amountOutFloat = new(big.Float).SetInt(amountOut)
+			power := ep.UnderlyingPair.BaseToken.Decimals
+			divisor := new(big.Float).SetInt(
+				new(big.Int).Exp(
+					big.NewInt(10),
+					big.NewInt(int64(power)),
+					nil,
+				),
+			)
+			amountOutFloat.Quo(amountOutFloat, divisor)
+			fmt.Printf("amountOut: %v\n", amountOutFloat)
+			amountOutAfterDecimalAdjustF64, _ := amountOutFloat.Float64()
 
-		// Calculate slippage
-		slippage, err := calculateCurveSlippage(ep, pool, quoteTokenIndex, baseTokenIndex, amountIn)
-		if err != nil {
-			continue
-		}
+			// Calculate slippage
+			slippage, err := calculateCurveSlippage(ep, pool, quoteTokenIndex, baseTokenIndex, amountIn, amountOut)
+			if err != nil {
+				continue
+			}
 
-		fmt.Printf("\nPool: %s\n", poolAddr.Hex())
-		fmt.Printf("%s Index: %v\n", ep.UnderlyingPair.QuoteToken.Symbol, quoteTokenIndex)
-		fmt.Printf("%s Index: %v\n", ep.UnderlyingPair.BaseToken.Symbol, baseTokenIndex)
-		fmt.Printf("Input: %.2f %s\n", float64(amountIn.Int64()), ep.UnderlyingPair.QuoteToken.Symbol)
-		fmt.Printf("Output: %.2f %s\n", float64(amountOut.Int64()), ep.UnderlyingPair.BaseToken.Symbol)
-		fmt.Printf("Fee: %.4f%%\n", fee)
-		fmt.Printf("Slippage: %.4f%%\n", slippage)
+			log.Infof("slippage in pool %v: %v | Fee: %.4f%%\n", poolAddr.Hex(), slippage, fee)
+
+			if slippage > scraper.thresholdSlippage {
+				log.Warnf("slippage above threshold: %v > %v", slippage, scraper.thresholdSlippage)
+			} else {
+				t := models.SimulatedTrade{
+					Price:       amountInAfterDecimalAdjustF64 / amountOutAfterDecimalAdjustF64,
+					Volume:      amountOutAfterDecimalAdjustF64,
+					QuoteToken:  ep.UnderlyingPair.QuoteToken,
+					BaseToken:   ep.UnderlyingPair.BaseToken,
+					PoolAddress: poolAddr.Hex(),
+					Time:        time.Now(),
+					Exchange:    Exchanges[CURVE_SIMULATION],
+				}
+
+				log.Infof("Got trade in pool %v%%: %s-%s -- %v -- %v", poolAddr.Hex(), t.QuoteToken.Symbol, t.BaseToken.Symbol, t.Price, t.Volume)
+				tradesChannel <- t
+			}
+		}
 	}
 }
 
@@ -127,7 +192,7 @@ func (scraper *CurveSimulator) validatePoolTokens(ep models.ExchangePair, pool *
 	var tokens []common.Address
 	maxCoins := 8
 	for idx := 0; idx < maxCoins; idx++ {
-		addr, err := pool.Coins(&bind.CallOpts{}, big.NewInt(int64(idx)))
+		addr, err := pool.UnderlyingCoins(&bind.CallOpts{}, big.NewInt(int64(idx)))
 		if err != nil || addr == (common.Address{}) {
 			break
 		}
@@ -147,11 +212,7 @@ func (scraper *CurveSimulator) validatePoolTokens(ep models.ExchangePair, pool *
 	}
 
 	if quoteTokenIndex == -1 || baseTokenIndex == -1 {
-		log.Infof(
-			"The pool is missing either %s (%t) or %s (%t)",
-			ep.UnderlyingPair.QuoteToken.Symbol, quoteTokenIndex != -1,
-			ep.UnderlyingPair.BaseToken.Symbol, baseTokenIndex != -1,
-		)
+		log.Printf("The pool is missing either token0 (%t) or token1 (%t)", quoteTokenIndex != -1, baseTokenIndex != -1)
 		return 0, 0, false
 	}
 
@@ -164,7 +225,7 @@ func (scraper *CurveSimulator) executeTradeSimulation(pool *curvepool.Curvepool,
 	feePercent := parseCurveFee(fee, 8)
 
 	// Run trade simulation
-	amountOut, err := pool.GetDy(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
+	amountOut, err := pool.GetDyUnderlying(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
 	if err != nil {
 		log.Printf("Trade simulation failed: %v", err)
 		return nil, 0, err
@@ -179,21 +240,15 @@ func parseCurveFee(fee *big.Int, decimals int) float64 {
 	return result
 }
 
-func calculateCurveSlippage(ep models.ExchangePair, pool *curvepool.Curvepool, i, j int, amountIn *big.Int, // 输入代币数量（已考虑小数位）
+func calculateCurveSlippage(ep models.ExchangePair, pool *curvepool.Curvepool, i, j int, amountIn *big.Int, actualOutWithFee *big.Int,
 ) (float64, error) {
 	// 1. Retrieve key parameters
 	amp, _ := pool.A(&bind.CallOpts{})   // Amplification coefficient A
 	balances := getAllPoolBalances(pool) // Get all token balances
 	fee, _ := pool.Fee(&bind.CallOpts{}) // Fee
 
-	// 2. Adjust precision (assuming tokens have 6 decimals)
-	amountInAdjusted := adjustDecimals(amountIn, int(ep.UnderlyingPair.QuoteToken.Decimals), 0) // Convert to contract precision
-
-	// 3. Calculate theoretical output (ignoring fees)
-	theoreticalOutNoFee := calcTheoreticalOutput(amp, balances, i, j, amountInAdjusted)
-
-	// 4. Calculate actual output (including fees)
-	actualOutWithFee, _ := pool.GetDy(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountInAdjusted)
+	// 2. Calculate theoretical output (ignoring fees)
+	theoreticalOutNoFee := calcTheoreticalOutput(ep, amp, balances, i, j, amountIn)
 
 	feeRate := new(big.Float).Quo(
 		new(big.Float).SetInt(fee),
@@ -206,12 +261,9 @@ func calculateCurveSlippage(ep models.ExchangePair, pool *curvepool.Curvepool, i
 	actualOutNoFeeFloat := actualOutWithFeeFloat.Quo(actualOutWithFeeFloat, feeMultiplier)
 	actualOutNoFeeFloat.Int(actualOutNoFee)
 
-	// 5. Calculate slippage
-	slippage := new(big.Float).Sub(
-		new(big.Float).SetInt(theoreticalOutNoFee),
-		actualOutWithFeeFloat,
-	)
-	slippage.Quo(slippage, new(big.Float).SetInt(theoreticalOutNoFee))
+	// 3. Calculate slippage
+	slippage := new(big.Float).Sub(theoreticalOutNoFee, actualOutWithFeeFloat)
+	slippage.Quo(slippage, theoreticalOutNoFee)
 	slippagePercent, _ := slippage.Float64()
 
 	return math.Abs(slippagePercent * 100), nil
@@ -229,33 +281,18 @@ func getAllPoolBalances(pool *curvepool.Curvepool) []*big.Int {
 	return balances
 }
 
-func adjustDecimals(amount *big.Int, fromDecimals, toDecimals int) *big.Int {
-	diff := fromDecimals - toDecimals
-	if diff == 0 {
-		return new(big.Int).Set(amount)
-	}
-
-	multiplier := big.NewInt(10).Exp(big.NewInt(10), big.NewInt(int64(math.Abs(float64(diff)))), nil)
-	if diff > 0 {
-		// Reduce precision: amount / 10^diff
-		return new(big.Int).Div(amount, multiplier)
-	} else {
-		// Increase precision: amount * 10^diff
-		return new(big.Int).Mul(amount, multiplier)
-	}
-}
-
-func calcTheoreticalOutput(amp *big.Int, balances []*big.Int, i, j int, dx *big.Int) *big.Int {
+func calcTheoreticalOutput(ep models.ExchangePair, amp *big.Int, balances []*big.Int, i, j int, dx *big.Int) *big.Float {
 	if amp.Cmp(big.NewInt(0)) == 0 || len(balances) < 2 {
-		return big.NewInt(0)
+		return big.NewFloat(0)
 	}
 
 	// 1. Get pool balances (mind the precision adjustment)
-	x := new(big.Int).Set(balances[i]) // Input token balance (e.g., crvUSD)
-	y := new(big.Int).Set(balances[j]) // Output token balance (e.g., USDT)
+	x := new(big.Int).Set(balances[i]) // Input token balance (e.g., USDC)
+	y := new(big.Int).Set(balances[j]) // Output token balance (e.g., DAI)
 
 	// 2.  Handle different token precisions (draft)
-	precisionAdjust := big.NewInt(1e12)
+	diff := int64(math.Abs(float64(ep.UnderlyingPair.QuoteToken.Decimals - ep.UnderlyingPair.BaseToken.Decimals)))
+	precisionAdjust := new(big.Int).Exp(big.NewInt(10), big.NewInt(diff), nil)
 	y = y.Mul(y, precisionAdjust)
 
 	// 3. Calculate numerator：4*A*dx*y
@@ -271,10 +308,13 @@ func calcTheoreticalOutput(amp *big.Int, balances []*big.Int, i, j int, dx *big.
 	denominator := new(big.Int).Mul(fourAPlus1, xPlusDx) // (4A+1)(x+dx)
 
 	// 5. Compute the result
-	dy := new(big.Int).Div(numerator, denominator)
+	numeratorF := new(big.Float).SetInt(numerator)
+	denominatorF := new(big.Float).SetInt(denominator)
+	dy := new(big.Float).Quo(numeratorF, denominatorF)
 
 	// 6. Convert the result back to output token precision
-	dy = dy.Div(dy, precisionAdjust)
+	precisionAdjustF := new(big.Float).SetInt(precisionAdjust)
+	dy = new(big.Float).Quo(dy, precisionAdjustF)
 
 	return dy
 }
