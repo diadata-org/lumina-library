@@ -2,7 +2,6 @@ package simulators
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"math/big"
 	"strconv"
@@ -133,16 +132,16 @@ func (scraper *CurveSimulator) simulateTrades(ep models.ExchangePair, pools []co
 		}
 		log.Infof("Token validated! token0_index: %v, token1_index: %v\n", quoteTokenIndex, baseTokenIndex)
 		// Prepare trade input (e.g., $100)
-		amountIn := big.NewInt(100000000)
-		power := ep.UnderlyingPair.QuoteToken.Decimals
-		exponent := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(power)), nil)
+		decimals := big.NewInt(int64(ep.UnderlyingPair.QuoteToken.Decimals))
+		exponent := new(big.Int).Exp(big.NewInt(10), decimals, nil)
+		amountIn := new(big.Int).Mul(big.NewInt(100), exponent)
 		amountInAfterDecimalAdjust := new(big.Int).Quo(amountIn, exponent)
 		amountInAfterDecimalAdjustF64, _ := amountInAfterDecimalAdjust.Float64()
-		log.Infof("amountIn: %s\n", amountInAfterDecimalAdjust)
+		log.Infof("amountInAfterDecimalAdjust: %v\n", amountInAfterDecimalAdjust)
 
 		// Run trade simulation
 		var amountOutFloat *big.Float
-		amountOut, fee, err := scraper.executeTradeSimulation(pool, quoteTokenIndex, baseTokenIndex, amountIn)
+		amountOut, fee, err := scraper.simulator.Execute(pool, quoteTokenIndex, baseTokenIndex, amountIn)
 		if err != nil {
 			continue
 		} else {
@@ -156,7 +155,7 @@ func (scraper *CurveSimulator) simulateTrades(ep models.ExchangePair, pools []co
 				),
 			)
 			amountOutFloat.Quo(amountOutFloat, divisor)
-			fmt.Printf("amountOut: %v\n", amountOutFloat)
+			log.Infof("amountOut: %v\n", amountOutFloat)
 			amountOutAfterDecimalAdjustF64, _ := amountOutFloat.Float64()
 
 			// Calculate slippage
@@ -217,27 +216,6 @@ func (scraper *CurveSimulator) validatePoolTokens(ep models.ExchangePair, pool *
 	}
 
 	return quoteTokenIndex, baseTokenIndex, true
-}
-
-func (scraper *CurveSimulator) executeTradeSimulation(pool *curvepool.Curvepool, i, j int, amountIn *big.Int) (*big.Int, float64, error) {
-	// Fetch trading fee
-	fee, _ := pool.Fee(&bind.CallOpts{})
-	feePercent := parseCurveFee(fee, 8)
-
-	// Run trade simulation
-	amountOut, err := pool.GetDyUnderlying(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
-	if err != nil {
-		log.Printf("Trade simulation failed: %v", err)
-		return nil, 0, err
-	}
-	return amountOut, feePercent, nil
-}
-
-func parseCurveFee(fee *big.Int, decimals int) float64 {
-	feeFloat := new(big.Float).SetInt(fee)
-	divisor := new(big.Float).SetFloat64(math.Pow10(decimals))
-	result, _ := new(big.Float).Quo(feeFloat, divisor).Float64()
-	return result
 }
 
 func calculateCurveSlippage(ep models.ExchangePair, pool *curvepool.Curvepool, i, j int, amountIn *big.Int, actualOutWithFee *big.Int,
