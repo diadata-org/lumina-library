@@ -4,23 +4,11 @@ import (
 	"math"
 	"math/big"
 
-	coreEntities "github.com/daoleno/uniswap-sdk-core/entities"
-	"github.com/diadata-org/lumina-library/models"
 	"github.com/sirupsen/logrus"
 
-	"github.com/daoleno/uniswapv3-sdk/examples/contract"
-	"github.com/daoleno/uniswapv3-sdk/examples/helper"
+	"github.com/diadata-org/lumina-library/contracts/curve/curvepool"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
-)
-
-const (
-	MainnetChainId = 1
-)
-
-var (
-	SwapRouter = common.HexToAddress(helper.ContractV3SwapRouterV1)
 )
 
 type Simulator struct {
@@ -33,44 +21,23 @@ func New(client *ethclient.Client, log *logrus.Logger) *Simulator {
 	return &c
 }
 
-func (c *Simulator) Execute(t1 models.Asset, t2 models.Asset, amountIn string, fees *big.Int) (string, error) {
+func (c *Simulator) Execute(pool *curvepool.Curvepool, i, j int, amountIn *big.Int) (*big.Int, float64, error) {
+	// Fetch trading fee
+	fee, _ := pool.Fee(&bind.CallOpts{})
+	feePercent := parseCurveFee(fee, 8)
 
-	token1 := coreEntities.NewToken(1, common.HexToAddress(t1.Address), uint(t1.Decimals), t1.Name, t1.Name)
-
-	token2 := coreEntities.NewToken(1, common.HexToAddress(t2.Address), uint(t2.Decimals), t2.Name, t2.Name)
-
-	return c.quoteTokens(amountIn, token2, token1, fees)
-
+	// Run trade simulation
+	amountOut, err := pool.GetDyUnderlying(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
+	if err != nil {
+		c.log.Printf("Trade simulation failed: %v", err)
+		return nil, 0, err
+	}
+	return amountOut, feePercent, nil
 }
 
-func (c *Simulator) quoteTokens(input string, token0 *coreEntities.Token, token1 *coreEntities.Token, fees *big.Int) (string, error) {
-	quoterContract, err := contract.NewUniswapv3Quoter(common.HexToAddress(helper.ContractV3Quoter), c.Eth)
-	if err != nil {
-		c.log.Errorln("failed to create quoter contract")
-		return "", err
-	}
-
-	amountIn := helper.FloatStringToBigInt(input, int(token0.Decimals()))
-	sqrtPriceLimitX96 := big.NewInt(0)
-
-	var out []interface{}
-
-	rawCaller := &contract.Uniswapv3QuoterRaw{Contract: quoterContract}
-
-	err = rawCaller.Call(&bind.CallOpts{}, &out, "quoteExactInputSingle", token0.Address, token1.Address,
-		fees, amountIn, sqrtPriceLimitX96)
-	if err != nil {
-		c.log.Errorf("Failed to call quoteExactInputSingle for fee %s in pool %s-%s: %v", fees.String(), token0.Symbol(), token1.Symbol(), err)
-		return "", err
-	}
-
-	c.log.Debugf("Quote: input: %s, output: %s", input, out[0].(*big.Int).String())
-
-	return CurrencyToString(out[0].(*big.Int), int(token1.Decimals())), nil
-}
-
-func CurrencyToString(units *big.Int, decimals int) string {
-	w := new(big.Float).SetInt(units)
-	w = new(big.Float).Quo(w, big.NewFloat(math.Pow10(decimals)))
-	return w.String()
+func parseCurveFee(fee *big.Int, decimals int) float64 {
+	feeFloat := new(big.Float).SetInt(fee)
+	divisor := new(big.Float).SetFloat64(math.Pow10(decimals))
+	result, _ := new(big.Float).Quo(feeFloat, divisor).Float64()
+	return result
 }
