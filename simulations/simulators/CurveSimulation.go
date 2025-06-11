@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/diadata-org/lumina-library/contracts/curve/curvefi"
@@ -20,21 +21,45 @@ import (
 
 type CurveSimulator struct {
 	restClient        *ethclient.Client
+	luminaClient      *ethclient.Client
 	simulator         *simulation.Simulator
 	exchangepairs     []models.ExchangePair
 	thresholdSlippage float64
+	priceMap          map[models.Asset]models.AssetQuotation
 }
 
 var (
-	restDialUrl     = ""
-	registryAddress = "0x90E00ACe148ca3b23Ac1bC8C240C2a7Dd9c2d7f5"
+	restDialUrl              = ""
+	registryAddress          = "0x90E00ACe148ca3b23Ac1bC8C240C2a7Dd9c2d7f5"
+	DIAMetaContractAddress   = "0x0087342f5f4c7AB23a37c045c3EF710749527c88"
+	DIAMetaContractPrecision = 8
+	amountIn_USD_constant    = float64(100)
+	simulationUpdateSeconds  = 30
+	priceMapUpdateSeconds    = 30 * 60
+	thresholdSlippage        = 3
 )
+
+func init() {
+	var err error
+
+	simulationUpdateSeconds, err = strconv.Atoi(utils.Getenv(strings.ToUpper(CURVE_SIMULATION)+"_SIMULATION_UPDATE_SECONDS", strconv.Itoa(simulationUpdateSeconds)))
+	if err != nil {
+		log.Errorf(strings.ToUpper(CURVE_SIMULATION)+"_SIMULATION_UPDATE_SECONDS: %v", err)
+	}
+
+	priceMap_Update_SecondsVersion2, err = strconv.Atoi(utils.Getenv(strings.ToUpper(CURVE_SIMULATION)+"_PRICE_MAP_UPDATE_SECONDS", strconv.Itoa(priceMapUpdateSeconds)))
+	if err != nil {
+		log.Errorf(strings.ToUpper(CURVE_SIMULATION)+"_PRICE_MAP_UPDATE_SECONDS: %v", err)
+	}
+
+}
 
 func NewCurveSimulator(exchangepairs []models.ExchangePair, tradesChannel chan models.SimulatedTrade) {
 	var (
 		err     error
 		scraper CurveSimulator
 	)
+
 	scraper.restClient, err = ethclient.Dial(utils.Getenv(strings.ToUpper(CURVE_SIMULATION)+"_URI_REST", restDialUrl))
 	if err != nil {
 		log.Error("init rest client: ", err)
@@ -43,24 +68,43 @@ func NewCurveSimulator(exchangepairs []models.ExchangePair, tradesChannel chan m
 	}
 	defer scraper.restClient.Close()
 
-	scraper.thresholdSlippage, err = strconv.ParseFloat(utils.Getenv("CURVE_THRESHOLD_SLIPPAGE", "3"), 64)
+	scraper.luminaClient, err = ethclient.Dial(utils.Getenv(strings.ToUpper(CURVE_SIMULATION)+"_LUMINA_URI_REST", restDialLuminaVersion2))
+	if err != nil {
+		log.Error("init lumina client: ", err)
+	} else {
+		log.Info("Successfully connected to lumina node")
+	}
+	defer scraper.luminaClient.Close()
+
+	scraper.thresholdSlippage, err = strconv.ParseFloat(utils.Getenv("CURVE_THRESHOLD_SLIPPAGE", strconv.Itoa(thresholdSlippage)), 64)
 	if err != nil {
 		log.Error("Parse THRESHOLD_SLIPPAGE: ", err)
-		scraper.thresholdSlippage = 3
 	}
 
 	scraper.simulator = simulation.New(scraper.restClient, log)
 	scraper.exchangepairs = exchangepairs
 	scraper.getExchangePairs()
 
-	for _, ep := range scraper.exchangepairs {
-		pools := scraper.getPools(ep)
-		scraper.simulateTrades(ep, pools, tradesChannel)
+	priceTicker := time.NewTicker(time.Duration(priceMapUpdateSeconds) * time.Second)
+	go func() {
+		var lock sync.RWMutex
+		for range priceTicker.C {
+			scraper.updatePriceMap(&lock)
+		}
+	}()
+
+	ticker := time.NewTicker(time.Duration(simulationUpdateSeconds) * time.Second)
+	for range ticker.C {
+		for _, ep := range scraper.exchangepairs {
+			pools := scraper.getPools(ep)
+			scraper.simulateTrades(ep, pools, tradesChannel)
+		}
 	}
 
 }
 
 func (scraper *CurveSimulator) getExchangePairs() (err error) {
+	scraper.priceMap = make(map[models.Asset]models.AssetQuotation)
 	for i, ep := range scraper.exchangepairs {
 		quoteToken, err := models.GetAsset(common.HexToAddress(ep.UnderlyingPair.QuoteToken.Address), Exchanges[CURVE_SIMULATION].Blockchain, scraper.restClient)
 		if err != nil {
@@ -72,8 +116,24 @@ func (scraper *CurveSimulator) getExchangePairs() (err error) {
 			return err
 		}
 		scraper.exchangepairs[i].UnderlyingPair.BaseToken = baseToken
+		scraper.priceMap[baseToken] = models.AssetQuotation{}
 	}
 	return
+}
+
+func (scraper *CurveSimulator) updatePriceMap(lock *sync.RWMutex) {
+	for asset := range scraper.priceMap {
+		quotation, err := asset.GetOnchainPrice(common.HexToAddress(DIAMetaContractAddress), DIAMetaContractPrecision, scraper.luminaClient)
+		if err != nil {
+			log.Errorf("GetOnchainPrice for %s -- %s: %v", asset.Symbol, asset.Address, err)
+			continue
+		} else {
+			log.Infof("USD price for (base-)token %s: %v", asset.Symbol, quotation.Price)
+		}
+		lock.Lock()
+		scraper.priceMap[asset] = quotation
+		lock.Unlock()
+	}
 }
 
 func (scraper *CurveSimulator) getPools(ep models.ExchangePair) []common.Address {
@@ -117,6 +177,24 @@ func (scraper *CurveSimulator) getPools(ep models.ExchangePair) []common.Address
 	return pools
 }
 
+func (scraper *CurveSimulator) getBaseTokenPrice(ep models.ExchangePair) float64 {
+	var err error
+	baseTokenPrice := scraper.priceMap[ep.UnderlyingPair.BaseToken].Price
+
+	if baseTokenPrice == 0 {
+		log.Warnf("Could not determine price of base token on chain %s. Checking DIA API.", ep.UnderlyingPair.BaseToken.Symbol)
+		baseTokenPrice, err = utils.GetPriceFromDiaAPI(ep.UnderlyingPair.BaseToken.Address, ep.UnderlyingPair.BaseToken.Blockchain)
+		if err != nil {
+			log.Errorf("Failed to get baseTokenPrice from DIA API: %v\n", err)
+			log.Errorf("baseToken Blockchain: %v\n", ep.UnderlyingPair.BaseToken.Blockchain)
+			log.Errorf("baseToken Address: %v\n", ep.UnderlyingPair.BaseToken.Address)
+			log.Warnf("Could not determine price of base token from DIA API%s. Continue with native volume of 1.", ep.UnderlyingPair.BaseToken.Symbol)
+			baseTokenPrice = 100
+		}
+	}
+	return baseTokenPrice
+}
+
 func (scraper *CurveSimulator) simulateTrades(ep models.ExchangePair, pools []common.Address, tradesChannel chan models.SimulatedTrade) {
 	for _, poolAddr := range pools {
 		pool, err := curvepool.NewCurvepool(poolAddr, scraper.restClient)
@@ -132,12 +210,15 @@ func (scraper *CurveSimulator) simulateTrades(ep models.ExchangePair, pools []co
 		}
 		log.Infof("Token validated! token0_index: %v, token1_index: %v\n", quoteTokenIndex, baseTokenIndex)
 		// Prepare trade input (e.g., $100)
-		decimals := big.NewInt(int64(ep.UnderlyingPair.QuoteToken.Decimals))
-		exponent := new(big.Int).Exp(big.NewInt(10), decimals, nil)
-		amountIn := new(big.Int).Mul(big.NewInt(100), exponent)
-		amountInAfterDecimalAdjust := new(big.Int).Quo(amountIn, exponent)
+		baseTokenPrice := scraper.getBaseTokenPrice(ep)
+		amountInBase := int64(amountIn_USD_constant / baseTokenPrice) // 100
+
+		decimals := big.NewInt(int64(ep.UnderlyingPair.QuoteToken.Decimals)) // e.g. 18
+		exponent := new(big.Int).Exp(big.NewInt(10), decimals, nil)          // e.g. 10^18
+		amountIn := new(big.Int).Mul(big.NewInt(amountInBase), exponent)     // e.g. 10^20
+		amountInAfterDecimalAdjust := new(big.Int).Quo(amountIn, exponent)   // e.g. 10^2
 		amountInAfterDecimalAdjustF64, _ := amountInAfterDecimalAdjust.Float64()
-		log.Infof("amountInAfterDecimalAdjust: %v\n", amountInAfterDecimalAdjust)
+		log.Infof("amountIn after adjusting for decimals: %v\n", amountInAfterDecimalAdjust)
 
 		// Run trade simulation
 		var amountOutFloat *big.Float
@@ -193,7 +274,7 @@ func (scraper *CurveSimulator) validatePoolTokens(ep models.ExchangePair, pool *
 	for idx := 0; idx < maxCoins; idx++ {
 		addr, err := pool.UnderlyingCoins(&bind.CallOpts{}, big.NewInt(int64(idx)))
 		if err != nil || addr == (common.Address{}) {
-			break
+			continue
 		}
 		tokens = append(tokens, addr)
 	}
