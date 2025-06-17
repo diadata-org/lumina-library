@@ -1,11 +1,13 @@
 package uniswap
 
 import (
-	"math"
+	"fmt"
 	"math/big"
 
 	"github.com/sirupsen/logrus"
 
+	"github.com/diadata-org/lumina-library/contracts/curve/curvefifactory"
+	"github.com/diadata-org/lumina-library/contracts/curve/curveplain"
 	"github.com/diadata-org/lumina-library/contracts/curve/curvepool"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -21,23 +23,28 @@ func New(client *ethclient.Client, log *logrus.Logger) *Simulator {
 	return &c
 }
 
-func (c *Simulator) Execute(pool *curvepool.Curvepool, i, j int, amountIn *big.Int) (*big.Int, float64, error) {
-	// Fetch trading fee
-	fee, _ := pool.Fee(&bind.CallOpts{})
-	feePercent := parseCurveFee(fee, 8)
+func (c *Simulator) Execute(pool interface{}, i, j int, amountIn *big.Int) (*big.Int, error) {
+	var (
+		amountOut *big.Int
+		err       error
+	)
 
-	// Run trade simulation
-	amountOut, err := pool.GetDyUnderlying(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
-	if err != nil {
-		c.log.Printf("Trade simulation failed: %v", err)
-		return nil, 0, err
+	switch p := pool.(type) {
+	case *curveplain.CurveplainCaller:
+		amountOut, err = p.GetDy(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
+	case *curvepool.Curvepool:
+		amountOut, err = p.GetDyUnderlying(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
+	case *curvefifactory.Curvefifactory:
+		amountOut, err = p.GetDy(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
+	default:
+		return nil, fmt.Errorf("unsupported pool contract type")
 	}
-	return amountOut, feePercent, nil
-}
 
-func parseCurveFee(fee *big.Int, decimals int) float64 {
-	feeFloat := new(big.Float).SetInt(fee)
-	divisor := new(big.Float).SetFloat64(math.Pow10(decimals))
-	result, _ := new(big.Float).Quo(feeFloat, divisor).Float64()
-	return result
+	// Run trade simulation - i - intoken (e.g. USDT)
+	if err != nil {
+		c.log.Infof("i: %v, j: %v", big.NewInt(int64(i)), big.NewInt(int64(j)))
+		c.log.Printf("Trade simulation failed: %v", err)
+		return nil, err
+	}
+	return amountOut, nil
 }
