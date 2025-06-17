@@ -29,6 +29,7 @@ func (c *Simulator) Execute(pool interface{}, i, j int, amountIn *big.Int) (*big
 		err       error
 	)
 
+	// Run trade simulation - i - intoken (e.g. USDT)
 	switch p := pool.(type) {
 	case *curveplain.CurveplainCaller:
 		amountOut, err = p.GetDy(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
@@ -40,7 +41,6 @@ func (c *Simulator) Execute(pool interface{}, i, j int, amountIn *big.Int) (*big
 		return nil, fmt.Errorf("unsupported pool contract type")
 	}
 
-	// Run trade simulation - i - intoken (e.g. USDT)
 	if err != nil {
 		c.log.Infof("i: %v, j: %v", big.NewInt(int64(i)), big.NewInt(int64(j)))
 		c.log.Printf("Trade simulation failed: %v", err)

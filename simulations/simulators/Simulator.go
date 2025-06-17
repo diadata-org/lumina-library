@@ -28,5 +28,4 @@ func RunSimulator(
 	case CURVE_SIMULATION:
 		NewCurveSimulator(exchangePairs, tradesChannel)
 	}
-
 }
