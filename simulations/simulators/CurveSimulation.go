@@ -12,6 +12,7 @@ import (
 
 	"github.com/diadata-org/lumina-library/contracts/curve/curvefi"
 	"github.com/diadata-org/lumina-library/contracts/curve/curvefifactory"
+	"github.com/diadata-org/lumina-library/contracts/curve/curvelendingpool"
 	"github.com/diadata-org/lumina-library/contracts/curve/curveplain"
 	"github.com/diadata-org/lumina-library/contracts/curve/curvepool"
 	"github.com/diadata-org/lumina-library/models"
@@ -218,6 +219,14 @@ func detectAndInitPoolType(client *ethclient.Client, poolAddr common.Address) (s
 		}
 	}
 
+	lending, err := curvelendingpool.NewCurvelendingpool(poolAddr, client)
+	if err == nil {
+		addr, err := lending.UnderlyingCoins(&bind.CallOpts{}, big.NewInt(0))
+		if err == nil && addr != (common.Address{}) {
+			return "lending", nil
+		}
+	}
+
 	plain, err := curveplain.NewCurveplainCaller(poolAddr, client)
 	if err == nil {
 		addr, err := plain.Coins(&bind.CallOpts{}, big.NewInt(0))
@@ -228,9 +237,12 @@ func detectAndInitPoolType(client *ethclient.Client, poolAddr common.Address) (s
 
 	factory, err := curvefifactory.NewCurvefifactory(poolAddr, client)
 	if err == nil {
-		addr, err := factory.Coins(&bind.CallOpts{}, big.NewInt(0))
-		if err == nil && addr != (common.Address{}) {
-			return "factory", nil
+		if _, err := factory.A(&bind.CallOpts{}); err == nil {
+			if _, err := factory.Fee(&bind.CallOpts{}); err == nil {
+				if addr, err := factory.Coins(&bind.CallOpts{}, big.NewInt(0)); err == nil && addr != (common.Address{}) {
+					return "factory", nil
+				}
+			}
 		}
 	}
 
@@ -243,12 +255,15 @@ func (scraper *CurveSimulator) simulateTrades(ep models.ExchangePair, pools map[
 			pool interface{}
 			err  error
 		)
+		log.Infof("============== Pool Addr: %v=============\n", poolAddr.Hex())
 
 		switch poolType {
 		case "plain":
 			pool, err = curveplain.NewCurveplainCaller(poolAddr, scraper.restClient)
 		case "underlying":
 			pool, err = curvepool.NewCurvepool(poolAddr, scraper.restClient)
+		case "lending":
+			pool, err = curvelendingpool.NewCurvelendingpool(poolAddr, scraper.restClient)
 		case "factory":
 			pool, err = curvefifactory.NewCurvefifactory(poolAddr, scraper.restClient)
 		default:
@@ -266,6 +281,8 @@ func (scraper *CurveSimulator) simulateTrades(ep models.ExchangePair, pools map[
 		// Get token indices and decimals
 		switch p := pool.(type) {
 		case *curveplain.CurveplainCaller:
+			quoteTokenIndex, baseTokenIndex, ok = scraper.validatePoolTokens(ep, p)
+		case *curvelendingpool.Curvelendingpool:
 			quoteTokenIndex, baseTokenIndex, ok = scraper.validatePoolTokens(ep, p)
 		case *curvepool.Curvepool:
 			quoteTokenIndex, baseTokenIndex, ok = scraper.validatePoolTokens(ep, p)
@@ -343,6 +360,8 @@ func (scraper *CurveSimulator) validatePoolTokens(ep models.ExchangePair, pool i
 		switch p := pool.(type) {
 		case *curveplain.CurveplainCaller:
 			addr, err = p.Coins(&bind.CallOpts{}, big.NewInt(int64(idx)))
+		case *curvelendingpool.Curvelendingpool:
+			addr, err = p.UnderlyingCoins(&bind.CallOpts{}, big.NewInt(int64(idx)))
 		case *curvepool.Curvepool:
 			addr, err = p.UnderlyingCoins(&bind.CallOpts{}, big.NewInt(int64(idx)))
 		case *curvefifactory.Curvefifactory:
@@ -385,6 +404,17 @@ func (scraper *CurveSimulator) hasSufficientLiquidity(ep models.ExchangePair, po
 
 	switch p := pool.(type) {
 	case *curveplain.CurveplainCaller:
+		baseBalance, err = p.Balances(&bind.CallOpts{}, big.NewInt(int64(baseIdx)))
+		if err != nil {
+			log.Warnf("Failed to get base balance: %v", err)
+			return false
+		}
+		quoteBalance, err = p.Balances(&bind.CallOpts{}, big.NewInt(int64(quoteIdx)))
+		if err != nil {
+			log.Warnf("Failed to get quote balance: %v", err)
+			return false
+		}
+	case *curvelendingpool.Curvelendingpool:
 		baseBalance, err = p.Balances(&bind.CallOpts{}, big.NewInt(int64(baseIdx)))
 		if err != nil {
 			log.Warnf("Failed to get base balance: %v", err)
