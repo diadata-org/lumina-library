@@ -195,47 +195,50 @@ func (scraper *CurveSimulator) getPools(ep models.ExchangePair) map[common.Addre
 		if pool == (common.Address{}) {
 			break
 		}
-		tokens, err := registry.GetUnderlyingCoins(&bind.CallOpts{Context: context.Background()}, pool)
-		balances, b_err := registry.GetBalances(&bind.CallOpts{Context: context.Background()}, pool)
-		if err != nil || b_err != nil {
-			log.Warnf("Skipping pool - GetUnderlyingCoins failed %s: %v", pool.Hex(), err)
-			continue
-		} else if matchTokens(tokens[:], ep) {
-			quoteIdx, baseIdx, index_ok := findTokenIndices(tokens[:], ep)
 
-			if index_ok {
-				liquidity_ok := scraper.hasSufficientLiquidity(ep, pool, balances[quoteIdx], balances[baseIdx])
-				if liquidity_ok {
-					pools[pool] = PoolMeta{QuoteIdx: quoteIdx, BaseIdx: baseIdx}
-					log.Infof("Pool #%d: %s", i+1, pool.Hex())
-					log.Infof("Token validated! token0_index: %v, token1_index: %v\n", quoteIdx, baseIdx)
-					continue
-				}
-			}
+		var tokens [8]common.Address
+		var balances [8]*big.Int
+		var tokenErr, balanceErr error
+		var usedUnderlying bool = false
+
+		tokens, tokenErr = registry.GetUnderlyingCoins(&bind.CallOpts{Context: context.Background()}, pool)
+		if tokenErr == nil {
+			usedUnderlying = true
+			balances, balanceErr = registry.GetBalances(&bind.CallOpts{Context: context.Background()}, pool)
 		}
 
-		tokens, err = registry.GetCoins(&bind.CallOpts{Context: context.Background()}, pool)
-		if err != nil {
-			log.Warnf("Skipping pool - GetCoins failed %s: %v", pool.Hex(), err)
-			continue
-		} else if matchTokens(tokens[:], ep) {
-			quoteIdx, baseIdx, index_ok := findTokenIndices(tokens[:], ep)
-
-			if index_ok {
-				liquidity_ok := scraper.hasSufficientLiquidity(ep, pool, balances[quoteIdx], balances[baseIdx])
-				if liquidity_ok {
-					pools[pool] = PoolMeta{QuoteIdx: quoteIdx, BaseIdx: baseIdx}
-					log.Infof("Pool #%d: %s", i+1, pool.Hex())
-					log.Infof("Token validated! token0_index: %v, token1_index: %v\n", quoteIdx, baseIdx)
-					continue
-				}
-
+		if tokenErr != nil || !matchTokens(tokens[:], ep) {
+			tokens, tokenErr = registry.GetCoins(&bind.CallOpts{Context: context.Background()}, pool)
+			if tokenErr != nil || !matchTokens(tokens[:], ep) {
+				log.Warnf("Skipping pool %s: tokens do not match or call failed", pool.Hex())
+				continue
 			}
+			balances, balanceErr = registry.GetBalances(&bind.CallOpts{Context: context.Background()}, pool)
+		}
+
+		if balanceErr != nil {
+			log.Warnf("Skipping pool %s: GetBalances failed: %v", pool.Hex(), balanceErr)
+			continue
+		}
+
+		quoteIdx, baseIdx, indexOK := findTokenIndices(tokens[:], ep)
+		if !indexOK {
+			log.Warnf("Skipping pool %s: unable to determine token indices", pool.Hex())
+			continue
+		}
+
+		if scraper.hasSufficientLiquidity(ep, pool, balances[baseIdx], balances[quoteIdx]) {
+			pools[pool] = PoolMeta{QuoteIdx: quoteIdx, BaseIdx: baseIdx}
+			typeLabel := "registry.GetCoins"
+			if usedUnderlying {
+				typeLabel = "registry.GetUnderlyingCoins"
+			}
+			log.Infof("Pool #%d: %s | Type: %s", i+1, pool.Hex(), typeLabel)
+			log.Infof("Token validated! token0_index: %v, token1_index: %v\n", quoteIdx, baseIdx)
 		}
 	}
 
 	log.Infof("Found %d %v/%v liquidity pools:\n", len(pools), ep.UnderlyingPair.QuoteToken.Symbol, ep.UnderlyingPair.BaseToken.Symbol)
-
 	return pools
 }
 
