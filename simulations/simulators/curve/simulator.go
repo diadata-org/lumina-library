@@ -7,9 +7,11 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/diadata-org/lumina-library/contracts/curve/curvefifactory"
+	"github.com/diadata-org/lumina-library/contracts/curve/curvelendingpool"
 	"github.com/diadata-org/lumina-library/contracts/curve/curveplain"
 	"github.com/diadata-org/lumina-library/contracts/curve/curvepool"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
@@ -23,28 +25,65 @@ func New(client *ethclient.Client, log *logrus.Logger) *Simulator {
 	return &c
 }
 
-func (c *Simulator) Execute(pool interface{}, i, j int, amountIn *big.Int) (*big.Int, error) {
-	var (
-		amountOut *big.Int
-		err       error
-	)
+func (c *Simulator) Execute(poolAddr common.Address, restClient *ethclient.Client, i, j int, amountIn *big.Int) (*big.Int, error) {
+	type attempt struct {
+		name string
+		call func() (*big.Int, error)
+	}
+
+	attempts := []attempt{
+		{
+			name: "curveplain.GetDy",
+			call: func() (*big.Int, error) {
+				p, err := curveplain.NewCurveplainCaller(poolAddr, restClient)
+				if err != nil {
+					return nil, err
+				}
+				return p.GetDy(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
+			},
+		},
+		{
+			name: "curvepool.GetDyUnderlying",
+			call: func() (*big.Int, error) {
+				p, err := curvepool.NewCurvepool(poolAddr, restClient)
+				if err != nil {
+					return nil, err
+				}
+				return p.GetDyUnderlying(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
+			},
+		},
+		{
+			name: "curvelendingpool.GetDyUnderlying",
+			call: func() (*big.Int, error) {
+				p, err := curvelendingpool.NewCurvelendingpool(poolAddr, restClient)
+				if err != nil {
+					return nil, err
+				}
+				return p.GetDyUnderlying(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
+			},
+		},
+		{
+			name: "curvefifactory.GetDy",
+			call: func() (*big.Int, error) {
+				p, err := curvefifactory.NewCurvefifactory(poolAddr, restClient)
+				if err != nil {
+					return nil, err
+				}
+				return p.GetDy(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
+			},
+		},
+	}
 
 	// Run trade simulation - i - intoken (e.g. USDT)
-	switch p := pool.(type) {
-	case *curveplain.CurveplainCaller:
-		amountOut, err = p.GetDy(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
-	case *curvepool.Curvepool:
-		amountOut, err = p.GetDyUnderlying(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
-	case *curvefifactory.Curvefifactory:
-		amountOut, err = p.GetDy(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
-	default:
-		return nil, fmt.Errorf("unsupported pool contract type")
+	for _, a := range attempts {
+		amountOut, err := a.call()
+		if err == nil {
+			c.log.Infof("Simulator.Execute succeeded with %s", a.name)
+			return amountOut, nil
+		}
+		c.log.Infof("intoken index: %v, outtoken index: %v", big.NewInt(int64(i)), big.NewInt(int64(j)))
+		c.log.Debugf("Simulator.Execute failed with %s: %v", a.name, err)
 	}
 
-	if err != nil {
-		c.log.Infof("intoken index: %v, outtoken index: %v", big.NewInt(int64(i)), big.NewInt(int64(j)))
-		c.log.Printf("Trade simulation failed: %v", err)
-		return nil, err
-	}
-	return amountOut, nil
+	return nil, fmt.Errorf("Simulator.Execute: all ABI calls failed for pool %s", poolAddr.Hex())
 }
