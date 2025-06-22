@@ -201,10 +201,15 @@ func (scraper *CurveSimulator) getPools(ep models.ExchangePair) map[common.Addre
 		var tokenErr, balanceErr error
 		var usedUnderlying bool = false
 
+		balances, balanceErr = registry.GetBalances(&bind.CallOpts{Context: context.Background()}, pool)
+		if balanceErr != nil {
+			log.Warnf("Skipping pool %s: GetBalances failed: %v", pool.Hex(), balanceErr)
+			continue
+		}
+
 		tokens, tokenErr = registry.GetUnderlyingCoins(&bind.CallOpts{Context: context.Background()}, pool)
 		if tokenErr == nil {
 			usedUnderlying = true
-			balances, balanceErr = registry.GetBalances(&bind.CallOpts{Context: context.Background()}, pool)
 		}
 
 		if tokenErr != nil || !matchTokens(tokens[:], ep) {
@@ -213,12 +218,6 @@ func (scraper *CurveSimulator) getPools(ep models.ExchangePair) map[common.Addre
 				log.Warnf("Skipping pool %s: tokens do not match or call failed", pool.Hex())
 				continue
 			}
-			balances, balanceErr = registry.GetBalances(&bind.CallOpts{Context: context.Background()}, pool)
-		}
-
-		if balanceErr != nil {
-			log.Warnf("Skipping pool %s: GetBalances failed: %v", pool.Hex(), balanceErr)
-			continue
 		}
 
 		quoteIdx, baseIdx, indexOK := findTokenIndices(tokens[:], ep)
