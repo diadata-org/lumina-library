@@ -25,23 +25,13 @@ func New(client *ethclient.Client, log *logrus.Logger) *Simulator {
 	return &c
 }
 
-func (c *Simulator) Execute(poolAddr common.Address, restClient *ethclient.Client, i, j int, amountIn *big.Int) (*big.Int, error) {
+func (c *Simulator) Execute(poolAddr common.Address, restClient *ethclient.Client, usedUnderlying bool, i, j int, amountIn *big.Int) (*big.Int, error) {
 	type attempt struct {
 		name string
 		call func() (*big.Int, error)
 	}
 
-	attempts := []attempt{
-		{
-			name: "curveplain.GetDy",
-			call: func() (*big.Int, error) {
-				p, err := curveplain.NewCurveplainCaller(poolAddr, restClient)
-				if err != nil {
-					return nil, err
-				}
-				return p.GetDy(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
-			},
-		},
+	attempts_underlying := []attempt{
 		{
 			name: "curvepool.GetDyUnderlying",
 			call: func() (*big.Int, error) {
@@ -62,6 +52,38 @@ func (c *Simulator) Execute(poolAddr common.Address, restClient *ethclient.Clien
 				return p.GetDyUnderlying(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
 			},
 		},
+	}
+	attempts := []attempt{
+		{
+			name: "curvepool.GetDy",
+			call: func() (*big.Int, error) {
+				p, err := curvepool.NewCurvepool(poolAddr, restClient)
+				if err != nil {
+					return nil, err
+				}
+				return p.GetDy(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
+			},
+		},
+		{
+			name: "curveplain.GetDy",
+			call: func() (*big.Int, error) {
+				p, err := curveplain.NewCurveplainCaller(poolAddr, restClient)
+				if err != nil {
+					return nil, err
+				}
+				return p.GetDy(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
+			},
+		},
+		{
+			name: "curvelendingpool.GetDy",
+			call: func() (*big.Int, error) {
+				p, err := curvelendingpool.NewCurvelendingpool(poolAddr, restClient)
+				if err != nil {
+					return nil, err
+				}
+				return p.GetDy(&bind.CallOpts{}, big.NewInt(int64(i)), big.NewInt(int64(j)), amountIn)
+			},
+		},
 		{
 			name: "curvefifactory.GetDy",
 			call: func() (*big.Int, error) {
@@ -74,6 +96,9 @@ func (c *Simulator) Execute(poolAddr common.Address, restClient *ethclient.Clien
 		},
 	}
 
+	if usedUnderlying {
+		attempts = attempts_underlying
+	}
 	// Run trade simulation - i - intoken (e.g. USDT)
 	for _, a := range attempts {
 		amountOut, err := a.call()
@@ -82,7 +107,7 @@ func (c *Simulator) Execute(poolAddr common.Address, restClient *ethclient.Clien
 			return amountOut, nil
 		}
 		c.log.Infof("intoken index: %v, outtoken index: %v", big.NewInt(int64(i)), big.NewInt(int64(j)))
-		c.log.Debugf("Simulator.Execute failed with %s: %v", a.name, err)
+		c.log.Warnf("Simulator.Execute failed with %s: %v", a.name, err)
 	}
 
 	return nil, fmt.Errorf("Simulator.Execute: all ABI calls failed for pool %s", poolAddr.Hex())

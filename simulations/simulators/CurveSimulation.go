@@ -19,8 +19,9 @@ import (
 )
 
 type PoolMeta struct {
-	QuoteIdx int
-	BaseIdx  int
+	GetUnderlyingCoins bool
+	QuoteIdx           int
+	BaseIdx            int
 }
 
 type CurveSimulator struct {
@@ -207,17 +208,15 @@ func (scraper *CurveSimulator) getPools(ep models.ExchangePair) map[common.Addre
 			continue
 		}
 
-		tokens, tokenErr = registry.GetUnderlyingCoins(&bind.CallOpts{Context: context.Background()}, pool)
-		if tokenErr == nil {
-			usedUnderlying = true
-		}
+		tokens, tokenErr = registry.GetCoins(&bind.CallOpts{Context: context.Background()}, pool)
 
 		if tokenErr != nil || !matchTokens(tokens[:], ep) {
-			tokens, tokenErr = registry.GetCoins(&bind.CallOpts{Context: context.Background()}, pool)
+			tokens, tokenErr = registry.GetUnderlyingCoins(&bind.CallOpts{Context: context.Background()}, pool)
 			if tokenErr != nil || !matchTokens(tokens[:], ep) {
 				log.Warnf("Skipping pool %s: tokens do not match or call failed", pool.Hex())
 				continue
 			}
+			usedUnderlying = true
 		}
 
 		quoteIdx, baseIdx, indexOK := findTokenIndices(tokens[:], ep)
@@ -227,7 +226,7 @@ func (scraper *CurveSimulator) getPools(ep models.ExchangePair) map[common.Addre
 		}
 
 		if scraper.hasSufficientLiquidity(ep, pool, balances[baseIdx], balances[quoteIdx]) {
-			pools[pool] = PoolMeta{QuoteIdx: quoteIdx, BaseIdx: baseIdx}
+			pools[pool] = PoolMeta{GetUnderlyingCoins: usedUnderlying, QuoteIdx: quoteIdx, BaseIdx: baseIdx}
 			typeLabel := "registry.GetCoins"
 			if usedUnderlying {
 				typeLabel = "registry.GetUnderlyingCoins"
@@ -287,7 +286,7 @@ func (scraper *CurveSimulator) simulateTrades(ep models.ExchangePair, pools map[
 
 		// Run trade simulation
 		var amountOutFloat *big.Float
-		amountOut, err := scraper.simulator.Execute(poolAddr, scraper.restClient, meta.BaseIdx, meta.QuoteIdx, amountIn)
+		amountOut, err := scraper.simulator.Execute(poolAddr, scraper.restClient, meta.GetUnderlyingCoins, meta.BaseIdx, meta.QuoteIdx, amountIn)
 		if err != nil {
 			continue
 		} else {
