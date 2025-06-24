@@ -31,6 +31,7 @@ type SimulationScraperVersion2 struct {
 	// such that a corresponding pool exists and fulfills liquidity requirements.
 	feesMap           map[models.ExchangePair][]UniV3PoolFee
 	thresholdSlippage float64
+	poolCache         *PoolCallCache
 }
 
 type SwapEventsVersion2 struct {
@@ -52,6 +53,17 @@ type UniV3PoolFeeVersion2 struct {
 	fee      *big.Int
 	address  common.Address
 	amountIn float64
+}
+
+type PoolData struct {
+	Caller *univ3pool.Univ3poolCaller
+	Token0 common.Address
+	Token1 common.Address
+}
+
+type PoolCallCache struct {
+	mu    sync.RWMutex
+	cache map[common.Address]*PoolData
 }
 
 const (
@@ -144,6 +156,8 @@ func NewUniswapSimulatorVersion2(exchangepairs []models.ExchangePair, tradesChan
 		scraper.thresholdSlippage = 5e-17
 	}
 
+	scraper.poolCache = NewPoolCallCache()
+
 	var lock sync.RWMutex
 	scraper.updatePriceMapVersion2(&lock)
 	// map exchangepairs to list of fees corresponding to deployed pools such that all mapped pools are admissible.
@@ -176,8 +190,45 @@ func NewUniswapSimulatorVersion2(exchangepairs []models.ExchangePair, tradesChan
 
 }
 
-func (scraper *SimulationScraperVersion2) simulateTradesVersion2(tradesChannel chan models.SimulatedTrade) {
+func NewPoolCallCache() *PoolCallCache {
+	return &PoolCallCache{
+		cache: make(map[common.Address]*PoolData),
+	}
+}
 
+func (p *PoolCallCache) Get(poolAddr common.Address, client *ethclient.Client) (*PoolData, error) {
+	p.mu.RLock()
+	if data, ok := p.cache[poolAddr]; ok {
+		p.mu.RUnlock()
+		return data, nil
+	}
+	p.mu.RUnlock()
+
+	caller, err := univ3pool.NewUniv3poolCaller(poolAddr, client)
+	if err != nil {
+		return nil, err
+	}
+	token0, err := caller.Token0(&bind.CallOpts{})
+	if err != nil {
+		return nil, err
+	}
+	token1, err := caller.Token1(&bind.CallOpts{})
+	if err != nil {
+		return nil, err
+	}
+	data := &PoolData{
+		Caller: caller,
+		Token0: token0,
+		Token1: token1,
+	}
+	p.mu.Lock()
+	p.cache[poolAddr] = data
+	p.mu.Unlock()
+
+	return data, nil
+}
+
+func (scraper *SimulationScraperVersion2) simulateTradesVersion2(tradesChannel chan models.SimulatedTrade) {
 	var wg sync.WaitGroup
 
 	for exchangePair, fees := range scraper.feesMap {
@@ -212,11 +263,14 @@ func (scraper *SimulationScraperVersion2) simulateTradesVersion2(tradesChannel c
 					}
 				}
 
-				caller, err := univ3pool.NewUniv3poolCaller(address, scraper.restClient)
+				poolData, err := scraper.poolCache.Get(address, scraper.restClient)
 				if err != nil {
-					log.Errorf("Failed to create pool caller interface: %v", err)
+					log.Errorf("Failed to load pool data: %v", err)
 					return
 				}
+				caller := poolData.Caller
+				PoolToken0 := poolData.Token0
+				PoolToken1 := poolData.Token1
 
 				// Retrieve post-trade price and liquidity
 				slot0, err := caller.Slot0(&bind.CallOpts{})
@@ -227,17 +281,6 @@ func (scraper *SimulationScraperVersion2) simulateTradesVersion2(tradesChannel c
 				liquidityBig, err := caller.Liquidity(&bind.CallOpts{})
 				if err != nil {
 					log.Errorf("Failed to get liquidity: %v", err)
-					return
-				}
-
-				PoolToken0, err := caller.Token0(&bind.CallOpts{})
-				if err != nil {
-					log.Errorf("Failed to get Token0: %v", err)
-					return
-				}
-				PoolToken1, err := caller.Token1(&bind.CallOpts{})
-				if err != nil {
-					log.Errorf("Failed to get Token1: %v", err)
 					return
 				}
 
@@ -307,7 +350,6 @@ func (scraper *SimulationScraperVersion2) simulateTradesVersion2(tradesChannel c
 		}
 	}
 	wg.Wait()
-
 }
 
 func computeSlippageVersion2(sqrtPriceX96 *big.Int, amount0 *big.Float, amount1 *big.Float, liquidity *big.Int) float64 {
@@ -388,7 +430,6 @@ func (scraper *SimulationScraperVersion2) initAssetsAndMapsVersion2() error {
 		if _, ok := memoryMap[ep.UnderlyingPair.QuoteToken.Address]; !ok {
 
 			quoteToken, err := models.GetAsset(common.HexToAddress(ep.UnderlyingPair.QuoteToken.Address), Exchanges[UNISWAP_SIMULATION_TEST].Blockchain, scraper.restClient)
-			log.Warnf("Blockchain: %v\n", Exchanges[UNISWAP_SIMULATION_TEST].Blockchain)
 			if err != nil {
 				return err
 			}
@@ -403,7 +444,6 @@ func (scraper *SimulationScraperVersion2) initAssetsAndMapsVersion2() error {
 		if _, ok := memoryMap[ep.UnderlyingPair.BaseToken.Address]; !ok {
 
 			baseToken, err := models.GetAsset(common.HexToAddress(ep.UnderlyingPair.BaseToken.Address), Exchanges[UNISWAP_SIMULATION_TEST].Blockchain, scraper.restClient)
-			log.Warnf("Blockchain: %v\n", Exchanges[UNISWAP_SIMULATION_TEST].Blockchain)
 			if err != nil {
 				return err
 			}
@@ -576,8 +616,11 @@ func (scraper *SimulationScraperVersion2) updateFeesMapVersion2(lock *sync.RWMut
 		// Outlier detection on prices.
 		// TO DO: Should we also check for prices1?
 		// scraper.checkPricesVersion2(prices0, ep, indexFeeMap, poolMap)
+
 		for index, fee := range indexFeeMap {
-			scraper.feesMap[ep] = append(scraper.feesMap[ep], UniV3PoolFee{fee: fee, address: poolMap[index]})
+			if !containsFeeVersion2(fee, scraper.feesMap[ep]) {
+				scraper.feesMap[ep] = append(scraper.feesMap[ep], UniV3PoolFee{fee: fee, address: poolMap[index]})
+			}
 		}
 
 		// Compute amountIn in such that it corresponds to @amountIn_USD amount in USD.
