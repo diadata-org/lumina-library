@@ -90,7 +90,10 @@ func NewCurveSimulator(exchangepairs []models.ExchangePair, tradesChannel chan m
 
 	scraper.simulator = simulation.New(scraper.restClient, log)
 	scraper.exchangepairs = exchangepairs
-	scraper.getExchangePairs()
+	err = scraper.getExchangePairs()
+	if err != nil {
+		log.Fatal("Failed to get exchange pairs: ", err)
+	}
 
 	var lock sync.RWMutex
 	scraper.updatePriceMap(&lock)
@@ -102,18 +105,16 @@ func NewCurveSimulator(exchangepairs []models.ExchangePair, tradesChannel chan m
 		}
 	}()
 
-	var pools map[common.Address]PoolMeta
+	allPools := make(map[models.ExchangePair]map[common.Address]PoolMeta)
 	for _, ep := range scraper.exchangepairs {
-		pools = scraper.getPools(ep)
+		pools := scraper.getPools(ep)
+		allPools[ep] = pools
 	}
 
 	ticker := time.NewTicker(time.Duration(simulationUpdateSeconds) * time.Second)
 	for range ticker.C {
-		for _, ep := range scraper.exchangepairs {
-			scraper.simulateTrades(ep, pools, tradesChannel)
-		}
+		scraper.simulateTrades(allPools, tradesChannel)
 	}
-
 }
 
 func (scraper *CurveSimulator) getExchangePairs() (err error) {
@@ -200,7 +201,7 @@ func (scraper *CurveSimulator) getPools(ep models.ExchangePair) map[common.Addre
 		var tokens [8]common.Address
 		var balances [8]*big.Int
 		var tokenErr, balanceErr error
-		var usedUnderlying bool = false
+		var hasWrappedCoins bool = false
 
 		balances, balanceErr = registry.GetBalances(&bind.CallOpts{Context: context.Background()}, pool)
 		if balanceErr != nil {
@@ -216,7 +217,7 @@ func (scraper *CurveSimulator) getPools(ep models.ExchangePair) map[common.Addre
 				log.Warnf("Skipping pool %s: tokens do not match or call failed", pool.Hex())
 				continue
 			}
-			usedUnderlying = true
+			hasWrappedCoins = true
 		}
 
 		quoteIdx, baseIdx, indexOK := findTokenIndices(tokens[:], ep)
@@ -226,12 +227,12 @@ func (scraper *CurveSimulator) getPools(ep models.ExchangePair) map[common.Addre
 		}
 
 		if scraper.hasSufficientLiquidity(ep, pool, balances[baseIdx], balances[quoteIdx]) {
-			pools[pool] = PoolMeta{GetUnderlyingCoins: usedUnderlying, QuoteIdx: quoteIdx, BaseIdx: baseIdx}
-			typeLabel := "registry.GetCoins"
-			if usedUnderlying {
-				typeLabel = "registry.GetUnderlyingCoins"
+			pools[pool] = PoolMeta{GetUnderlyingCoins: hasWrappedCoins, QuoteIdx: quoteIdx, BaseIdx: baseIdx}
+			functionUnsed := "registry.GetCoins"
+			if hasWrappedCoins {
+				functionUnsed = "registry.GetUnderlyingCoins"
 			}
-			log.Infof("Pool #%d: %s | Type: %s", i+1, pool.Hex(), typeLabel)
+			log.Infof("Pool #%d: %s | Pool has wrapped coins: %v | Function Used: %s", i+1, pool.Hex(), hasWrappedCoins, functionUnsed)
 			log.Infof("Token validated! token0_index: %v, token1_index: %v\n", quoteIdx, baseIdx)
 		}
 	}
@@ -266,55 +267,58 @@ func findTokenIndices(tokens []common.Address, ep models.ExchangePair) (quoteInd
 	return quoteIndex, baseIndex, quoteIndex != -1 && baseIndex != -1
 }
 
-func (scraper *CurveSimulator) simulateTrades(ep models.ExchangePair, pools map[common.Address]PoolMeta, tradesChannel chan models.SimulatedTrade) {
-	for poolAddr, meta := range pools {
-		var (
-			err error
-		)
-		log.Infof("============== Pool Addr: %v=============\n", poolAddr.Hex())
+func (scraper *CurveSimulator) simulateTrades(allPools map[models.ExchangePair]map[common.Address]PoolMeta, tradesChannel chan models.SimulatedTrade) {
+	var wg sync.WaitGroup
 
-		// Prepare trade input (e.g., $100)
-		baseTokenPrice := scraper.priceMap[ep.UnderlyingPair.BaseToken].Price
-		amountInBase := int64(amountIn_USD_constant / baseTokenPrice) // 100
+	for ep, pools := range allPools {
+		for poolAddr, meta := range pools {
+			wg.Add(1)
+			go func(ep models.ExchangePair, w *sync.WaitGroup) {
+				defer w.Done()
+				log.Infof("============== Pool Addr: %v=============\n", poolAddr.Hex())
 
-		decimals := big.NewInt(int64(ep.UnderlyingPair.BaseToken.Decimals)) // e.g. 18
-		exponent := new(big.Int).Exp(big.NewInt(10), decimals, nil)         // e.g. 10^18
-		amountIn := new(big.Int).Mul(big.NewInt(amountInBase), exponent)    // e.g. 10^20
-		amountInAfterDecimalAdjust := new(big.Int).Quo(amountIn, exponent)  // e.g. 10^2
-		amountInAfterDecimalAdjustF64, _ := amountInAfterDecimalAdjust.Float64()
-		log.Infof("amountIn after adjusting for decimals: %v\n", amountInAfterDecimalAdjust)
+				// Prepare trade input (e.g., $100)
+				baseTokenPrice := scraper.priceMap[ep.UnderlyingPair.BaseToken].Price
+				amountInBase := int64(amountIn_USD_constant / baseTokenPrice) // 100
 
-		// Run trade simulation
-		var amountOutFloat *big.Float
-		amountOut, err := scraper.simulator.Execute(poolAddr, scraper.restClient, meta.GetUnderlyingCoins, meta.BaseIdx, meta.QuoteIdx, amountIn)
-		if err != nil {
-			continue
-		} else {
-			amountOutFloat = new(big.Float).SetInt(amountOut)
-			power := ep.UnderlyingPair.QuoteToken.Decimals
-			divisor := new(big.Float).SetInt(
-				new(big.Int).Exp(
-					big.NewInt(10),
-					big.NewInt(int64(power)),
-					nil,
-				),
-			)
-			amountOutFloat.Quo(amountOutFloat, divisor)
-			log.Infof("amountOut: %v\n", amountOutFloat)
-			amountOutAfterDecimalAdjustF64, _ := amountOutFloat.Float64()
+				decimals := big.NewInt(int64(ep.UnderlyingPair.BaseToken.Decimals)) // e.g. 18
+				exponent := new(big.Int).Exp(big.NewInt(10), decimals, nil)         // e.g. 10^18
+				amountIn := new(big.Int).Mul(big.NewInt(amountInBase), exponent)    // e.g. 10^20
+				amountInAfterDecimalAdjust := new(big.Int).Quo(amountIn, exponent)  // e.g. 10^2
+				amountInAfterDecimalAdjustF64, _ := amountInAfterDecimalAdjust.Float64()
+				log.Infof("amountIn after adjusting for decimals: %v\n", amountInAfterDecimalAdjust)
 
-			t := models.SimulatedTrade{
-				Price:       amountInAfterDecimalAdjustF64 / amountOutAfterDecimalAdjustF64,
-				Volume:      amountOutAfterDecimalAdjustF64,
-				QuoteToken:  ep.UnderlyingPair.QuoteToken,
-				BaseToken:   ep.UnderlyingPair.BaseToken,
-				PoolAddress: poolAddr.Hex(),
-				Time:        time.Now(),
-				Exchange:    Exchanges[CURVE_SIMULATION],
-			}
+				// Run trade simulation
+				var amountOutFloat *big.Float
+				amountOut, err := scraper.simulator.Execute(poolAddr, scraper.restClient, meta.GetUnderlyingCoins, meta.BaseIdx, meta.QuoteIdx, amountIn)
+				if err == nil {
+					amountOutFloat = new(big.Float).SetInt(amountOut)
+					power := ep.UnderlyingPair.QuoteToken.Decimals
+					divisor := new(big.Float).SetInt(
+						new(big.Int).Exp(
+							big.NewInt(10),
+							big.NewInt(int64(power)),
+							nil,
+						),
+					)
+					amountOutFloat.Quo(amountOutFloat, divisor)
+					log.Infof("amountOut: %v\n", amountOutFloat)
+					amountOutAfterDecimalAdjustF64, _ := amountOutFloat.Float64()
 
-			log.Infof("Got trade in pool %v%%: %s-%s -- %v -- %v", poolAddr.Hex(), t.QuoteToken.Symbol, t.BaseToken.Symbol, t.Price, t.Volume)
-			tradesChannel <- t
+					t := models.SimulatedTrade{
+						Price:       amountInAfterDecimalAdjustF64 / amountOutAfterDecimalAdjustF64,
+						Volume:      amountOutAfterDecimalAdjustF64,
+						QuoteToken:  ep.UnderlyingPair.QuoteToken,
+						BaseToken:   ep.UnderlyingPair.BaseToken,
+						PoolAddress: poolAddr.Hex(),
+						Time:        time.Now(),
+						Exchange:    Exchanges[CURVE_SIMULATION],
+					}
+
+					log.Infof("Got trade in pool %v%%: %s-%s -- %v -- %v", poolAddr.Hex(), t.QuoteToken.Symbol, t.BaseToken.Symbol, t.Price, t.Volume)
+					tradesChannel <- t
+				}
+			}(ep, &wg)
 		}
 	}
 }
