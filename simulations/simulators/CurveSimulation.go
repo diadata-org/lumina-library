@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/diadata-org/lumina-library/contracts/curve/curvefactory"
 	"github.com/diadata-org/lumina-library/contracts/curve/curvefi"
 	"github.com/diadata-org/lumina-library/models"
 	simulation "github.com/diadata-org/lumina-library/simulations/simulators/curve"
@@ -35,7 +36,7 @@ type CurveSimulator struct {
 
 var (
 	restDialUrl              = ""
-	registryAddress          = "0x90E00ACe148ca3b23Ac1bC8C240C2a7Dd9c2d7f5"
+	registryAddress          = ""
 	DIAMetaContractAddress   = "0x0087342f5f4c7AB23a37c045c3EF710749527c88"
 	DIAMetaContractPrecision = 8
 	amountIn_USD_constant    = float64(100)
@@ -48,6 +49,8 @@ var (
 
 func init() {
 	var err error
+
+	registryAddress = utils.Getenv(strings.ToUpper(CURVE_SIMULATION)+"_ADDRESS", "0x90E00ACe148ca3b23Ac1bC8C240C2a7Dd9c2d7f5")
 
 	simulationUpdateSeconds, err = strconv.Atoi(utils.Getenv(strings.ToUpper(CURVE_SIMULATION)+"_SIMULATION_UPDATE_SECONDS", strconv.Itoa(simulationUpdateSeconds)))
 	if err != nil {
@@ -167,15 +170,32 @@ func (scraper *CurveSimulator) getPriceFromAPI(asset models.Asset) float64 {
 }
 
 func (scraper *CurveSimulator) getPools(ep models.ExchangePair) map[common.Address]PoolMeta {
+	var (
+		registry interface{}
+		err      error
+	)
 
-	registry, err := curvefi.NewCurvefi(common.HexToAddress(registryAddress), scraper.restClient)
+	switch registryAddress {
+	case "0x90E00ACe148ca3b23Ac1bC8C240C2a7Dd9c2d7f5", //base
+		"0x8F942C20D02bEfc377D41445793068908E2250D0": // cryptoswap
+		registry, err = curvefi.NewCurvefi(common.HexToAddress(registryAddress), scraper.restClient)
+
+	case "0xB9fC157394Af804a3578134A6585C0dc9cc990d4", //meta
+		"0xF18056Bbd320E96A48e3Fbf8bC061322531aac99", // factory
+		"0x4F8846Ae9380B90d2E71D5e3D042dff3E7ebb40d": //factory2
+		registry, err = curvefactory.NewCurvefactory(common.HexToAddress(registryAddress), scraper.restClient)
+
+	default:
+		log.Errorf("Unsupported registry address: %s", registryAddress)
+	}
+
 	if err != nil {
 		log.Fatalf("Failed to create contract instance: %v", err)
 	} else {
 		log.Info("Successfully created contract instance")
 	}
 
-	poolCount, err := registry.PoolCount(nil)
+	poolCount, err := scraper.getPoolCount(registry)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -184,12 +204,7 @@ func (scraper *CurveSimulator) getPools(ep models.ExchangePair) map[common.Addre
 	// Retrieve all pools
 	pools := make(map[common.Address]PoolMeta)
 	for i := 0; ; i++ {
-		pool, err := registry.FindPoolForCoins0(
-			&bind.CallOpts{Context: context.Background()},
-			common.HexToAddress(ep.UnderlyingPair.QuoteToken.Address),
-			common.HexToAddress(ep.UnderlyingPair.BaseToken.Address),
-			big.NewInt(int64(i)),
-		)
+		pool, err := scraper.getPool(registry, ep, i)
 		if err != nil {
 			log.Errorf("Error querying index %d: %v", i, err)
 			break
@@ -198,29 +213,19 @@ func (scraper *CurveSimulator) getPools(ep models.ExchangePair) map[common.Addre
 			break
 		}
 
-		var tokens [8]common.Address
-		var balances [8]*big.Int
-		var tokenErr, balanceErr error
-		var hasWrappedCoins bool = false
-
-		balances, balanceErr = registry.GetBalances(&bind.CallOpts{Context: context.Background()}, pool)
+		balances, balanceErr := scraper.getBalances(registry, pool)
 		if balanceErr != nil {
 			log.Warnf("Skipping pool %s: GetBalances failed: %v", pool.Hex(), balanceErr)
 			continue
 		}
 
-		tokens, tokenErr = registry.GetCoins(&bind.CallOpts{Context: context.Background()}, pool)
-
-		if tokenErr != nil || !matchTokens(tokens[:], ep) {
-			tokens, tokenErr = registry.GetUnderlyingCoins(&bind.CallOpts{Context: context.Background()}, pool)
-			if tokenErr != nil || !matchTokens(tokens[:], ep) {
-				log.Warnf("Skipping pool %s: tokens do not match or call failed", pool.Hex())
-				continue
-			}
-			hasWrappedCoins = true
+		tokens, hasWrappedCoins, tokenErr := scraper.getTokens(registry, pool, ep)
+		if tokenErr != nil {
+			log.Warnf("Skipping pool %s: tokens do not match or call failed", pool.Hex())
+			continue
 		}
 
-		quoteIdx, baseIdx, indexOK := findTokenIndices(tokens[:], ep)
+		quoteIdx, baseIdx, indexOK := findTokenIndices(tokens, ep)
 		if !indexOK {
 			log.Warnf("Skipping pool %s: unable to determine token indices", pool.Hex())
 			continue
@@ -239,6 +244,92 @@ func (scraper *CurveSimulator) getPools(ep models.ExchangePair) map[common.Addre
 
 	log.Infof("Found %d %v/%v liquidity pools:\n", len(pools), ep.UnderlyingPair.QuoteToken.Symbol, ep.UnderlyingPair.BaseToken.Symbol)
 	return pools
+}
+
+func (scraper *CurveSimulator) getPoolCount(registry interface{}) (*big.Int, error) {
+	var poolCount *big.Int
+	var err error
+	switch r := registry.(type) {
+	case *curvefi.Curvefi:
+		poolCount, err = r.PoolCount(nil)
+	case *curvefactory.Curvefactory:
+		poolCount, err = r.PoolCount(nil)
+	default:
+		log.Fatal("getPoolCount - Unknown registry type")
+	}
+	return poolCount, err
+}
+
+func (scraper *CurveSimulator) getPool(registry interface{}, ep models.ExchangePair, i int) (common.Address, error) {
+	var pool common.Address
+	var err error
+	switch r := registry.(type) {
+	case *curvefi.Curvefi:
+		pool, err = r.FindPoolForCoins0(
+			&bind.CallOpts{Context: context.Background()},
+			common.HexToAddress(ep.UnderlyingPair.QuoteToken.Address),
+			common.HexToAddress(ep.UnderlyingPair.BaseToken.Address),
+			big.NewInt(int64(i)),
+		)
+	case *curvefactory.Curvefactory:
+		pool, err = r.FindPoolForCoins0(
+			&bind.CallOpts{Context: context.Background()},
+			common.HexToAddress(ep.UnderlyingPair.QuoteToken.Address),
+			common.HexToAddress(ep.UnderlyingPair.BaseToken.Address),
+			big.NewInt(int64(i)),
+		)
+	default:
+		log.Fatal("getPool - Unknown registry type")
+	}
+	return pool, err
+}
+
+func (scraper *CurveSimulator) getBalances(registry interface{}, pool common.Address) ([]*big.Int, error) {
+	var result []*big.Int
+	var err error
+
+	switch r := registry.(type) {
+	case *curvefi.Curvefi:
+		balances, balanceErr := r.GetBalances(&bind.CallOpts{Context: context.Background()}, pool)
+		err = balanceErr
+		result = balances[:]
+	case *curvefactory.Curvefactory:
+		balances, balanceErr := r.GetBalances(&bind.CallOpts{Context: context.Background()}, pool)
+		err = balanceErr
+		result = balances[:]
+	default:
+		log.Fatal("getBalances - Unknown registry type")
+	}
+	return result, err
+}
+
+func (scraper *CurveSimulator) getTokens(registry interface{}, pool common.Address, ep models.ExchangePair) ([]common.Address, bool, error) {
+	var result []common.Address
+	var err error
+	var hasWrappedCoins bool = false
+
+	switch r := registry.(type) {
+	case *curvefi.Curvefi:
+		tokens, tokenErr := r.GetCoins(&bind.CallOpts{Context: context.Background()}, pool)
+
+		if tokenErr != nil || !matchTokens(tokens[:], ep) {
+			tokens, tokenErr = r.GetUnderlyingCoins(&bind.CallOpts{Context: context.Background()}, pool)
+			if tokenErr != nil || !matchTokens(tokens[:], ep) {
+				return result, hasWrappedCoins, tokenErr
+			}
+			hasWrappedCoins = true
+		}
+		result = tokens[:]
+	case *curvefactory.Curvefactory:
+		tokens, tokenErr := r.GetCoins(&bind.CallOpts{Context: context.Background()}, pool)
+		if tokenErr != nil || !matchTokens(tokens[:], ep) {
+			return result, hasWrappedCoins, tokenErr
+		}
+		result = tokens[:]
+	default:
+		log.Fatal("getTokens - Unknown registry type")
+	}
+	return result, hasWrappedCoins, err
 }
 
 func matchTokens(tokens []common.Address, ep models.ExchangePair) bool {
