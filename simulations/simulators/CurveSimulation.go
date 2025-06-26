@@ -35,8 +35,14 @@ type CurveSimulator struct {
 }
 
 var (
-	restDialUrl              = ""
-	registryAddress          = ""
+	restDialUrl       = ""
+	registryAddresses = map[string]string{
+		"base":       "0x90E00ACe148ca3b23Ac1bC8C240C2a7Dd9c2d7f5",
+		"cryptoswap": "0x8F942C20D02bEfc377D41445793068908E2250D0",
+		"meta":       "0xB9fC157394Af804a3578134A6585C0dc9cc990d4",
+		"factory":    "0xF18056Bbd320E96A48e3Fbf8bC061322531aac99",
+		"factory2":   "0x4F8846Ae9380B90d2E71D5e3D042dff3E7ebb40d",
+	}
 	DIAMetaContractAddress   = "0x0087342f5f4c7AB23a37c045c3EF710749527c88"
 	DIAMetaContractPrecision = 8
 	amountIn_USD_constant    = float64(100)
@@ -49,8 +55,6 @@ var (
 
 func init() {
 	var err error
-
-	registryAddress = utils.Getenv(strings.ToUpper(CURVE_SIMULATION)+"_ADDRESS", "0x90E00ACe148ca3b23Ac1bC8C240C2a7Dd9c2d7f5")
 
 	simulationUpdateSeconds, err = strconv.Atoi(utils.Getenv(strings.ToUpper(CURVE_SIMULATION)+"_SIMULATION_UPDATE_SECONDS", strconv.Itoa(simulationUpdateSeconds)))
 	if err != nil {
@@ -109,9 +113,17 @@ func NewCurveSimulator(exchangepairs []models.ExchangePair, tradesChannel chan m
 	}()
 
 	allPools := make(map[models.ExchangePair]map[common.Address]PoolMeta)
-	for _, ep := range scraper.exchangepairs {
-		pools := scraper.getPools(ep)
-		allPools[ep] = pools
+	for registryName, registryAddress := range registryAddresses {
+		registry := scraper.getRegistry(registryName, registryAddress)
+		for _, ep := range scraper.exchangepairs {
+			pools := scraper.getPools(registry, ep)
+			if allPools[ep] == nil {
+				allPools[ep] = make(map[common.Address]PoolMeta)
+			}
+			for k, v := range pools {
+				allPools[ep][k] = v
+			}
+		}
 	}
 
 	ticker := time.NewTicker(time.Duration(simulationUpdateSeconds) * time.Second)
@@ -169,7 +181,7 @@ func (scraper *CurveSimulator) getPriceFromAPI(asset models.Asset) float64 {
 	return price
 }
 
-func (scraper *CurveSimulator) getPools(ep models.ExchangePair) map[common.Address]PoolMeta {
+func (scraper *CurveSimulator) getRegistry(registryName string, registryAddress string) interface{} {
 	var (
 		registry interface{}
 		err      error
@@ -199,8 +211,12 @@ func (scraper *CurveSimulator) getPools(ep models.ExchangePair) map[common.Addre
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Infof("Total # of stable swap pools: %d\n", poolCount)
+	log.Infof("Total # of %v pools: %d\n", registryName, poolCount)
 
+	return registry
+}
+
+func (scraper *CurveSimulator) getPools(registry interface{}, ep models.ExchangePair) map[common.Address]PoolMeta {
 	// Retrieve all pools
 	pools := make(map[common.Address]PoolMeta)
 	for i := 0; ; i++ {
@@ -370,18 +386,21 @@ func (scraper *CurveSimulator) simulateTrades(allPools map[models.ExchangePair]m
 
 				// Prepare trade input (e.g., $100)
 				baseTokenPrice := scraper.priceMap[ep.UnderlyingPair.BaseToken].Price
-				amountInBase := int64(amountIn_USD_constant / baseTokenPrice) // 100
+				amountInBase := amountIn_USD_constant / baseTokenPrice // 100
 
 				decimals := big.NewInt(int64(ep.UnderlyingPair.BaseToken.Decimals)) // e.g. 18
 				exponent := new(big.Int).Exp(big.NewInt(10), decimals, nil)         // e.g. 10^18
-				amountIn := new(big.Int).Mul(big.NewInt(amountInBase), exponent)    // e.g. 10^20
-				amountInAfterDecimalAdjust := new(big.Int).Quo(amountIn, exponent)  // e.g. 10^2
-				amountInAfterDecimalAdjustF64, _ := amountInAfterDecimalAdjust.Float64()
+				exponentFloat := new(big.Float).SetInt(exponent)
+
+				amountIn := new(big.Float).Mul(big.NewFloat(amountInBase), exponentFloat) // e.g. 10^20
+				amountInInt := new(big.Int)
+				amountIn.Int(amountInInt)
+				amountInAfterDecimalAdjust := new(big.Float).Quo(amountIn, exponentFloat) // e.g. 10^2
 				log.Infof("amountIn after adjusting for decimals: %v\n", amountInAfterDecimalAdjust)
 
 				// Run trade simulation
 				var amountOutFloat *big.Float
-				amountOut, err := scraper.simulator.Execute(poolAddr, scraper.restClient, meta.GetUnderlyingCoins, meta.BaseIdx, meta.QuoteIdx, amountIn)
+				amountOut, err := scraper.simulator.Execute(poolAddr, scraper.restClient, meta.GetUnderlyingCoins, meta.BaseIdx, meta.QuoteIdx, amountInInt)
 				if err == nil {
 					amountOutFloat = new(big.Float).SetInt(amountOut)
 					power := ep.UnderlyingPair.QuoteToken.Decimals
@@ -395,9 +414,10 @@ func (scraper *CurveSimulator) simulateTrades(allPools map[models.ExchangePair]m
 					amountOutFloat.Quo(amountOutFloat, divisor)
 					log.Infof("amountOut: %v\n", amountOutFloat)
 					amountOutAfterDecimalAdjustF64, _ := amountOutFloat.Float64()
+					price, _ := new(big.Float).Quo(amountInAfterDecimalAdjust, amountOutFloat).Float64()
 
 					t := models.SimulatedTrade{
-						Price:       amountInAfterDecimalAdjustF64 / amountOutAfterDecimalAdjustF64,
+						Price:       price,
 						Volume:      amountOutAfterDecimalAdjustF64,
 						QuoteToken:  ep.UnderlyingPair.QuoteToken,
 						BaseToken:   ep.UnderlyingPair.BaseToken,
