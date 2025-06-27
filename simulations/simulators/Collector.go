@@ -37,7 +37,7 @@ func Collector(
 			case trade := <-tradesChannelIn:
 
 				// Determine pool and the corresponding identifier in order to assign the tradesBlockMap.
-				poolIdentifier := trade.Exchange.Blockchain + trade.PoolAddress
+				poolIdentifier := trade.QuoteToken.AssetIdentifier() + trade.BaseToken.AssetIdentifier()
 
 				if _, ok := tradesblockMap[poolIdentifier]; !ok {
 					tradesblockMap[poolIdentifier] = models.SimulatedTradesBlock{
