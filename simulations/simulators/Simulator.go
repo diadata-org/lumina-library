@@ -25,6 +25,8 @@ func RunSimulator(
 		NewUniswapSimulatorVersion2(exchangePairs, tradesChannel)
 	case UNISWAP_SIMULATION:
 		NewUniswapSimulator(exchangePairs, tradesChannel)
+	case UNISWAPV4_SIMULATION:
+		NewUniswapV4Simulator(exchangePairs, tradesChannel)
 	case CURVE_SIMULATION:
 		NewCurveSimulator(exchangePairs, tradesChannel)
 	}
