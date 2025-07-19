@@ -40,7 +40,7 @@ type krakenWSResponseData struct {
 }
 
 type krakenScraper struct {
-	wsClient         *ws.Conn
+	wsClient         wsConn
 	tradesChannel    chan models.Trade
 	subscribeChannel chan models.ExchangePair
 	tickerPairMap    map[string]models.Pair

@@ -37,7 +37,7 @@ type coinBaseWSResponse struct {
 }
 
 type coinbaseScraper struct {
-	wsClient         *ws.Conn
+	wsClient         wsConn
 	tradesChannel    chan models.Trade
 	subscribeChannel chan models.ExchangePair
 	tickerPairMap    map[string]models.Pair
