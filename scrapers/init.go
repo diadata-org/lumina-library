@@ -13,6 +13,7 @@ const (
 	GATEIO_EXCHANGE       = "GateIO"
 	KRAKEN_EXCHANGE       = "Kraken"
 	KUCOIN_EXCHANGE       = "KuCoin"
+	OKEX_EXCHANGE         = "OKEx"
 
 	UNISWAPV2_EXCHANGE     = "UniswapV2"
 	UNISWAPV3_EXCHANGE     = "UniswapV3"

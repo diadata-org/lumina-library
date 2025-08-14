@@ -211,6 +211,36 @@ func RunScraper(
 				}
 			}
 		}
+	case OKEX_EXCHANGE:
+		ctx, cancel := context.WithCancel(context.Background())
+		scraper := NewOKExScraper(ctx, pairs, failoverChannel, wg)
+
+		watchdogDelay, err := strconv.Atoi(utils.Getenv("OKEX_WATCHDOG", "300"))
+		if err != nil {
+			log.Errorf("parse OKEX_WATCHDOG: %v.", err)
+		}
+		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
+		lastTradeTime := time.Now()
+
+		for {
+			select {
+			case trade := <-scraper.TradesChannel():
+				lastTradeTime = time.Now()
+				tradesChannel <- trade
+
+			case <-watchdogTicker.C:
+				duration := time.Since(lastTradeTime)
+				if duration > time.Duration(watchdogDelay)*time.Second {
+					err := scraper.Close(cancel)
+					if err != nil {
+						log.Errorf("OKEx - Close(): %v.", err)
+					}
+					log.Warnf("Closed OKEx scraper as duration since last trade is %v.", duration)
+					failoverChannel <- OKEX_EXCHANGE
+					return
+				}
+			}
+		}
 
 	case UNISWAPV2_EXCHANGE:
 		NewUniswapV2Scraper(pools, tradesChannel, wg)
