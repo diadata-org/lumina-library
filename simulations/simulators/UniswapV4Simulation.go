@@ -2,8 +2,10 @@ package simulators
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"math/big"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,7 +62,10 @@ var (
 		"3000":  big.NewInt(60),
 		"10000": big.NewInt(200),
 	}
-	liquidityThresholdV4 = big.NewInt(100000000)
+	liquidityThresholdV4    = big.NewInt(100000000)
+	scraperMode             string
+	blockRangeRecompute     int64
+	historicalDataWritePath string
 )
 
 func init() {
@@ -79,6 +84,14 @@ func init() {
 	if err != nil {
 		log.Errorf(strings.ToUpper(UNISWAPV4_SIMULATION)+"_SIMULATION_UPDATE_SECONDS: %v", err)
 	}
+	scraperMode = utils.Getenv("SCRAPER_MODE", "")
+	blockRangeRecompute, err = strconv.ParseInt(utils.Getenv("BLOCK_RANGE_RECOMPUTE", "30"), 10, 64)
+	if err != nil {
+		log.Error("parse BLOCK_RANGE_RECOMPUTE: ", err)
+		blockRangeRecompute = 3000
+	}
+	historicalDataWritePath = utils.Getenv("HISTORICAL_DATA_WRITE_PATH", "/tmp/uniV4HistoricalTrades.json")
+
 }
 
 func NewUniswapV4Simulator(exchangepairs []models.ExchangePair, tradesChannel chan models.SimulatedTrade) {
@@ -138,22 +151,80 @@ func NewUniswapV4Simulator(exchangepairs []models.ExchangePair, tradesChannel ch
 	if err != nil {
 		log.Fatal("Failed to get exchange pairs: ", err)
 	}
-
 	var lock sync.RWMutex
-	scraper.updatePriceMap(&lock)
-	scraper.getSufficientLiquidityPools(&lock)
 
-	priceTicker := time.NewTicker(time.Duration(priceMapUpdateSeconds) * time.Second)
-	go func() {
-		for range priceTicker.C {
-			scraper.updatePriceMap(&lock)
-			scraper.getSufficientLiquidityPools(&lock)
+	if scraperMode != "history" {
+		scraper.updatePriceMap(&lock)
+		scraper.getSufficientLiquidityPools(&lock, big.NewInt(0))
+
+		priceTicker := time.NewTicker(time.Duration(priceMapUpdateSeconds) * time.Second)
+		go func() {
+			for range priceTicker.C {
+				scraper.updatePriceMap(&lock)
+				scraper.getSufficientLiquidityPools(&lock, big.NewInt(0))
+			}
+		}()
+	}
+
+	if scraperMode == "history" {
+		log.Infof("scraping in %s mode", scraperMode)
+
+		startblock, err := strconv.ParseInt(utils.Getenv("UNIV4_SIMULATION_STARTBLOCK", "23224056"), 10, 64)
+		if err != nil {
+			log.Fatal("parse UNIV4_SIMULATION_STARTBLOCK: ", err)
 		}
-	}()
+		endblock, err := strconv.ParseInt(utils.Getenv("UNIV4_SIMULATION_ENDBLOCK", "23224256"), 10, 64)
+		if err != nil {
+			log.Fatal("parse UNIV4_SIMULATION_ENDBLOCK: ", err)
+		}
+		if endblock == 0 {
+			latestBlock, _ := scraper.restClient.BlockByNumber(context.Background(), big.NewInt(10))
+			endblock = int64(latestBlock.NumberU64())
+		}
+
+		var allTrades []models.SimulatedTrade
+		go func() {
+			for t := range tradesChannel {
+				allTrades = append(allTrades, t)
+			}
+		}()
+
+		// TO DO: Can we remove the price map for history mode?
+		scraper.updatePriceMap(&lock)
+		scraper.getSufficientLiquidityPools(&lock, big.NewInt(startblock))
+
+		for startblock < endblock {
+			scraper.simulateTrades(tradesChannel, big.NewInt(startblock))
+			startblock++
+
+			// recompute liquidity every n blocks
+			if startblock%blockRangeRecompute == 0 {
+				log.Info("recompute prices and liquidity...")
+				scraper.updatePriceMap(&lock)
+				scraper.getSufficientLiquidityPools(&lock, big.NewInt(startblock))
+			}
+		}
+
+		// Create (or overwrite) a file
+		file, err := os.Create(historicalDataWritePath)
+		if err != nil {
+			panic(err)
+		}
+		defer file.Close()
+		// Encode the struct slice into JSON and write it to the file
+		encoder := json.NewEncoder(file)
+		encoder.SetIndent("", "  ") // pretty print with indentation
+		if err := encoder.Encode(allTrades); err != nil {
+			panic(err)
+		}
+		log.Info("allTrades written.")
+		return
+
+	}
 
 	ticker := time.NewTicker(30 * time.Second)
 	for range ticker.C {
-		scraper.simulateTrades(tradesChannel)
+		scraper.simulateTrades(tradesChannel, big.NewInt(0))
 	}
 }
 
@@ -219,11 +290,11 @@ func (scraper *UniswapV4Simulator) updatePriceMap(lock *sync.RWMutex) {
 
 // getSufficientLiquidityPools fetches all pools given through the POOLS env var which
 // fulfill given liquidity criteria.
-func (scraper *UniswapV4Simulator) getSufficientLiquidityPools(lock *sync.RWMutex) {
+func (scraper *UniswapV4Simulator) getSufficientLiquidityPools(lock *sync.RWMutex, blockNumber *big.Int) {
 
 	scraper.allPools = make(map[models.ExchangePair]map[common.Hash]PoolState)
 	for _, ep := range scraper.exchangepairs {
-		pools := scraper.getPoolsBasedOnExchangePair(ep)
+		pools := scraper.getPoolsBasedOnExchangePair(ep, blockNumber)
 		if scraper.allPools[ep] == nil {
 			scraper.allPools[ep] = make(map[common.Hash]PoolState)
 		}
@@ -236,7 +307,7 @@ func (scraper *UniswapV4Simulator) getSufficientLiquidityPools(lock *sync.RWMute
 }
 
 // getPoolsBasedOnExchangePair returns all UniV4 pools for a given asset pair in a @models.Exchangepair.
-func (scraper *UniswapV4Simulator) getPoolsBasedOnExchangePair(ep models.ExchangePair) map[common.Hash]PoolState {
+func (scraper *UniswapV4Simulator) getPoolsBasedOnExchangePair(ep models.ExchangePair, blockNumber *big.Int) map[common.Hash]PoolState {
 	pools := make(map[common.Hash]PoolState)
 
 	for feeStr, tickSpacing := range feeToTickSpacing {
@@ -248,7 +319,11 @@ func (scraper *UniswapV4Simulator) getPoolsBasedOnExchangePair(ep models.Exchang
 			if liquidity.Cmp(liquidityThresholdV4) >= 0 {
 
 				// Check if potential simulation is valid
-				_, err := scraper.quoter.QuoteExactInputSingle(&bind.CallOpts{Context: context.Background()}, params)
+				callOpts := &bind.CallOpts{Context: context.Background()}
+				if blockNumber.Cmp(big.NewInt(0)) != 0 {
+					callOpts.BlockNumber = blockNumber
+				}
+				_, err := scraper.quoter.QuoteExactInputSingle(callOpts, params)
 				if err != nil {
 					log.Warnf("Invalid Pool - QuoteExactInputSingle failed for pool %s - %s - %s (%s): %v", ep.UnderlyingPair.QuoteToken.Symbol, ep.UnderlyingPair.BaseToken.Symbol, feeStr, poolId.Hex(), err)
 					continue
@@ -350,7 +425,7 @@ func (scraper *UniswapV4Simulator) getPoolState(ep models.ExchangePair, feeStr s
 }
 
 // simulateTrades simulates trades in all filtered pools.
-func (scraper *UniswapV4Simulator) simulateTrades(tradesChannel chan models.SimulatedTrade) {
+func (scraper *UniswapV4Simulator) simulateTrades(tradesChannel chan models.SimulatedTrade, blockNumber *big.Int) {
 	var wg sync.WaitGroup
 	// Sample allPools : {WBTC/USDC: {poolId: {params, liquidity, feeStr, tickSpacing}}}
 	for ep, pools := range scraper.allPools {
@@ -366,7 +441,7 @@ func (scraper *UniswapV4Simulator) simulateTrades(tradesChannel chan models.Simu
 				defer wg.Done()
 				amountInInt, amountIn := scraper.getAmountIn(ep)
 
-				amountOut, err := scraper.simulator.Execute(scraper.quoter, params)
+				amountOut, err := scraper.simulator.Execute(scraper.quoter, params, blockNumber)
 				if err != nil {
 					log.Warnf("QuoteExactInputSingle failed: %v", err)
 					return
@@ -374,9 +449,13 @@ func (scraper *UniswapV4Simulator) simulateTrades(tradesChannel chan models.Simu
 				// log.Infof("amountOut for fee %s: %v", feeStr, amountOut.AmountOut.String())
 				// log.Infof("params for fee %s: %v -- %v -- %s", feeStr, params.ZeroForOne, params.PoolKey, params.ExactAmount.String())
 
-				poolState, err := scraper.poolState.GetSlot0(&bind.CallOpts{Context: context.Background()}, poolId)
+				callOptsPoolState := &bind.CallOpts{Context: context.Background()}
+				if blockNumber.Cmp(big.NewInt(0)) != 0 {
+					callOptsPoolState.BlockNumber = blockNumber
+				}
+				poolState, err := scraper.poolState.GetSlot0(callOptsPoolState, poolId)
 				if err != nil || poolState.SqrtPriceX96.Cmp(big.NewInt(0)) == 0 {
-					log.Fatalf("Error getting sqrtPriceX96: %v", err)
+					log.Errorf("Error getting sqrtPriceX96: %v", err)
 					return
 				}
 
