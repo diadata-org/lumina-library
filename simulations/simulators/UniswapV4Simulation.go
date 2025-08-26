@@ -480,6 +480,17 @@ func (scraper *UniswapV4Simulator) simulateTrades(tradesChannel chan models.Simu
 					Time:        time.Now(),
 					Exchange:    Exchanges[UNISWAPV4_SIMULATION],
 				}
+
+				// Determine timestamp for historical blocks
+				if blockNumber.Cmp(big.NewInt(0)) != 0 {
+					block, err := scraper.restClient.BlockByNumber(context.Background(), blockNumber)
+					if err != nil {
+						log.Error("BlockByNumber: ", err)
+					}
+
+					trade.Time = time.Unix(int64(block.Time()), 0)
+				}
+
 				tradesChannel <- trade
 				fee, _ := strconv.ParseFloat(feeStr, 64)
 				log.Infof("Got trade in pool %v%%: %s-%s -- %v -- %v", fee/float64(10000), quoteToken.Symbol, baseToken.Symbol, trade.Price, trade.Volume)
