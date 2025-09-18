@@ -65,6 +65,24 @@ func Processor(
 					len(tb.Trades),
 					atomicFilterValue,
 				)
+			case string(FILTER_EMA):
+				atomicFilterValue, _ = filters.EMA(tb.Trades, basePrice, 10)
+
+				log.Infof(
+					"Processor - Atomic filter value for market %s with %v trades: %v.",
+					tb.Trades[0].Exchange.Name+":"+tb.Trades[0].QuoteToken.Symbol+"-"+tb.Trades[0].BaseToken.Symbol,
+					len(tb.Trades),
+					atomicFilterValue,
+				)
+			case string(FILTER_VWAP):
+				atomicFilterValue, _ = filters.VWAP(tb.Trades, basePrice)
+
+				log.Infof(
+					"Processor - Atomic filter value for market %s with %v trades: %v.",
+					tb.Trades[0].Exchange.Name+":"+tb.Trades[0].QuoteToken.Symbol+"-"+tb.Trades[0].BaseToken.Symbol,
+					len(tb.Trades),
+					atomicFilterValue,
+				)
 			}
 
 			// Identify @Pair and @SourceType from atomic tradesblock.
