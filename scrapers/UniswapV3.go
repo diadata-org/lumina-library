@@ -101,9 +101,9 @@ func (scraper *UniswapV3Scraper) mainLoop(ctx context.Context, pools []models.Po
 
 		// Set up watchdog.
 		envVar := strings.ToUpper(scraper.exchange.Name) + "_WATCHDOG_" + pool.Address
-		watchdogDelay, err := strconv.ParseInt(utils.Getenv(envVar, "60"), 10, 64)
+		watchdogDelay, err := strconv.ParseInt(utils.Getenv(envVar, "600"), 10, 64)
 		if err != nil {
-			log.Errorf("CoinBase - Parse coinbaseWatchdogDelay: %v.", err)
+			log.Errorf("UniswapV3 - Parse coinbaseWatchdogDelay: %v.", err)
 		}
 		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
 		go watchdogPool(ctx, scraper.exchange.Name, common.HexToAddress(pool.Address), watchdogTicker, scraper.lastTradeTimeMap, watchdogDelay, scraper.subscribeChannel, lock)

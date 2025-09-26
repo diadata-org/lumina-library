@@ -74,11 +74,11 @@ func NewCurveScraper(ctx context.Context, exchangeName string, blockchain string
 		log.Error("parse waitTime: ", err)
 	}
 
-	scraper.restClient, err = ethclient.Dial(utils.Getenv(CURVE_EXCHANGE+"_URI_REST", restDialCurve))
+	scraper.restClient, err = ethclient.Dial(utils.Getenv(strings.ToUpper(CURVE_EXCHANGE)+"_URI_REST", restDialCurve))
 	if err != nil {
 		log.Error("Curve - init rest client: ", err)
 	}
-	scraper.wsClient, err = ethclient.Dial(utils.Getenv(CURVE_EXCHANGE+"_URI_WS", wsDialCurve))
+	scraper.wsClient, err = ethclient.Dial(utils.Getenv(strings.ToUpper(CURVE_EXCHANGE)+"_URI_WS", wsDialCurve))
 	if err != nil {
 		log.Error("Curve - init ws client: ", err)
 	}
@@ -107,7 +107,7 @@ func (scraper *CurveScraper) mainLoop(ctx context.Context, pools []models.Pool, 
 		lock.Unlock()
 
 		envVar := strings.ToUpper(scraper.exchange.Name) + "_WATCHDOG_" + pool.Address
-		watchdogDelay, err := strconv.ParseInt(utils.Getenv(envVar, "60"), 10, 64)
+		watchdogDelay, err := strconv.ParseInt(utils.Getenv(envVar, "600"), 10, 64)
 		if err != nil {
 			log.Errorf("Curve - Parse curveWatchdogDelay: %v.", err)
 		}
@@ -236,6 +236,24 @@ func (scraper *CurveScraper) watchSwaps(ctx context.Context, address common.Addr
 		return
 	}
 
+	var (
+		subErr, factorySubErr, twoSubErr, underlyingSubErr <-chan error
+	)
+
+	// first check if the subscription is nil
+	if feeds.Sub != nil {
+		subErr = feeds.Sub.Err()
+	}
+	if feeds.factorySub != nil {
+		factorySubErr = feeds.factorySub.Err()
+	}
+	if feeds.twoSub != nil {
+		twoSubErr = feeds.twoSub.Err()
+	}
+	if feeds.underlyingSub != nil {
+		underlyingSubErr = feeds.underlyingSub.Err()
+	}
+
 	go func() {
 		defer func() {
 			if feeds.Sub != nil {
@@ -293,6 +311,9 @@ func (scraper *CurveScraper) watchSwaps(ctx context.Context, address common.Addr
 						Amount1:   boughtAmt,
 					}
 					scraper.processSwap(normalizedSwap, pairs, address, lock, tradesChannel)
+				} else {
+					scraper.subscribeChannel <- address
+					return
 				}
 			case rawSwapCurvefiFactory, ok := <-feeds.factorySink:
 				if ok {
@@ -334,6 +355,9 @@ func (scraper *CurveScraper) watchSwaps(ctx context.Context, address common.Addr
 						Amount1:   boughtAmt,
 					}
 					scraper.processSwap(normalizedSwap, pairs, address, lock, tradesChannel)
+				} else {
+					scraper.subscribeChannel <- address
+					return
 				}
 			case rawSwapTwoCrypto, ok := <-feeds.twoSink:
 				if ok {
@@ -375,6 +399,9 @@ func (scraper *CurveScraper) watchSwaps(ctx context.Context, address common.Addr
 						Amount1:   boughtAmt,
 					}
 					scraper.processSwap(normalizedSwap, pairs, address, lock, tradesChannel)
+				} else {
+					scraper.subscribeChannel <- address
+					return
 				}
 			case rawSwapUnderlying, ok := <-feeds.underlyingSink:
 				if ok {
@@ -416,20 +443,23 @@ func (scraper *CurveScraper) watchSwaps(ctx context.Context, address common.Addr
 						Amount1:   boughtAmt,
 					}
 					scraper.processSwap(normalizedSwap, pairs, address, lock, tradesChannel)
+				} else {
+					scraper.subscribeChannel <- address
+					return
 				}
-			case err := <-feeds.Sub.Err():
+			case err := <-subErr:
 				log.Errorf("Subscription error for pool %s: %v", address.Hex(), err)
 				scraper.subscribeChannel <- address
 				return
-			case err := <-feeds.factorySub.Err():
+			case err := <-factorySubErr:
 				log.Errorf("Subscription error for pool %s: %v", address.Hex(), err)
 				scraper.subscribeChannel <- address
 				return
-			case err := <-feeds.twoSub.Err():
+			case err := <-twoSubErr:
 				log.Errorf("Subscription error for pool %s: %v", address.Hex(), err)
 				scraper.subscribeChannel <- address
 				return
-			case err := <-feeds.underlyingSub.Err():
+			case err := <-underlyingSubErr:
 				log.Errorf("Subscription error for pool %s: %v", address.Hex(), err)
 				scraper.subscribeChannel <- address
 				return
@@ -525,62 +555,62 @@ type curveFeeds struct {
 func (scraper *CurveScraper) GetSwapsChannel(address common.Address) (*curveFeeds, error) {
 	filterer, err := curvepool.NewCurvepoolFilterer(address, scraper.wsClient)
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("curvepool filterer: %v", err)
 	}
 
 	curvefiFactoryFilterer, err := curvefifactory.NewCurvefifactoryFilterer(address, scraper.wsClient)
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("curvefifactory filterer: %v", err)
 	}
 
 	filtererTwoCrypto, err := curvefitwocryptooptimized.NewCurvefitwocryptooptimizedFilterer(address, scraper.wsClient)
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("curvefitwocryptooptimized filterer: %v", err)
 	}
 
-	sink := make(chan *curvepool.CurvepoolTokenExchange)
-	sinkCurvefiFactory := make(chan *curvefifactory.CurvefifactoryTokenExchange)
-	sinkTwoCrypto := make(chan *curvefitwocryptooptimized.CurvefitwocryptooptimizedTokenExchange)
-	sinkUnderlying := make(chan *curvepool.CurvepoolTokenExchangeUnderlying)
-
-	header, err := scraper.restClient.HeaderByNumber(context.Background(), nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	startblock := header.Number.Uint64() - uint64(20)
-
-	feeds := &curveFeeds{
-		Sink:           sink,
-		factorySink:    sinkCurvefiFactory,
-		twoSink:        sinkTwoCrypto,
-		underlyingSink: sinkUnderlying,
+	sinks := &curveFeeds{
+		Sink:           make(chan *curvepool.CurvepoolTokenExchange),
+		factorySink:    make(chan *curvefifactory.CurvefifactoryTokenExchange),
+		twoSink:        make(chan *curvefitwocryptooptimized.CurvefitwocryptooptimizedTokenExchange),
+		underlyingSink: make(chan *curvepool.CurvepoolTokenExchangeUnderlying),
 	}
 
-	sub, err := filterer.WatchTokenExchange(&bind.WatchOpts{Start: &startblock}, sink, nil)
-	if err != nil {
-		log.Error("error in get swaps channel: ", err)
+	var start *uint64
+	blocksToBackfill := uint64(20)
+	if hdr, err := scraper.restClient.HeaderByNumber(context.Background(), nil); err != nil {
+		log.Warnf("Curve - header fetch failed (%v), subscribe from latest (no backfill).", err)
+	} else if n := hdr.Number.Uint64(); n > blocksToBackfill {
+		sb := n - blocksToBackfill
+		start = &sb
 	}
-	feeds.Sub = sub
 
-	curvefiFactorySub, err := curvefiFactoryFilterer.WatchTokenExchange(&bind.WatchOpts{Start: &startblock}, sinkCurvefiFactory, nil)
-	if err != nil {
-		log.Error("error in get swaps channel: ", err)
+	okCount := 0
+
+	if sub, err := filterer.WatchTokenExchange(&bind.WatchOpts{Start: start}, sinks.Sink, nil); err == nil {
+		sinks.Sub = sub
+		okCount++
 	}
-	feeds.factorySub = curvefiFactorySub
 
-	subTwoCrypto, err := filtererTwoCrypto.WatchTokenExchange(&bind.WatchOpts{Start: &startblock}, sinkTwoCrypto, nil)
-	if err != nil {
-		log.Error("WatchTokenExchange for twoCrypto: ", err)
+	if curvefiFactorySub, err := curvefiFactoryFilterer.WatchTokenExchange(&bind.WatchOpts{Start: start}, sinks.factorySink, nil); err == nil {
+		sinks.factorySub = curvefiFactorySub
+		okCount++
 	}
-	feeds.twoSub = subTwoCrypto
 
-	subUnderlying, err := filterer.WatchTokenExchangeUnderlying(&bind.WatchOpts{Start: &startblock}, sinkUnderlying, nil)
-	if err != nil {
-		log.Error("WatchTokenExchangeUnderlying: ", err)
+	if subTwoCrypto, err := filtererTwoCrypto.WatchTokenExchange(&bind.WatchOpts{Start: start}, sinks.twoSink, nil); err == nil {
+		sinks.twoSub = subTwoCrypto
+		okCount++
 	}
-	feeds.underlyingSub = subUnderlying
 
-	return feeds, nil
+	if subUnderlying, err := filterer.WatchTokenExchangeUnderlying(&bind.WatchOpts{Start: start}, sinks.underlyingSink, nil); err == nil {
+		sinks.underlyingSub = subUnderlying
+		okCount++
+	}
+
+	if okCount == 0 {
+		return nil, fmt.Errorf("failed to establish any subscriptions")
+	}
+
+	return sinks, nil
 }
 
 // try to get coin address from pool contract
