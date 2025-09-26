@@ -60,7 +60,8 @@ var (
 		"3000":  big.NewInt(60),
 		"10000": big.NewInt(200),
 	}
-	liquidityThresholdV4 = big.NewInt(10000000000000000)
+	liquidityThresholdV4Int = int64(10000000000000000)
+	liquidityThresholdV4    = big.NewInt(liquidityThresholdV4Int)
 )
 
 func init() {
@@ -104,7 +105,7 @@ func NewUniswapV4Simulator(exchangepairs []models.ExchangePair, tradesChannel ch
 	}
 	defer scraper.luminaClient.Close()
 
-	liquidityThresholdV4Int, err := strconv.ParseInt(utils.Getenv(strings.ToUpper(UNISWAPV4_SIMULATION)+"_LIQUIDITY_THRESHOLD", "10000000000000000"), 10, 64)
+	liquidityThresholdV4Int, err := strconv.ParseInt(utils.Getenv(strings.ToUpper(UNISWAPV4_SIMULATION)+"_LIQUIDITY_THRESHOLD", strconv.Itoa(int(liquidityThresholdV4Int))), 10, 64)
 	if err != nil {
 		log.Errorf(strings.ToUpper(UNISWAPV4_SIMULATION)+"_LIQUIDITY_THRESHOLD: %v", err)
 	} else {
