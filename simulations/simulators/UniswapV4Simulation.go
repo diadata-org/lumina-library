@@ -60,7 +60,7 @@ var (
 		"3000":  big.NewInt(60),
 		"10000": big.NewInt(200),
 	}
-	liquidityThresholdV4 = big.NewInt(100000000)
+	liquidityThresholdV4 = big.NewInt(10000000000000000)
 )
 
 func init() {
@@ -104,7 +104,7 @@ func NewUniswapV4Simulator(exchangepairs []models.ExchangePair, tradesChannel ch
 	}
 	defer scraper.luminaClient.Close()
 
-	liquidityThresholdV4Int, err := strconv.ParseInt(utils.Getenv(strings.ToUpper(UNISWAPV4_SIMULATION)+"_LIQUIDITY_THRESHOLD", "1000000000"), 10, 64)
+	liquidityThresholdV4Int, err := strconv.ParseInt(utils.Getenv(strings.ToUpper(UNISWAPV4_SIMULATION)+"_LIQUIDITY_THRESHOLD", "10000000000000000"), 10, 64)
 	if err != nil {
 		log.Errorf(strings.ToUpper(UNISWAPV4_SIMULATION)+"_LIQUIDITY_THRESHOLD: %v", err)
 	} else {
@@ -376,7 +376,7 @@ func (scraper *UniswapV4Simulator) simulateTrades(tradesChannel chan models.Simu
 
 				poolState, err := scraper.poolState.GetSlot0(&bind.CallOpts{Context: context.Background()}, poolId)
 				if err != nil || poolState.SqrtPriceX96.Cmp(big.NewInt(0)) == 0 {
-					log.Fatalf("Error getting sqrtPriceX96: %v", err)
+					log.Errorf("Error getting sqrtPriceX96: %v", err)
 					return
 				}
 
