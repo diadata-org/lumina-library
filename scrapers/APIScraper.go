@@ -45,6 +45,12 @@ func RunScraper(
 			select {
 			case <-ctx.Done():
 				log.Infof("Binance - context done, closing scraper.")
+				err := scraper.Close(cancel)
+				if err != nil {
+					log.Errorf("Binance - Close(): %v.", err)
+				}
+				failoverChannel <- BINANCE_EXCHANGE
+				return
 
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
@@ -79,6 +85,12 @@ func RunScraper(
 			select {
 			case <-ctx.Done():
 				log.Infof("Coinbase - context done, closing scraper.")
+				err := scraper.Close(cancel)
+				if err != nil {
+					log.Errorf("CoinBase - Close(): %v.", err)
+				}
+				failoverChannel <- COINBASE_EXCHANGE
+				return
 
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
@@ -112,6 +124,12 @@ func RunScraper(
 			select {
 			case <-ctx.Done():
 				log.Infof("Bybit - context done, closing scraper.")
+				err := scraper.Close(cancel)
+				if err != nil {
+					log.Errorf("ByBit - Close(): %v.", err)
+				}
+				failoverChannel <- BYBIT_EXCHANGE
+				return
 
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
@@ -146,6 +164,12 @@ func RunScraper(
 			select {
 			case <-ctx.Done():
 				log.Infof("Crypto.com - context done, closing scraper.")
+				err := scraper.Close(cancel)
+				if err != nil {
+					log.Errorf("Crypto.com - Close(): %v.", err)
+				}
+				failoverChannel <- CRYPTODOTCOM_EXCHANGE
+				return
 
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
@@ -179,6 +203,12 @@ func RunScraper(
 			select {
 			case <-ctx.Done():
 				log.Infof("GateIO - context done, closing scraper.")
+				err := scraper.Close(cancel)
+				if err != nil {
+					log.Errorf("GateIO - Close(): %v.", err)
+				}
+				failoverChannel <- GATEIO_EXCHANGE
+				return
 
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
@@ -212,6 +242,12 @@ func RunScraper(
 			select {
 			case <-ctx.Done():
 				log.Infof("Kraken - context done, closing scraper.")
+				err := scraper.Close(cancel)
+				if err != nil {
+					log.Errorf("Kraken - Close(): %v.", err)
+				}
+				failoverChannel <- KRAKEN_EXCHANGE
+				return
 
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
@@ -245,6 +281,12 @@ func RunScraper(
 			select {
 			case <-ctx.Done():
 				log.Infof("KuCoin - context done, closing scraper.")
+				err := scraper.Close(cancel)
+				if err != nil {
+					log.Errorf("KuCoin - Close(): %v.", err)
+				}
+				failoverChannel <- KUCOIN_EXCHANGE
+				return
 
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
@@ -277,6 +319,12 @@ func RunScraper(
 			select {
 			case <-ctx.Done():
 				log.Infof("MEXC - context done, closing scraper.")
+				err := scraper.Close(cancel)
+				if err != nil {
+					log.Errorf("MEXC - Close(): %v.", err)
+				}
+				failoverChannel <- MEXC_EXCHANGE
+				return
 
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
@@ -311,6 +359,12 @@ func RunScraper(
 			select {
 			case <-ctx.Done():
 				log.Infof("OKEx - context done, closing scraper.")
+				err := scraper.Close(cancel)
+				if err != nil {
+					log.Errorf("OKEx - Close(): %v.", err)
+				}
+				failoverChannel <- OKEX_EXCHANGE
+				return
 
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()

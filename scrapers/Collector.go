@@ -61,13 +61,14 @@ func pairEqual(a, b []models.ExchangePair) bool {
 
 // Collector starts scrapers for all exchanges given by @exchangePairs.
 func Collector(
+	ctx context.Context,
 	exchangePairs []models.ExchangePair,
 	pools []models.Pool,
 	tradesblockChannel chan map[string]models.TradesBlock,
 	triggerChannel chan time.Time,
 	failoverChannel chan string,
 	wg *sync.WaitGroup,
-) {
+) map[string]context.CancelFunc {
 	collectorOnce.Do(func() {
 		collectorUpdateCh = make(chan []models.ExchangePair, 1)
 	})
@@ -107,6 +108,14 @@ func Collector(
 	go func() {
 		for {
 			select {
+			case <-ctx.Done():
+				for _, v := range cancelMap {
+					v()
+				}
+				for k, _ := range cancelMap {
+					delete(cancelMap, k)
+				}
+				return
 			case trade := <-tradesChannelIn:
 
 				// Determine exchangepair and the corresponding identifier in order to assign the tradesBlockMap.
@@ -202,4 +211,5 @@ func Collector(
 	}()
 
 	defer wg.Wait()
+	return cancelMap
 }
