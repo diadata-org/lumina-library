@@ -43,6 +43,9 @@ func RunScraper(
 
 		for {
 			select {
+			case <-ctx.Done():
+				log.Infof("Binance - context done, closing scraper.")
+
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
 				tradesChannel <- trade
@@ -74,6 +77,9 @@ func RunScraper(
 
 		for {
 			select {
+			case <-ctx.Done():
+				log.Infof("Coinbase - context done, closing scraper.")
+
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
 				tradesChannel <- trade
@@ -104,6 +110,9 @@ func RunScraper(
 
 		for {
 			select {
+			case <-ctx.Done():
+				log.Infof("Bybit - context done, closing scraper.")
+
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
 				tradesChannel <- trade
@@ -135,6 +144,9 @@ func RunScraper(
 
 		for {
 			select {
+			case <-ctx.Done():
+				log.Infof("Crypto.com - context done, closing scraper.")
+
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
 				tradesChannel <- trade
@@ -165,6 +177,9 @@ func RunScraper(
 
 		for {
 			select {
+			case <-ctx.Done():
+				log.Infof("GateIO - context done, closing scraper.")
+
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
 				tradesChannel <- trade
@@ -195,6 +210,9 @@ func RunScraper(
 
 		for {
 			select {
+			case <-ctx.Done():
+				log.Infof("Kraken - context done, closing scraper.")
+
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
 				tradesChannel <- trade
@@ -225,6 +243,9 @@ func RunScraper(
 
 		for {
 			select {
+			case <-ctx.Done():
+				log.Infof("KuCoin - context done, closing scraper.")
+
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
 				tradesChannel <- trade
@@ -254,6 +275,9 @@ func RunScraper(
 
 		for {
 			select {
+			case <-ctx.Done():
+				log.Infof("MEXC - context done, closing scraper.")
+
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
 				tradesChannel <- trade
@@ -285,6 +309,9 @@ func RunScraper(
 
 		for {
 			select {
+			case <-ctx.Done():
+				log.Infof("OKEx - context done, closing scraper.")
+
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
 				tradesChannel <- trade

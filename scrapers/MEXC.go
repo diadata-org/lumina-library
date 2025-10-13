@@ -40,7 +40,7 @@ var (
 )
 
 func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, failoverChannel chan string, wg *sync.WaitGroup) Scraper {
-	defer wg.Done()
+	// defer wg.Done()
 	log.Info("MEXC - Started scraper.")
 
 	scraper := MEXCScraper{
@@ -61,6 +61,8 @@ func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, failoverCh
 		log.Errorf("MEXC - newConn failed: %v.", err)
 		return &scraper
 	}
+
+	log.Infof("MEXC - successed to open new connection.")
 
 	go func() {
 		pingMsg := map[string]string{"method": "PING"}
@@ -86,6 +88,8 @@ func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, failoverCh
 			}
 		}
 	}()
+
+	log.Infof("MEXC - Subscribing to pairs: %v.", pairs)
 
 	// Subscribe to pairs and initialize MEXCLastTradeTimeMap.
 	for _, pair := range pairs {
@@ -232,7 +236,7 @@ func (scraper *MEXCScraper) handleWSResponse(message *mexcproto.PublicAggreDeals
 		trade.QuoteToken = scraper.tickerPairMap[pair].QuoteToken
 		trade.BaseToken = scraper.tickerPairMap[pair].BaseToken
 
-		log.Tracef("MEXC - got trade: %s -- %v -- %v -- %s -- %v.", trade.QuoteToken.Symbol+"-"+trade.BaseToken.Symbol, trade.Price, trade.Volume, trade.ForeignTradeID, trade.Time)
+		log.Infof("MEXC - got trade: %s -- %v -- %v -- %s -- %v.", trade.QuoteToken.Symbol+"-"+trade.BaseToken.Symbol, trade.Price, trade.Volume, trade.ForeignTradeID, trade.Time)
 		scraper.mu.Lock()
 		scraper.lastTradeTimeMap[trade.QuoteToken.Symbol+"-"+trade.BaseToken.Symbol] = trade.Time
 		scraper.mu.Unlock()
@@ -266,7 +270,7 @@ func (s *MEXCScraper) resubscribe(ctx context.Context, failoverChannel chan stri
 func (s *MEXCScraper) subscribe(pair models.ExchangePair, subscribe bool, failoverChannel chan string) error {
 	foreignName := strings.ReplaceAll(pair.ForeignName, "-", "")
 	topic := "spot@public.aggre.deals.v3.api.pb@100ms@" + foreignName
-
+	log.Infof("MEXC - Subscribing to %s", topic)
 	subscriptionMessage := map[string]interface{}{
 		"method": "UNSUBSCRIPTION",
 		"params": []string{topic},
