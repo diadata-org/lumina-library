@@ -15,6 +15,7 @@ type ExchangePair struct {
 	ForeignName    string `json:"ForeignName"`
 	Exchange       string `json:"Exchange"`
 	UnderlyingPair Pair   `json:"UnderlyingPair"`
+	WatchDogDelay  int    `json:"WatchDogDelay"`
 }
 
 // Pair is a pair of dia assets.
@@ -77,6 +78,60 @@ func ExchangePairsFromEnv(
 		}
 	}
 	return
+}
+
+func ExchangePairsFromPairs(
+	epMap map[string][]string,
+	pairTickerSeparator string,
+	configPath string,
+	watchdog map[string]int,
+) (exchangePairs []ExchangePair) {
+	for exchange, symbolsList := range epMap {
+		symbolIdentificationMap, err := GetSymbolIdentificationMap(exchange, configPath)
+		if err != nil {
+			log.Fatal("GetSymbolIdentificationMap: ", err)
+		}
+		for _, pairSymbol := range symbolsList {
+			parts := strings.Split(pairSymbol, pairTickerSeparator)
+			if len(parts) < 2 {
+				log.Warnf("Invalid pair format: %s", pairSymbol)
+				continue
+			}
+			quote := strings.TrimSpace(parts[0])
+			base := strings.TrimSpace(parts[1])
+
+			var ep ExchangePair
+			ep.Exchange = exchange
+			ep.ForeignName = pairSymbol
+			ep.Symbol = quote
+
+			qID := ExchangeSymbolIdentifier(quote, exchange)
+			bID := ExchangeSymbolIdentifier(base, exchange)
+
+			qAsset, okQ := symbolIdentificationMap[qID]
+
+			if !okQ {
+				qAsset = Asset{Symbol: quote}
+				log.Warnf("[%s] missing quote asset mapping for %s", exchange, quote)
+			}
+
+			bAsset, okB := symbolIdentificationMap[bID]
+			if !okB {
+				bAsset = Asset{Symbol: base}
+				log.Warnf("[%s] missing base asset mapping for %s", exchange, base)
+			}
+
+			ep.UnderlyingPair.QuoteToken = qAsset
+			ep.UnderlyingPair.BaseToken = bAsset
+			if watchdog != nil {
+				if wd, ok := watchdog[exchange+":"+pairSymbol]; ok {
+					ep.WatchDogDelay = wd
+				}
+			}
+			exchangePairs = append(exchangePairs, ep)
+		}
+	}
+	return exchangePairs
 }
 
 // MakeExchangepairMap returns a map in which exchangepairs are grouped by exchange string key.

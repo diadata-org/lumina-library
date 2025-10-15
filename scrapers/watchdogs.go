@@ -23,6 +23,7 @@ func watchdog(
 	lock *sync.RWMutex,
 ) {
 	log.Infof("%s - start watching %s with watchdog %v.", pair.Exchange, pair.ForeignName, watchdogDelay)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
@@ -30,12 +31,23 @@ func watchdog(
 
 			// Make read lock for lastTradeTimeMap.
 			lock.RLock()
-			duration := time.Since(lastTradeTimeMap[pair.ForeignName])
-			log.Debugf("%s - duration for %s: %v. Threshold: %v.", pair.Exchange, pair.ForeignName, duration, watchdogDelay)
+			lastTradeTime, ok := lastTradeTimeMap[pair.ForeignName]
 			lock.RUnlock()
+			if !ok || lastTradeTime.IsZero() {
+				log.Errorf("%s - lastTradeTimeMap[%s] not found.", pair.Exchange, pair.ForeignName)
+				continue
+			}
+			duration := time.Since(lastTradeTime)
+			log.Debugf("%s - duration for %s: %v. Threshold: %v.", pair.Exchange, pair.ForeignName, duration, watchdogDelay)
 			if duration > time.Duration(watchdogDelay)*time.Second {
 				log.Errorf("%s - watchdogTicker failover for %s.", pair.Exchange, pair.ForeignName)
-				subscribeChannel <- pair
+				select {
+				case <-ctx.Done():
+					log.Debugf("%s - watchdog exit (context cancelled) for pair %s.", pair.Exchange, pair.ForeignName)
+					return
+				case subscribeChannel <- pair:
+				}
+				// subscribeChannel <- pair
 			}
 		case <-ctx.Done():
 			log.Debugf("%s - close watchdog for pair %s.", pair.Exchange, pair.ForeignName)

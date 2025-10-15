@@ -1,6 +1,7 @@
 package processor
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -15,6 +16,8 @@ import (
 // 1. Aggregate trades for each (atomic) block.
 // 2. Aggregate filter values obtained in step 1.
 func Processor(
+	ctx context.Context,
+	cancel context.CancelFunc,
 	exchangePairs []models.ExchangePair,
 	pools []models.Pool,
 	tradesblockChannel chan map[string]models.TradesBlock,
@@ -26,7 +29,7 @@ func Processor(
 
 	log.Info("Processor - Start......")
 	// Collector starts collecting trades in the background and sends atomic tradesblocks to @tradesblockChannel.
-	go scrapers.Collector(exchangePairs, pools, tradesblockChannel, triggerChannel, failoverChannel, wg)
+	go scrapers.Collector(ctx, cancel, exchangePairs, pools, tradesblockChannel, triggerChannel, failoverChannel, wg)
 
 	// As soon as the trigger channel receives input a processing step is initiated.
 	for tradesblocks := range tradesblockChannel {

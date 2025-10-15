@@ -8,7 +8,6 @@ import (
 	"time"
 
 	models "github.com/diadata-org/lumina-library/models"
-	"github.com/diadata-org/lumina-library/utils"
 	ws "github.com/gorilla/websocket"
 )
 
@@ -86,11 +85,7 @@ func NewGateIOScraper(ctx context.Context, pairs []models.ExchangePair, failover
 
 	// Check last trade time for each subscribed pair and resubscribe if no activity for more than @gateIOWatchdogDelayMap.
 	for _, pair := range pairs {
-		envVar := strings.ToUpper(GATEIO_EXCHANGE) + "_WATCHDOG_" + strings.Split(strings.ToUpper(pair.ForeignName), "-")[0] + "_" + strings.Split(strings.ToUpper(pair.ForeignName), "-")[1]
-		watchdogDelay, err := strconv.ParseInt(utils.Getenv(envVar, "300"), 10, 64)
-		if err != nil {
-			log.Errorf("GateIO - Parse gateIOWatchdogDelay: %v.", err)
-		}
+		watchdogDelay := int64(pair.WatchDogDelay)
 		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
 		go watchdog(ctx, pair, watchdogTicker, scraper.lastTradeTimeMap, watchdogDelay, scraper.subscribeChannel, &lock)
 		go scraper.resubscribe(ctx, &lock)
