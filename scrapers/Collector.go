@@ -62,6 +62,7 @@ func pairEqual(a, b []models.ExchangePair) bool {
 // Collector starts scrapers for all exchanges given by @exchangePairs.
 func Collector(
 	ctx context.Context,
+	cancel context.CancelFunc,
 	exchangePairs []models.ExchangePair,
 	pools []models.Pool,
 	tradesblockChannel chan map[string]models.TradesBlock,
@@ -87,16 +88,16 @@ func Collector(
 	// @tradesChannelIn collects trades from the started scrapers.
 	tradesChannelIn := make(chan models.Trade)
 	for exchange := range exchangepairMap {
-		ctx, cancel := context.WithCancel(context.Background())
+		// ctx, cancel := context.WithCancel(context.Background())
 		cancelMap[exchange] = cancel
 		wg.Add(1)
-		go RunScraper(ctx, exchange, exchangepairMap[exchange], []models.Pool{}, tradesChannelIn, failoverChannel, wg)
+		go RunScraper(ctx, cancel, exchange, exchangepairMap[exchange], []models.Pool{}, tradesChannelIn, failoverChannel, wg)
 	}
 	for exchange := range poolMap {
-		ctx, cancel := context.WithCancel(context.Background())
+		// ctx, cancel := context.WithCancel(context.Background())
 		cancelMap[exchange] = cancel
 		wg.Add(1)
-		go RunScraper(ctx, exchange, []models.ExchangePair{}, poolMap[exchange], tradesChannelIn, failoverChannel, wg)
+		go RunScraper(ctx, cancel, exchange, []models.ExchangePair{}, poolMap[exchange], tradesChannelIn, failoverChannel, wg)
 	}
 
 	// tradesblockMap maps an exchangpair identifier onto a TradesBlock.
@@ -112,7 +113,7 @@ func Collector(
 				for _, v := range cancelMap {
 					v()
 				}
-				for k, _ := range cancelMap {
+				for k := range cancelMap {
 					delete(cancelMap, k)
 				}
 				return
@@ -161,10 +162,10 @@ func Collector(
 					delete(cancelMap, exchange)
 					time.Sleep(2 * time.Second)
 				}
-				ctx, cancel := context.WithCancel(context.Background())
+				// ctx, cancel := context.WithCancel(context.Background())
 				cancelMap[exchange] = cancel
 				wg.Add(1)
-				go RunScraper(ctx, exchange, exchangepairMap[exchange], []models.Pool{}, tradesChannelIn, failoverChannel, wg)
+				go RunScraper(ctx, cancel, exchange, exchangepairMap[exchange], []models.Pool{}, tradesChannelIn, failoverChannel, wg)
 			case newPairs := <-collectorUpdateCh:
 				newMap := models.MakeExchangepairMap(newPairs)
 				for ex := range exchangepairMap {
@@ -186,10 +187,10 @@ func Collector(
 								delete(cancelMap, ex)
 								time.Sleep(2 * time.Second)
 							}
-							ctx, cancel := context.WithCancel(context.Background())
+							// ctx, cancel := context.WithCancel(context.Background())
 							cancelMap[ex] = cancel
 							wg.Add(1)
-							go RunScraper(ctx, ex, newList, []models.Pool{}, tradesChannelIn, failoverChannel, wg)
+							go RunScraper(ctx, cancel, ex, newList, []models.Pool{}, tradesChannelIn, failoverChannel, wg)
 						}
 					}
 				}
@@ -197,10 +198,10 @@ func Collector(
 				for ex, list := range newMap {
 					if _, existed := exchangepairMap[ex]; !existed {
 						log.Infof("Collector - start scraper for new exchange %s", ex)
-						ctx, cancel := context.WithCancel(context.Background())
+						// ctx, cancel := context.WithCancel(context.Background())
 						cancelMap[ex] = cancel
 						wg.Add(1)
-						go RunScraper(ctx, ex, list, []models.Pool{}, tradesChannelIn, failoverChannel, wg)
+						go RunScraper(ctx, cancel, ex, list, []models.Pool{}, tradesChannelIn, failoverChannel, wg)
 					}
 				}
 				exchangepairMap = newMap

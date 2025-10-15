@@ -21,6 +21,7 @@ type Scraper interface {
 // RunScraper starts a scraper for @exchange.
 func RunScraper(
 	ctx context.Context,
+	cancel context.CancelFunc,
 	exchange string,
 	pairs []models.ExchangePair,
 	pools []models.Pool,
@@ -31,7 +32,7 @@ func RunScraper(
 	switch exchange {
 	case BINANCE_EXCHANGE:
 
-		ctx, cancel := context.WithCancel(context.Background())
+		// ctx, cancel := context.WithCancel(context.Background())
 		scraper := NewBinanceScraper(ctx, pairs, failoverChannel, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("BINANCE_WATCHDOG", "300"))
@@ -71,7 +72,7 @@ func RunScraper(
 		}
 
 	case COINBASE_EXCHANGE:
-		ctx, cancel := context.WithCancel(context.Background())
+		// ctx, cancel := context.WithCancel(context.Background())
 		scraper := NewCoinBaseScraper(ctx, pairs, failoverChannel, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("COINBASE_WATCHDOG", "300"))
@@ -110,7 +111,7 @@ func RunScraper(
 			}
 		}
 	case BYBIT_EXCHANGE:
-		ctx, cancel := context.WithCancel(context.Background())
+		// ctx, cancel := context.WithCancel(context.Background())
 		scraper := NewByBitScraper(ctx, pairs, failoverChannel, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("BYBIT_WATCHDOG", "300"))
@@ -150,7 +151,7 @@ func RunScraper(
 		}
 
 	case CRYPTODOTCOM_EXCHANGE:
-		ctx, cancel := context.WithCancel(context.Background())
+		// ctx, cancel := context.WithCancel(context.Background())
 		scraper := NewCryptodotcomScraper(ctx, pairs, failoverChannel, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("CRYPTODOTCOM_WATCHDOG", "300"))
@@ -189,7 +190,7 @@ func RunScraper(
 			}
 		}
 	case GATEIO_EXCHANGE:
-		ctx, cancel := context.WithCancel(context.Background())
+		// ctx, cancel := context.WithCancel(context.Background())
 		scraper := NewGateIOScraper(ctx, pairs, failoverChannel, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("GATEIO_WATCHDOG", "300"))
@@ -228,7 +229,7 @@ func RunScraper(
 			}
 		}
 	case KRAKEN_EXCHANGE:
-		ctx, cancel := context.WithCancel(context.Background())
+		// ctx, cancel := context.WithCancel(context.Background())
 		scraper := NewKrakenScraper(ctx, pairs, failoverChannel, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("KRAKEN_WATCHDOG", "300"))
@@ -267,7 +268,7 @@ func RunScraper(
 			}
 		}
 	case KUCOIN_EXCHANGE:
-		ctx, cancel := context.WithCancel(context.Background())
+		// ctx, cancel := context.WithCancel(context.Background())
 		scraper := NewKuCoinScraper(ctx, pairs, failoverChannel, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("KUCOIN_WATCHDOG", "300"))
@@ -306,7 +307,7 @@ func RunScraper(
 			}
 		}
 	case MEXC_EXCHANGE:
-		ctx, cancel := context.WithCancel(context.Background())
+		// ctx, cancel := context.WithCancel(context.Background())
 		scraper := NewMEXCScraper(ctx, pairs, failoverChannel, wg)
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("MEXC_WATCHDOG", "300"))
 		if err != nil {
@@ -345,7 +346,7 @@ func RunScraper(
 		}
 
 	case OKEX_EXCHANGE:
-		ctx, cancel := context.WithCancel(context.Background())
+		// ctx, cancel := context.WithCancel(context.Background())
 		scraper := NewOKExScraper(ctx, pairs, failoverChannel, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("OKEX_WATCHDOG", "300"))

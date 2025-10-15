@@ -10,7 +10,6 @@ import (
 
 	models "github.com/diadata-org/lumina-library/models"
 	"github.com/diadata-org/lumina-library/scrapers/mexcproto"
-	"github.com/diadata-org/lumina-library/utils"
 	ws "github.com/gorilla/websocket"
 	"google.golang.org/protobuf/proto"
 )
@@ -32,6 +31,8 @@ type MEXCScraper struct {
 	maxSubscriptions int
 	pairConnIndex    map[string]int
 	mu               sync.RWMutex
+	wg               *sync.WaitGroup
+	ctx              context.Context
 }
 
 var (
@@ -55,6 +56,8 @@ func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, failoverCh
 		connections:      make([]WSConnection, 0),
 		pairConnIndex:    make(map[string]int),
 		mu:               sync.RWMutex{},
+		wg:               wg,
+		ctx:              ctx,
 	}
 
 	if _, err := scraper.newConn(failoverChannel); err != nil {
@@ -64,27 +67,35 @@ func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, failoverCh
 
 	log.Infof("MEXC - successed to open new connection.")
 
+	scraper.wg.Add(1)
 	go func() {
+		defer scraper.wg.Done()
 		pingMsg := map[string]string{"method": "PING"}
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			log.Infof("MEXC - Sent Ping...")
-			scraper.mu.Lock()
-			conns := make([]*ws.Conn, 0, len(scraper.connections))
-			for _, c := range scraper.connections {
-				if c.wsConn != nil {
-					conns = append(conns, c.wsConn)
-				}
-			}
-			scraper.mu.Unlock()
-
-			for _, c := range conns {
+		for {
+			select {
+			case <-scraper.ctx.Done():
+				log.Debugf("MEXC - close ping routine.")
+				return
+			case <-ticker.C:
+				log.Infof("MEXC - Sent Ping...")
 				scraper.mu.Lock()
-				if err := c.WriteJSON(pingMsg); err != nil {
-					log.Error("ping error: ", err)
+				conns := make([]*ws.Conn, 0, len(scraper.connections))
+				for _, c := range scraper.connections {
+					if c.wsConn != nil {
+						conns = append(conns, c.wsConn)
+					}
 				}
 				scraper.mu.Unlock()
+
+				for _, c := range conns {
+					scraper.mu.Lock()
+					if err := c.WriteJSON(pingMsg); err != nil {
+						log.Error("ping error: ", err)
+					}
+					scraper.mu.Unlock()
+				}
 			}
 		}
 	}()
@@ -104,19 +115,32 @@ func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, failoverCh
 	}
 
 	for _, conn := range scraper.connections {
-		go scraper.fetchTrades(conn)
+		scraper.wg.Add(1)
+		go func(c WSConnection) {
+			defer scraper.wg.Done()
+			scraper.fetchTrades(c)
+		}(conn)
+		// go scraper.fetchTrades(conn)
 	}
+
+	scraper.wg.Add(1)
+	go func() {
+		defer scraper.wg.Done()
+		scraper.resubscribe(scraper.ctx, failoverChannel)
+	}()
+	// go scraper.resubscribe(ctx, failoverChannel)
 
 	// Check last trade time for each subscribed pair and resubscribe if no activity for more than @MEXCWatchdogDelayMap.
 	for _, pair := range pairs {
-		envVar := strings.ToUpper(MEXC_EXCHANGE) + "_WATCHDOG_" + strings.Split(strings.ToUpper(pair.ForeignName), "-")[0] + "_" + strings.Split(strings.ToUpper(pair.ForeignName), "-")[1]
-		watchdogDelay, err := strconv.ParseInt(utils.Getenv(envVar, "300"), 10, 64)
-		if err != nil {
-			log.Errorf("MEXC - Parse MEXCWatchdogDelay: %v.", err)
-		}
+		watchdogDelay := int64(pair.WatchDogDelay)
 		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
-		go watchdog(ctx, pair, watchdogTicker, scraper.lastTradeTimeMap, watchdogDelay, scraper.subscribeChannel, &scraper.mu)
-		go scraper.resubscribe(ctx, failoverChannel)
+		scraper.wg.Add(1)
+		go func(p models.ExchangePair, tk *time.Ticker) {
+			defer scraper.wg.Done()
+			watchdog(scraper.ctx, p, tk, scraper.lastTradeTimeMap, watchdogDelay, scraper.subscribeChannel, &scraper.mu)
+		}(pair, watchdogTicker)
+		// go watchdog(ctx, pair, watchdogTicker, scraper.lastTradeTimeMap, watchdogDelay, scraper.subscribeChannel, &scraper.mu)
+		// go scraper.resubscribe(ctx, failoverChannel)
 	}
 
 	return &scraper
@@ -144,6 +168,7 @@ func (s *MEXCScraper) newConn(failoverChannel chan string) (*WSConnection, error
 func (scraper *MEXCScraper) Close(cancel context.CancelFunc) error {
 	log.Warn("MEXC - call scraper.Close().")
 	cancel()
+	scraper.mu.Lock()
 
 	for i, conn := range scraper.connections {
 		if conn.wsConn != nil {
@@ -155,8 +180,29 @@ func (scraper *MEXCScraper) Close(cancel context.CancelFunc) error {
 			}
 		}
 	}
+	scraper.mu.Unlock()
+	scraper.wg.Wait()
+
+	drainPairsChan(scraper.subscribeChannel) // discard remaining pairs
+	close(scraper.subscribeChannel)
+
+	scraper.mu.Lock()
+	scraper.connections = nil
+	scraper.pairConnIndex = nil
+	scraper.mu.Unlock()
 
 	return nil
+}
+
+func drainPairsChan(ch chan models.ExchangePair) {
+	for {
+		select {
+		case <-ch:
+			// discard
+		default:
+			return
+		}
+	}
 }
 
 func (scraper *MEXCScraper) TradesChannel() chan models.Trade {
