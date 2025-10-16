@@ -25,7 +25,8 @@ type Exchange struct {
 
 // GetSymbolIdentificationMap returns a map which maps an asset's symbol ticker from @exchange onto the underlying asset.
 // It assumes symbol mappings can be found in the file exchange.json at @configPath.
-func GetSymbolIdentificationMap(exchange string, configPath string) (map[string]Asset, error) {
+// e.g. identificationMap["ETH_GateIO"] = Asset{Symbol: "ETH", Blockchain: "ETH", Address: "0x0000000000000000000000000000000000000000", Decimals: 18}
+func GetSymbolIdentificationMap(exchange string) (map[string]Asset, error) {
 	identificationMap := make(map[string]Asset)
 	type IdentifiedAsset struct {
 		Exchange   string
@@ -38,6 +39,7 @@ func GetSymbolIdentificationMap(exchange string, configPath string) (map[string]
 		Tokens []IdentifiedAsset
 	}
 	var identifiedAssets IdentifiedAssets
+	configPath := getPath2Config("symbolIdentification")
 	path := configPath + exchange + ".json"
 	err := gonfig.GetConf(path, &identifiedAssets)
 	if err != nil {
