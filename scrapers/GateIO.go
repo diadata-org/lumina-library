@@ -2,6 +2,7 @@ package scrapers
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -196,14 +197,17 @@ func (scraper *gateIOScraper) applyConfigDiff(ctx context.Context, lock *sync.RW
 		// Get the delay for this pair.
 		delay := current[p]
 		log.Infof("GateIO - Added pair %s with delay %v.", p, delay)
-		// Create the exchange pair.
-		ep := models.ExchangePair{
-			ForeignName:   p,
-			WatchDogDelay: delay,
+
+		ep, err := scraper.getExchangePairInfo(p, delay)
+		if err != nil {
+			log.Errorf("GateIO - Failed to GetExchangePairInfo for new pair %s: %v.", p, err)
+			continue
 		}
 		scraper.subscribeChannel <- ep
 		// Start watchdog for this pair.
 		scraper.startWatchdogForPair(ctx, lock, ep)
+		// Add the pair to the ticker pair map.
+		scraper.tickerPairMap[strings.Split(ep.ForeignName, "-")[0]+strings.Split(ep.ForeignName, "-")[1]] = ep.UnderlyingPair
 		lock.Lock()
 		// Set the last trade time for this pair.
 		if _, exists := scraper.lastTradeTimeMap[ep.ForeignName]; !exists {
@@ -211,6 +215,15 @@ func (scraper *gateIOScraper) applyConfigDiff(ctx context.Context, lock *sync.RW
 		}
 		lock.Unlock()
 	}
+}
+
+func (scraper *gateIOScraper) getExchangePairInfo(foreignName string, delay int64) (models.ExchangePair, error) {
+	idMap, err := models.GetSymbolIdentificationMap(GATEIO_EXCHANGE)
+	if err != nil {
+		return models.ExchangePair{}, fmt.Errorf("GetSymbolIdentificationMap(%s): %w", GATEIO_EXCHANGE, err)
+	}
+	ep := models.ConstructExchangePair(GATEIO_EXCHANGE, foreignName, delay, idMap)
+	return ep, nil
 }
 
 func (scraper *gateIOScraper) startWatchdogForPair(ctx context.Context, lock *sync.RWMutex, pair models.ExchangePair) {

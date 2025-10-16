@@ -63,9 +63,8 @@ func getPath2Config(directory string) string {
 // - exchangeList:        List of exchange names (e.g. ["GateIO", "Binance"])
 // - return:              List of ExchangePairs with WatchDogDelay
 // - return err:          Error if any
-func ExchangePairsFromConfigFiles(exchangeList []string) (exchangePairs []ExchangePair, err error) {
+func ExchangePairsFromConfigFiles(exchangeList []string) (allExchangePairs []ExchangePair, err error) {
 
-	allExchangePairs := []ExchangePair{}
 	for _, exchange := range exchangeList {
 		// 1) Read exchange pairs config (e.g. GateIO.json -> map["ETH-USDT"]watchdogDelay)
 		exPairMap, err := GetExchangePairMap(exchange)
@@ -79,7 +78,7 @@ func ExchangePairsFromConfigFiles(exchangeList []string) (exchangePairs []Exchan
 			return nil, fmt.Errorf("GetSymbolIdentificationMap(%s): %w", exchange, err)
 		}
 
-		// 3) To ensure stable output, sort pairs by name (exCfg's key is "QUOTE-BASE")
+		// 3) To ensure stable output, sort pairs by name (exPairMap's key is "QUOTE-BASE")
 		pairs := make([]string, 0, len(exPairMap))
 		for pair := range exPairMap {
 			pairs = append(pairs, strings.TrimSpace(pair))
@@ -87,42 +86,48 @@ func ExchangePairsFromConfigFiles(exchangeList []string) (exchangePairs []Exchan
 		sort.Strings(pairs)
 
 		// 4) Construct ExchangePair one by one
+		exchangePairs := []ExchangePair{}
 		for _, pair := range pairs {
-			symbols := strings.Split(pair, PAIR_TICKER_SEPARATOR)
-			if len(symbols) != 2 {
-				log.Warnf("%s - bad pair format: %q (separator=%q)", exchange, pair, PAIR_TICKER_SEPARATOR)
-				continue
-			}
-			quote := strings.ToUpper(strings.TrimSpace(symbols[0]))
-			base := strings.ToUpper(strings.TrimSpace(symbols[1]))
-
-			quoteKey := ExchangeSymbolIdentifier(quote, exchange)
-			baseKey := ExchangeSymbolIdentifier(base, exchange)
-
-			qAsset, okQ := idMap[quoteKey]
-			bAsset, okB := idMap[baseKey]
-
-			if !okQ {
-				log.Warnf("%s - missing symbolId metadata for quote: %s", exchange, quoteKey)
-			}
-			if !okB {
-				log.Warnf("%s - missing symbolId metadata for base:  %s", exchange, baseKey)
-			}
-
-			var ep ExchangePair
-			ep.Exchange = exchange
-			ep.ForeignName = pair
-			ep.Symbol = quote                     // Keep consistent with existing function: Symbol use quote
-			ep.UnderlyingPair.QuoteToken = qAsset // If missing, it will be zero value Asset
-			ep.UnderlyingPair.BaseToken = bAsset
-			ep.WatchDogDelay = exPairMap[pair]
-
+			ep := ConstructExchangePair(exchange, pair, exPairMap[pair], idMap)
 			exchangePairs = append(exchangePairs, ep)
 		}
 		allExchangePairs = append(allExchangePairs, exchangePairs...)
 	}
 
 	return allExchangePairs, nil
+}
+
+func ConstructExchangePair(exchange string, pair string, watchDogDelay int64, idMap map[string]Asset) ExchangePair {
+	symbols := strings.Split(pair, PAIR_TICKER_SEPARATOR)
+	if len(symbols) != 2 {
+		log.Warnf("%s - bad pair format: %q (separator=%q)", exchange, pair, PAIR_TICKER_SEPARATOR)
+		return ExchangePair{}
+	}
+	quote := strings.ToUpper(strings.TrimSpace(symbols[0]))
+	base := strings.ToUpper(strings.TrimSpace(symbols[1]))
+
+	quoteKey := ExchangeSymbolIdentifier(quote, exchange)
+	baseKey := ExchangeSymbolIdentifier(base, exchange)
+
+	qAsset, okQ := idMap[quoteKey]
+	bAsset, okB := idMap[baseKey]
+
+	if !okQ {
+		log.Warnf("%s - missing symbolId metadata for quote: %s", exchange, quoteKey)
+	}
+	if !okB {
+		log.Warnf("%s - missing symbolId metadata for base:  %s", exchange, baseKey)
+	}
+
+	var ep ExchangePair
+	ep.Exchange = exchange
+	ep.ForeignName = pair
+	ep.Symbol = quote                     // Keep consistent with existing function: Symbol use quote
+	ep.UnderlyingPair.QuoteToken = qAsset // If missing, it will be zero value Asset
+	ep.UnderlyingPair.BaseToken = bAsset
+	ep.WatchDogDelay = watchDogDelay
+
+	return ep
 }
 
 func GetExchangePairMap(exchange string) (map[string]int64, error) {
