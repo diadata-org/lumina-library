@@ -206,8 +206,9 @@ func (scraper *gateIOScraper) applyConfigDiff(ctx context.Context, lock *sync.RW
 		scraper.subscribeChannel <- ep
 		// Start watchdog for this pair.
 		scraper.startWatchdogForPair(ctx, lock, ep)
+		key := strings.ReplaceAll(ep.ForeignName, "-", "")
 		// Add the pair to the ticker pair map.
-		scraper.tickerPairMap[strings.Split(ep.ForeignName, "-")[0]+strings.Split(ep.ForeignName, "-")[1]] = ep.UnderlyingPair
+		scraper.tickerPairMap[key] = ep.UnderlyingPair
 		lock.Lock()
 		// Set the last trade time for this pair.
 		if _, exists := scraper.lastTradeTimeMap[ep.ForeignName]; !exists {
