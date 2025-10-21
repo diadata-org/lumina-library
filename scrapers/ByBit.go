@@ -213,7 +213,8 @@ func (scraper *byBitScraper) applyConfigDiff(ctx context.Context, lock *sync.RWM
 		// Start watchdog for this pair.
 		scraper.startWatchdogForPair(ctx, lock, ep)
 		// Add the pair to the ticker pair map.
-		scraper.tickerPairMap[strings.Split(ep.ForeignName, "-")[0]+strings.Split(ep.ForeignName, "-")[1]] = ep.UnderlyingPair
+		key := strings.ReplaceAll(ep.ForeignName, "-", "")
+		scraper.tickerPairMap[key] = ep.UnderlyingPair
 		lock.Lock()
 		// Set the last trade time for this pair.
 		if _, exists := scraper.lastTradeTimeMap[ep.ForeignName]; !exists {
