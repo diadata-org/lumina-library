@@ -206,6 +206,7 @@ func (scraper *kucoinScraper) applyConfigDiff(ctx context.Context, lock *sync.RW
 
 	added := make([]string, 0)
 	removed := make([]string, 0)
+	changed := make([]string, 0)
 
 	// If last is nil, add all pairs from current.
 	if last == nil {
@@ -222,6 +223,11 @@ func (scraper *kucoinScraper) applyConfigDiff(ctx context.Context, lock *sync.RW
 		for p := range last {
 			if _, ok := current[p]; !ok {
 				removed = append(removed, p)
+			}
+		}
+		for p, newDelay := range current {
+			if oldDelay, ok := last[p]; ok && oldDelay != newDelay {
+				changed = append(changed, p)
 			}
 		}
 	}
@@ -247,8 +253,9 @@ func (scraper *kucoinScraper) applyConfigDiff(ctx context.Context, lock *sync.RW
 		scraper.subscribeChannel <- ep
 		// Start watchdog for this pair.
 		scraper.startWatchdogForPair(ctx, lock, ep)
+		key := strings.ReplaceAll(ep.ForeignName, "-", "")
 		// Add the pair to the ticker pair map.
-		scraper.tickerPairMap[strings.Split(ep.ForeignName, "-")[0]+strings.Split(ep.ForeignName, "-")[1]] = ep.UnderlyingPair
+		scraper.tickerPairMap[key] = ep.UnderlyingPair
 		lock.Lock()
 		// Set the last trade time for this pair.
 		if _, exists := scraper.lastTradeTimeMap[ep.ForeignName]; !exists {
@@ -256,6 +263,25 @@ func (scraper *kucoinScraper) applyConfigDiff(ctx context.Context, lock *sync.RW
 		}
 		lock.Unlock()
 	}
+	// Resubscribe to changed pairs.
+	for _, p := range changed {
+		newDelay := current[p]
+		log.Infof("KuCoin - Changed pair %s with delay %v.", p, newDelay)
+		scraper.restartWatchdogForPair(ctx, lock, p, newDelay)
+	}
+}
+
+func (scraper *kucoinScraper) restartWatchdogForPair(ctx context.Context, lock *sync.RWMutex, foreignName string, newDelay int64) {
+	// 1. Stop the watchdog for the pair.
+	scraper.stopWatchdogForPair(lock, foreignName)
+	// 2. Get the new exchange pair info (only for watchdog, no effect on subscription).
+	ep, err := scraper.getExchangePairInfo(foreignName, newDelay)
+	if err != nil {
+		log.Errorf("KuCoin - Failed to GetExchangePairInfo for changed pair %s: %v.", foreignName, err)
+		return
+	}
+	// 3. Start the watchdog for the pair with the new delay.
+	scraper.startWatchdogForPair(ctx, lock, ep)
 }
 
 func (scraper *kucoinScraper) getExchangePairInfo(foreignName string, delay int64) (models.ExchangePair, error) {

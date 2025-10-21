@@ -165,6 +165,7 @@ func (scraper *byBitScraper) applyConfigDiff(ctx context.Context, lock *sync.RWM
 
 	added := make([]string, 0)
 	removed := make([]string, 0)
+	changed := make([]string, 0)
 
 	// If last is nil, add all pairs from current.
 	if last == nil {
@@ -181,6 +182,11 @@ func (scraper *byBitScraper) applyConfigDiff(ctx context.Context, lock *sync.RWM
 		for p := range last {
 			if _, ok := current[p]; !ok {
 				removed = append(removed, p)
+			}
+		}
+		for p, newDelay := range current {
+			if oldDelay, ok := last[p]; ok && oldDelay != newDelay {
+				changed = append(changed, p)
 			}
 		}
 	}
@@ -214,6 +220,12 @@ func (scraper *byBitScraper) applyConfigDiff(ctx context.Context, lock *sync.RWM
 			scraper.lastTradeTimeMap[ep.ForeignName] = time.Now()
 		}
 		lock.Unlock()
+	}
+	// Resubscribe to changed pairs.
+	for _, p := range changed {
+		newDelay := current[p]
+		log.Infof("ByBit - Changed pair %s with delay %v.", p, newDelay)
+		scraper.restartWatchdogForPair(ctx, lock, p, newDelay)
 	}
 }
 
@@ -253,6 +265,19 @@ func (scraper *byBitScraper) stopWatchdogForPair(lock *sync.RWMutex, foreignName
 		delete(scraper.watchdogCancel, foreignName)
 	}
 	lock.Unlock()
+}
+
+func (scraper *byBitScraper) restartWatchdogForPair(ctx context.Context, lock *sync.RWMutex, foreignName string, newDelay int64) {
+	// 1. Stop the watchdog for the pair.
+	scraper.stopWatchdogForPair(lock, foreignName)
+	// 2. Get the new exchange pair info (only for watchdog, no effect on subscription).
+	ep, err := scraper.getExchangePairInfo(foreignName, newDelay)
+	if err != nil {
+		log.Errorf("ByBit - Failed to GetExchangePairInfo for changed pair %s: %v.", foreignName, err)
+		return
+	}
+	// 3. Start the watchdog for the pair with the new delay.
+	scraper.startWatchdogForPair(ctx, lock, ep)
 }
 
 func (scraper *byBitScraper) TradesChannel() chan models.Trade {
@@ -316,7 +341,7 @@ func (scraper *byBitScraper) fetchTrades(ctx context.Context, lock *sync.RWMutex
 
 func (scraper *byBitScraper) handleMessage(message []byte, lock *sync.RWMutex) {
 	if strings.Contains(string(message), "\"success\"") {
-		log.Infof("ByBit - Subscription success ack: %s", string(message))
+		log.Debugf("ByBit - Subscription success ack: %s", string(message))
 		return
 	}
 

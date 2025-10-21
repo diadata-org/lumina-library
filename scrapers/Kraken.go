@@ -113,9 +113,9 @@ func (scraper *krakenScraper) processUnsubscribe(ctx context.Context, lock *sync
 		case pair := <-scraper.unsubscribeChannel:
 			// Unsubscribe from this pair.
 			if err := scraper.subscribe(pair, false, lock); err != nil {
-				log.Errorf("GateIO - Unsubscribe pair %s: %v.", pair.ForeignName, err)
+				log.Errorf("Kraken - Unsubscribe pair %s: %v.", pair.ForeignName, err)
 			} else {
-				log.Infof("GateIO - Unsubscribed pair %s.", pair.ForeignName)
+				log.Infof("Kraken - Unsubscribed pair %s.", pair.ForeignName)
 			}
 			// Delete last trade time for this pair.
 			lock.Lock()
@@ -123,7 +123,7 @@ func (scraper *krakenScraper) processUnsubscribe(ctx context.Context, lock *sync
 			lock.Unlock()
 			scraper.stopWatchdogForPair(lock, pair.ForeignName)
 		case <-ctx.Done():
-			log.Debugf("GateIO - Close processUnsubscribe routine of scraper with genesis: %v.", scraper.genesis)
+			log.Debugf("Kraken - Close processUnsubscribe routine of scraper with genesis: %v.", scraper.genesis)
 			return
 		}
 	}
@@ -141,7 +141,7 @@ func (scraper *krakenScraper) watchConfig(ctx context.Context, lock *sync.RWMute
 	// Get the initial config.
 	cfg, err := models.GetExchangePairMap(KRAKEN_EXCHANGE)
 	if err != nil {
-		log.Errorf("GateIO - GetExchangePairMap: %v.", err)
+		log.Errorf("Kraken - GetExchangePairMap: %v.", err)
 		return
 	} else {
 		// Apply the initial config.
@@ -155,7 +155,7 @@ func (scraper *krakenScraper) watchConfig(ctx context.Context, lock *sync.RWMute
 		case <-ticker.C:
 			cfg, err := models.GetExchangePairMap(KRAKEN_EXCHANGE)
 			if err != nil {
-				log.Errorf("GateIO - GetExchangePairMap: %v.", err)
+				log.Errorf("Kraken - GetExchangePairMap: %v.", err)
 				continue
 			}
 			// Apply the config changes.
@@ -163,7 +163,7 @@ func (scraper *krakenScraper) watchConfig(ctx context.Context, lock *sync.RWMute
 			// Update the last config.
 			last = cfg
 		case <-ctx.Done():
-			log.Debugf("GateIO - Close watchConfig routine of scraper with genesis: %v.", scraper.genesis)
+			log.Debugf("Kraken - Close watchConfig routine of scraper with genesis: %v.", scraper.genesis)
 			return
 		}
 	}
@@ -173,6 +173,7 @@ func (scraper *krakenScraper) applyConfigDiff(ctx context.Context, lock *sync.RW
 
 	added := make([]string, 0)
 	removed := make([]string, 0)
+	changed := make([]string, 0)
 
 	// If last is nil, add all pairs from current.
 	if last == nil {
@@ -191,11 +192,16 @@ func (scraper *krakenScraper) applyConfigDiff(ctx context.Context, lock *sync.RW
 				removed = append(removed, p)
 			}
 		}
+		for p, newDelay := range current {
+			if oldDelay, ok := last[p]; ok && oldDelay != newDelay {
+				changed = append(changed, p)
+			}
+		}
 	}
 
 	// Unsubscribe from removed pairs.
 	for _, p := range removed {
-		log.Infof("GateIO - Removed pair %s.", p)
+		log.Infof("Kraken - Removed pair %s.", p)
 		scraper.unsubscribeChannel <- models.ExchangePair{
 			ForeignName: p,
 		}
@@ -204,11 +210,11 @@ func (scraper *krakenScraper) applyConfigDiff(ctx context.Context, lock *sync.RW
 	for _, p := range added {
 		// Get the delay for this pair.
 		delay := current[p]
-		log.Infof("GateIO - Added pair %s with delay %v.", p, delay)
+		log.Infof("Kraken - Added pair %s with delay %v.", p, delay)
 
 		ep, err := scraper.getExchangePairInfo(p, delay)
 		if err != nil {
-			log.Errorf("GateIO - Failed to GetExchangePairInfo for new pair %s: %v.", p, err)
+			log.Errorf("Kraken - Failed to GetExchangePairInfo for new pair %s: %v.", p, err)
 			continue
 		}
 		scraper.subscribeChannel <- ep
@@ -223,6 +229,25 @@ func (scraper *krakenScraper) applyConfigDiff(ctx context.Context, lock *sync.RW
 		}
 		lock.Unlock()
 	}
+	// Resubscribe to changed pairs.
+	for _, p := range changed {
+		newDelay := current[p]
+		log.Infof("Kraken - Changed pair %s with delay %v.", p, newDelay)
+		scraper.restartWatchdogForPair(ctx, lock, p, newDelay)
+	}
+}
+
+func (scraper *krakenScraper) restartWatchdogForPair(ctx context.Context, lock *sync.RWMutex, foreignName string, newDelay int64) {
+	// 1. Stop the watchdog for the pair.
+	scraper.stopWatchdogForPair(lock, foreignName)
+	// 2. Get the new exchange pair info (only for watchdog, no effect on subscription).
+	ep, err := scraper.getExchangePairInfo(foreignName, newDelay)
+	if err != nil {
+		log.Errorf("Kraken - Failed to GetExchangePairInfo for changed pair %s: %v.", foreignName, err)
+		return
+	}
+	// 3. Start the watchdog for the pair with the new delay.
+	scraper.startWatchdogForPair(ctx, lock, ep)
 }
 
 func (scraper *krakenScraper) getExchangePairInfo(foreignName string, delay int64) (models.ExchangePair, error) {

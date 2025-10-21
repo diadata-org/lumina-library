@@ -180,6 +180,7 @@ func (scraper *cryptodotcomScraper) applyConfigDiff(ctx context.Context, lock *s
 
 	added := make([]string, 0)
 	removed := make([]string, 0)
+	changed := make([]string, 0)
 
 	// If last is nil, add all pairs from current.
 	if last == nil {
@@ -196,6 +197,11 @@ func (scraper *cryptodotcomScraper) applyConfigDiff(ctx context.Context, lock *s
 		for p := range last {
 			if _, ok := current[p]; !ok {
 				removed = append(removed, p)
+			}
+		}
+		for p, newDelay := range current {
+			if oldDelay, ok := last[p]; ok && oldDelay != newDelay {
+				changed = append(changed, p)
 			}
 		}
 	}
@@ -221,14 +227,21 @@ func (scraper *cryptodotcomScraper) applyConfigDiff(ctx context.Context, lock *s
 		scraper.subscribeChannel <- ep
 		// Start watchdog for this pair.
 		scraper.startWatchdogForPair(ctx, lock, ep)
+		key := strings.ReplaceAll(ep.ForeignName, "-", "")
 		// Add the pair to the ticker pair map.
-		scraper.tickerPairMap[strings.Split(ep.ForeignName, "-")[0]+strings.Split(ep.ForeignName, "-")[1]] = ep.UnderlyingPair
+		scraper.tickerPairMap[key] = ep.UnderlyingPair
 		lock.Lock()
 		// Set the last trade time for this pair.
 		if _, exists := scraper.lastTradeTimeMap[ep.ForeignName]; !exists {
 			scraper.lastTradeTimeMap[ep.ForeignName] = time.Now()
 		}
 		lock.Unlock()
+	}
+	// Resubscribe to changed pairs.
+	for _, p := range changed {
+		newDelay := current[p]
+		log.Infof("Crypto.com - Changed pair %s with delay %v.", p, newDelay)
+		scraper.restartWatchdogForPair(ctx, lock, p, newDelay)
 	}
 }
 
@@ -268,6 +281,19 @@ func (scraper *cryptodotcomScraper) stopWatchdogForPair(lock *sync.RWMutex, fore
 		delete(scraper.watchdogCancel, foreignName)
 	}
 	lock.Unlock()
+}
+
+func (scraper *cryptodotcomScraper) restartWatchdogForPair(ctx context.Context, lock *sync.RWMutex, foreignName string, newDelay int64) {
+	// 1. Stop the watchdog for the pair.
+	scraper.stopWatchdogForPair(lock, foreignName)
+	// 2. Get the new exchange pair info (only for watchdog, no effect on subscription).
+	ep, err := scraper.getExchangePairInfo(foreignName, newDelay)
+	if err != nil {
+		log.Errorf("Crypto.com - Failed to GetExchangePairInfo for changed pair %s: %v.", foreignName, err)
+		return
+	}
+	// 3. Start the watchdog for the pair with the new delay.
+	scraper.startWatchdogForPair(ctx, lock, ep)
 }
 
 func (scraper *cryptodotcomScraper) Close(cancel context.CancelFunc) error {
