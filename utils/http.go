@@ -29,7 +29,7 @@ func GetRequest(url string) ([]byte, int, error) {
 	// Check the status code for a 200 so we know we have received a
 	// proper response.
 	if response.StatusCode != 200 {
-		return []byte{}, response.StatusCode, fmt.Errorf("HTTP Response Error %d", response.StatusCode)
+		return []byte{}, response.StatusCode, fmt.Errorf("Get HTTP Response Error %d for url %s", response.StatusCode, url)
 	}
 
 	// Read the response body
