@@ -65,6 +65,13 @@ func getPath2Config(directory string) string {
 // - return err:          Error if any
 func ExchangePairsFromConfigFiles(exchangeList []string) (allExchangePairs []ExchangePair, err error) {
 
+	if len(exchangeList) == 0 {
+		return
+	}
+	if len(exchangeList) == 1 && len(strings.TrimSpace(exchangeList[0])) == 0 {
+		return
+	}
+
 	for _, exchange := range exchangeList {
 		// 1) Read exchange pairs config (e.g. GateIO.json -> map["ETH-USDT"]watchdogDelay)
 		exPairMap, err := GetExchangePairMap(exchange)

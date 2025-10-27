@@ -39,33 +39,6 @@ func MakePoolMap(pools []Pool) map[string][]Pool {
 	return poolMap
 }
 
-func PoolsFromEnv(poolsEnv string, envSeparator string, exchangePoolSeparator string) (pools []Pool, err error) {
-	list := strings.Split(poolsEnv, envSeparator)
-	if len(list) == 0 {
-		return
-	}
-	if len(list) == 1 && len(strings.TrimSpace(list[0])) == 0 {
-		return
-	}
-
-	for _, ep := range strings.Split(poolsEnv, envSeparator) {
-		poolInfo := strings.Split(ep, exchangePoolSeparator)
-		if len(poolInfo) != 3 {
-			err = fmt.Errorf("pool info does not have length 3: %s", ep)
-			return
-		}
-		var p Pool
-		p.Exchange.Name = strings.TrimSpace(poolInfo[0])
-		p.Address = strings.TrimSpace(poolInfo[1])
-		p.Order, err = strconv.Atoi(strings.TrimSpace(poolInfo[2]))
-		if err != nil {
-			return
-		}
-		pools = append(pools, p)
-	}
-	return
-}
-
 // PoolsFromJSON reads a file in the format
 //
 //	"exchange": { "Pools": [ { "Address": "...", "Order": "2", "WatchDogDelay": 300 }, ... ] }
@@ -81,7 +54,7 @@ func PoolsFromConfigFile(exchange string) ([]Pool, error) {
 		Pools []filePool `json:"Pools"`
 	}
 
-	path := getPath2Config("pools") + exchange + ".json"
+	path := getPath2Config("pools") + strings.TrimSpace(exchange) + ".json"
 
 	// read and deserialize the file
 	var cfg fileSchema
@@ -121,6 +94,13 @@ func PoolsFromConfigFile(exchange string) ([]Pool, error) {
 
 // aggregate multiple pools from multiple config files
 func PoolsFromConfigFiles(exchanges []string) ([]Pool, error) {
+	if len(exchanges) == 0 {
+		return []Pool{}, nil
+	}
+	if len(exchanges) == 1 && len(strings.TrimSpace(exchanges[0])) == 0 {
+		return []Pool{}, nil
+	}
+
 	var (
 		all  []Pool
 		errs []error
