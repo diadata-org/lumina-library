@@ -2,13 +2,13 @@ package scrapers
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	models "github.com/diadata-org/lumina-library/models"
-	"github.com/diadata-org/lumina-library/utils"
 	ws "github.com/gorilla/websocket"
 )
 
@@ -35,14 +35,16 @@ type GateIOResponseTrade struct {
 }
 
 type gateIOScraper struct {
-	wsClient         wsConn
-	tradesChannel    chan models.Trade
-	subscribeChannel chan models.ExchangePair
-	tickerPairMap    map[string]models.Pair
-	lastTradeTimeMap map[string]time.Time
-	maxErrCount      int
-	restartWaitTime  int
-	genesis          time.Time
+	wsClient           wsConn
+	tradesChannel      chan models.Trade
+	subscribeChannel   chan models.ExchangePair
+	unsubscribeChannel chan models.ExchangePair
+	tickerPairMap      map[string]models.Pair
+	lastTradeTimeMap   map[string]time.Time
+	maxErrCount        int
+	restartWaitTime    int
+	genesis            time.Time
+	watchdogCancel     map[string]context.CancelFunc
 }
 
 var (
@@ -55,13 +57,15 @@ func NewGateIOScraper(ctx context.Context, pairs []models.ExchangePair, failover
 	log.Info("GateIO - Started scraper.")
 
 	scraper := gateIOScraper{
-		tradesChannel:    make(chan models.Trade),
-		subscribeChannel: make(chan models.ExchangePair),
-		tickerPairMap:    models.MakeTickerPairMap(pairs),
-		lastTradeTimeMap: make(map[string]time.Time),
-		maxErrCount:      20,
-		restartWaitTime:  5,
-		genesis:          time.Now(),
+		tradesChannel:      make(chan models.Trade),
+		subscribeChannel:   make(chan models.ExchangePair),
+		unsubscribeChannel: make(chan models.ExchangePair),
+		tickerPairMap:      models.MakeTickerPairMap(pairs),
+		lastTradeTimeMap:   make(map[string]time.Time),
+		maxErrCount:        20,
+		restartWaitTime:    5,
+		genesis:            time.Now(),
+		watchdogCancel:     make(map[string]context.CancelFunc),
 	}
 
 	var wsDialer ws.Dialer
@@ -73,6 +77,7 @@ func NewGateIOScraper(ctx context.Context, pairs []models.ExchangePair, failover
 	}
 	scraper.wsClient = wsClient
 
+	// Subscribe to pairs.
 	for _, pair := range pairs {
 		if err := scraper.subscribe(pair, true, &lock); err != nil {
 			log.Errorf("GateIO - subscribe to pair %s: %v.", pair.ForeignName, err)
@@ -83,21 +88,197 @@ func NewGateIOScraper(ctx context.Context, pairs []models.ExchangePair, failover
 	}
 
 	go scraper.fetchTrades(&lock)
+	go scraper.resubscribe(ctx, &lock)
+	go scraper.processUnsubscribe(ctx, &lock)
+	go scraper.watchConfig(ctx, &lock)
 
-	// Check last trade time for each subscribed pair and resubscribe if no activity for more than @gateIOWatchdogDelayMap.
+	// Start watchdog for each pair.
 	for _, pair := range pairs {
-		envVar := strings.ToUpper(GATEIO_EXCHANGE) + "_WATCHDOG_" + strings.Split(strings.ToUpper(pair.ForeignName), "-")[0] + "_" + strings.Split(strings.ToUpper(pair.ForeignName), "-")[1]
-		watchdogDelay, err := strconv.ParseInt(utils.Getenv(envVar, "300"), 10, 64)
-		if err != nil {
-			log.Errorf("GateIO - Parse gateIOWatchdogDelay: %v.", err)
+		scraper.startWatchdogForPair(ctx, &lock, pair)
+	}
+	return &scraper
+}
+
+func (scraper *gateIOScraper) processUnsubscribe(ctx context.Context, lock *sync.RWMutex) {
+	for {
+		select {
+		case pair := <-scraper.unsubscribeChannel:
+			// Unsubscribe from this pair.
+			if err := scraper.subscribe(pair, false, lock); err != nil {
+				log.Errorf("GateIO - Unsubscribe pair %s: %v.", pair.ForeignName, err)
+			} else {
+				log.Infof("GateIO - Unsubscribed pair %s.", pair.ForeignName)
+			}
+			// Delete last trade time for this pair.
+			lock.Lock()
+			delete(scraper.lastTradeTimeMap, pair.ForeignName)
+			lock.Unlock()
+			scraper.stopWatchdogForPair(lock, pair.ForeignName)
+		case <-ctx.Done():
+			log.Debugf("GateIO - Close processUnsubscribe routine of scraper with genesis: %v.", scraper.genesis)
+			return
 		}
-		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
-		go watchdog(ctx, pair, watchdogTicker, scraper.lastTradeTimeMap, watchdogDelay, scraper.subscribeChannel, &lock)
-		go scraper.resubscribe(ctx, &lock)
+	}
+}
+
+func (scraper *gateIOScraper) watchConfig(ctx context.Context, lock *sync.RWMutex) {
+	// Check for config changes every 30 seconds.
+	const interval = 30 * time.Second
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Keep track of the last config.
+	var last map[string]int64
+
+	// Get the initial config.
+	cfg, err := models.GetExchangePairMap(GATEIO_EXCHANGE)
+	if err != nil {
+		log.Errorf("GateIO - GetExchangePairMap: %v.", err)
+		return
+	} else {
+		// Apply the initial config.
+		last = cfg
+		scraper.applyConfigDiff(ctx, lock, nil, cfg)
 	}
 
-	return &scraper
+	// Watch for config changes.
+	for {
+		select {
+		case <-ticker.C:
+			cfg, err := models.GetExchangePairMap(GATEIO_EXCHANGE)
+			if err != nil {
+				log.Errorf("GateIO - GetExchangePairMap: %v.", err)
+				continue
+			}
+			// Apply the config changes.
+			scraper.applyConfigDiff(ctx, lock, last, cfg)
+			// Update the last config.
+			last = cfg
+		case <-ctx.Done():
+			log.Debugf("GateIO - Close watchConfig routine of scraper with genesis: %v.", scraper.genesis)
+			return
+		}
+	}
+}
 
+func (scraper *gateIOScraper) applyConfigDiff(ctx context.Context, lock *sync.RWMutex, last map[string]int64, current map[string]int64) {
+
+	added := make([]string, 0)
+	removed := make([]string, 0)
+	changed := make([]string, 0)
+
+	// If last is nil, add all pairs from current.
+	if last == nil {
+		for p := range current {
+			added = append(added, p)
+		}
+	} else {
+		// If last is not nil, check for added and removed pairs.
+		for p := range current {
+			if _, ok := last[p]; !ok {
+				added = append(added, p)
+			}
+		}
+		for p := range last {
+			if _, ok := current[p]; !ok {
+				removed = append(removed, p)
+			}
+		}
+		for p, newDelay := range current {
+			if oldDelay, ok := last[p]; ok && oldDelay != newDelay {
+				changed = append(changed, p)
+			}
+		}
+	}
+
+	// Unsubscribe from removed pairs.
+	for _, p := range removed {
+		log.Infof("GateIO - Removed pair %s.", p)
+		scraper.unsubscribeChannel <- models.ExchangePair{
+			ForeignName: p,
+		}
+	}
+	// Subscribe to added pairs.
+	for _, p := range added {
+		// Get the delay for this pair.
+		delay := current[p]
+		log.Infof("GateIO - Added pair %s with delay %v.", p, delay)
+
+		ep, err := scraper.getExchangePairInfo(p, delay)
+		if err != nil {
+			log.Errorf("GateIO - Failed to GetExchangePairInfo for new pair %s: %v.", p, err)
+			continue
+		}
+		scraper.subscribeChannel <- ep
+		// Start watchdog for this pair.
+		scraper.startWatchdogForPair(ctx, lock, ep)
+		key := strings.ReplaceAll(ep.ForeignName, "-", "")
+		// Add the pair to the ticker pair map.
+		lock.Lock()
+		scraper.tickerPairMap[key] = ep.UnderlyingPair
+		// Set the last trade time for this pair.
+		if _, exists := scraper.lastTradeTimeMap[ep.ForeignName]; !exists {
+			scraper.lastTradeTimeMap[ep.ForeignName] = time.Now()
+		}
+		lock.Unlock()
+	}
+	// Resubscribe to changed pairs.
+	for _, p := range changed {
+		newDelay := current[p]
+		log.Infof("GateIO - Changed pair %s with delay %v.", p, newDelay)
+		scraper.restartWatchdogForPair(ctx, lock, p, newDelay)
+	}
+}
+
+func (scraper *gateIOScraper) restartWatchdogForPair(ctx context.Context, lock *sync.RWMutex, foreignName string, newDelay int64) {
+	// 1. Stop the watchdog for the pair.
+	scraper.stopWatchdogForPair(lock, foreignName)
+	// 2. Get the new exchange pair info (only for watchdog, no effect on subscription).
+	ep, err := scraper.getExchangePairInfo(foreignName, newDelay)
+	if err != nil {
+		log.Errorf("GateIO - Failed to GetExchangePairInfo for changed pair %s: %v.", foreignName, err)
+		return
+	}
+	// 3. Start the watchdog for the pair with the new delay.
+	scraper.startWatchdogForPair(ctx, lock, ep)
+}
+
+func (scraper *gateIOScraper) getExchangePairInfo(foreignName string, delay int64) (models.ExchangePair, error) {
+	idMap, err := models.GetSymbolIdentificationMap(GATEIO_EXCHANGE)
+	if err != nil {
+		return models.ExchangePair{}, fmt.Errorf("GetSymbolIdentificationMap(%s): %w", GATEIO_EXCHANGE, err)
+	}
+	ep := models.ConstructExchangePair(GATEIO_EXCHANGE, foreignName, delay, idMap)
+	return ep, nil
+}
+
+func (scraper *gateIOScraper) startWatchdogForPair(ctx context.Context, lock *sync.RWMutex, pair models.ExchangePair) {
+	// Check if watchdog is already running for this pair.
+	lock.Lock()
+	if cancel, exists := scraper.watchdogCancel[pair.ForeignName]; exists && cancel != nil {
+		lock.Unlock()
+		return
+	}
+	lock.Unlock()
+
+	wdCtx, cancel := context.WithCancel(ctx)
+	lock.Lock()
+	scraper.watchdogCancel[pair.ForeignName] = cancel
+	lock.Unlock()
+
+	// Start watchdog for this pair.
+	watchdogTicker := time.NewTicker(time.Duration(pair.WatchDogDelay) * time.Second)
+	go watchdog(wdCtx, pair, watchdogTicker, scraper.lastTradeTimeMap, pair.WatchDogDelay, scraper.subscribeChannel, lock)
+}
+
+func (scraper *gateIOScraper) stopWatchdogForPair(lock *sync.RWMutex, foreignName string) {
+	lock.Lock()
+	cancel, ok := scraper.watchdogCancel[foreignName]
+	if ok && cancel != nil {
+		cancel()
+		delete(scraper.watchdogCancel, foreignName)
+	}
+	lock.Unlock()
 }
 
 func (scraper *gateIOScraper) Close(cancel context.CancelFunc) error {
