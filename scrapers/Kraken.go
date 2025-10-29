@@ -222,8 +222,8 @@ func (scraper *krakenScraper) applyConfigDiff(ctx context.Context, lock *sync.RW
 		scraper.startWatchdogForPair(ctx, lock, ep)
 		// Add the pair to the ticker pair map.
 		key := strings.ReplaceAll(ep.ForeignName, "-", "")
-		scraper.tickerPairMap[key] = ep.UnderlyingPair
 		lock.Lock()
+		scraper.tickerPairMap[key] = ep.UnderlyingPair
 		// Set the last trade time for this pair.
 		if _, exists := scraper.lastTradeTimeMap[ep.ForeignName]; !exists {
 			scraper.lastTradeTimeMap[ep.ForeignName] = time.Now()
