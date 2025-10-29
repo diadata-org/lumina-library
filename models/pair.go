@@ -34,7 +34,7 @@ type Pair struct {
 
 type PairConfig struct {
 	Pair          string `json:"pair"`
-	WatchDogDelay int    `json:"watchDogDelay"`
+	WatchDogDelay int64  `json:"watchDogDelay"`
 }
 
 type ExchangeConfig struct {
@@ -50,7 +50,10 @@ func (p *Pair) Identifier() string {
 }
 
 func getPath2Config(directory string) string {
-	usr, _ := user.Current()
+	usr, err := user.Current()
+	if err != nil {
+		return fmt.Sprintf("error getting user: %v", err)
+	}
 	dir := usr.HomeDir
 	configPath := "/config/" + directory + "/"
 	if dir == "/root" || dir == "/home" {
@@ -95,7 +98,10 @@ func ExchangePairsFromConfigFiles(exchangeList []string) (allExchangePairs []Exc
 		// 4) Construct ExchangePair one by one
 		exchangePairs := []ExchangePair{}
 		for _, pair := range pairs {
-			ep := ConstructExchangePair(exchange, pair, exPairMap[pair], idMap)
+			ep, err := ConstructExchangePair(exchange, pair, exPairMap[pair], idMap)
+			if err != nil {
+				return nil, fmt.Errorf("ConstructExchangePair(%s, %s, %v): %w", exchange, pair, exPairMap[pair], err)
+			}
 			exchangePairs = append(exchangePairs, ep)
 		}
 		allExchangePairs = append(allExchangePairs, exchangePairs...)
@@ -104,11 +110,10 @@ func ExchangePairsFromConfigFiles(exchangeList []string) (allExchangePairs []Exc
 	return allExchangePairs, nil
 }
 
-func ConstructExchangePair(exchange string, pair string, watchDogDelay int64, idMap map[string]Asset) ExchangePair {
+func ConstructExchangePair(exchange string, pair string, watchDogDelay int64, idMap map[string]Asset) (ExchangePair, error) {
 	symbols := strings.Split(pair, PAIR_TICKER_SEPARATOR)
 	if len(symbols) != 2 {
-		log.Warnf("%s - bad pair format: %q (separator=%q)", exchange, pair, PAIR_TICKER_SEPARATOR)
-		return ExchangePair{}
+		return ExchangePair{}, fmt.Errorf("bad pair format: %q (separator=%q)", pair, PAIR_TICKER_SEPARATOR)
 	}
 	quote := strings.ToUpper(strings.TrimSpace(symbols[0]))
 	base := strings.ToUpper(strings.TrimSpace(symbols[1]))
@@ -120,10 +125,10 @@ func ConstructExchangePair(exchange string, pair string, watchDogDelay int64, id
 	bAsset, okB := idMap[baseKey]
 
 	if !okQ {
-		log.Warnf("%s - missing symbolId metadata for quote: %s", exchange, quoteKey)
+		return ExchangePair{}, fmt.Errorf("missing symbolId metadata for quote: %v", quoteKey)
 	}
 	if !okB {
-		log.Warnf("%s - missing symbolId metadata for base:  %s", exchange, baseKey)
+		return ExchangePair{}, fmt.Errorf("missing symbolId metadata for base: %v", baseKey)
 	}
 
 	var ep ExchangePair
@@ -134,7 +139,7 @@ func ConstructExchangePair(exchange string, pair string, watchDogDelay int64, id
 	ep.UnderlyingPair.BaseToken = bAsset
 	ep.WatchDogDelay = watchDogDelay
 
-	return ep
+	return ep, nil
 }
 
 func GetExchangePairMap(exchange string) (map[string]int64, error) {
@@ -153,7 +158,7 @@ func GetExchangePairMap(exchange string) (map[string]int64, error) {
 
 	out := make(map[string]int64, len(cfg.ExchangePairs))
 	for _, pair := range cfg.ExchangePairs {
-		out[pair.Pair] = int64(pair.WatchDogDelay)
+		out[pair.Pair] = pair.WatchDogDelay
 	}
 	return out, nil
 }

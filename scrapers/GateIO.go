@@ -248,7 +248,10 @@ func (scraper *gateIOScraper) getExchangePairInfo(foreignName string, delay int6
 	if err != nil {
 		return models.ExchangePair{}, fmt.Errorf("GetSymbolIdentificationMap(%s): %w", GATEIO_EXCHANGE, err)
 	}
-	ep := models.ConstructExchangePair(GATEIO_EXCHANGE, foreignName, delay, idMap)
+	ep, err := models.ConstructExchangePair(GATEIO_EXCHANGE, foreignName, delay, idMap)
+	if err != nil {
+		return models.ExchangePair{}, fmt.Errorf("ConstructExchangePair(%s, %s, %v): %w", GATEIO_EXCHANGE, foreignName, delay, err)
+	}
 	return ep, nil
 }
 
@@ -306,7 +309,7 @@ func (scraper *gateIOScraper) fetchTrades(lock *sync.RWMutex) {
 			continue
 		}
 
-		trade := scraper.handleWSResponse(message)
+		trade := scraper.handleWSResponse(message, lock)
 
 		lock.Lock()
 		scraper.lastTradeTimeMap[trade.QuoteToken.Symbol+"-"+trade.BaseToken.Symbol] = trade.Time
@@ -319,7 +322,7 @@ func (scraper *gateIOScraper) fetchTrades(lock *sync.RWMutex) {
 	}
 }
 
-func (scraper *gateIOScraper) handleWSResponse(message GateIOResponseTrade) models.Trade {
+func (scraper *gateIOScraper) handleWSResponse(message GateIOResponseTrade, lock *sync.RWMutex) models.Trade {
 	var (
 		f64Price     float64
 		f64Volume    float64
@@ -342,8 +345,9 @@ func (scraper *gateIOScraper) handleWSResponse(message GateIOResponseTrade) mode
 	if message.Result.Side == "sell" {
 		f64Volume = -f64Volume
 	}
+	lock.RLock()
 	exchangepair = scraper.tickerPairMap[strings.Split(message.Result.CurrencyPair, "_")[0]+strings.Split(message.Result.CurrencyPair, "_")[1]]
-
+	lock.RUnlock()
 	t := models.Trade{
 		QuoteToken:     exchangepair.QuoteToken,
 		BaseToken:      exchangepair.BaseToken,

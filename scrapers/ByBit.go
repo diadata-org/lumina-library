@@ -235,7 +235,10 @@ func (scraper *byBitScraper) getExchangePairInfo(foreignName string, delay int64
 	if err != nil {
 		return models.ExchangePair{}, fmt.Errorf("GetSymbolIdentificationMap(%s): %w", BYBIT_EXCHANGE, err)
 	}
-	ep := models.ConstructExchangePair(BYBIT_EXCHANGE, foreignName, delay, idMap)
+	ep, err := models.ConstructExchangePair(BYBIT_EXCHANGE, foreignName, delay, idMap)
+	if err != nil {
+		return models.ExchangePair{}, fmt.Errorf("ConstructExchangePair(%s, %s, %v): %w", BYBIT_EXCHANGE, foreignName, delay, err)
+	}
 	return ep, nil
 }
 
@@ -375,9 +378,9 @@ func (scraper *byBitScraper) handleMessage(message []byte, lock *sync.RWMutex) {
 		}
 
 		pairName := data.Symbol
-		lock.Lock()
+		lock.RLock()
 		pair, exists := scraper.tickerPairMap[pairName]
-		lock.Unlock()
+		lock.RUnlock()
 		if !exists {
 			log.Warnf("ByBit - Unknown pair: %s", pairName)
 			return

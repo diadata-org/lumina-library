@@ -361,7 +361,7 @@ func (s *CurveScraper) startAllFromFlat(ctx context.Context, flat map[string]mod
 	// then ensure all other orders for the same address are appended to the poolMap
 	for _, p := range flat {
 		if err := s.ensurePairInPoolMap(p); err != nil {
-			log.Errorf("Curve - ensurePairInPoolMap %s#%d: %v", p.Address, p.Order, err)
+			log.Errorf("Curve - ensurePairInPoolMap %s#%v: %v", p.Address, p.Order, err)
 		}
 	}
 }

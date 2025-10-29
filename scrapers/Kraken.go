@@ -256,7 +256,10 @@ func (scraper *krakenScraper) getExchangePairInfo(foreignName string, delay int6
 	if err != nil {
 		return models.ExchangePair{}, fmt.Errorf("GetSymbolIdentificationMap(%s): %w", KRAKEN_EXCHANGE, err)
 	}
-	ep := models.ConstructExchangePair(KRAKEN_EXCHANGE, foreignName, delay, idMap)
+	ep, err := models.ConstructExchangePair(KRAKEN_EXCHANGE, foreignName, delay, idMap)
+	if err != nil {
+		return models.ExchangePair{}, fmt.Errorf("ConstructExchangePair(%s, %s, %v): %w", KRAKEN_EXCHANGE, foreignName, delay, err)
+	}
 	return ep, nil
 }
 
@@ -330,7 +333,9 @@ func (scraper *krakenScraper) fetchTrades(lock *sync.RWMutex) {
 				pair := strings.Split(data.Symbol, "/")
 				var exchangepair models.Pair
 				if len(pair) > 1 {
+					lock.RLock()
 					exchangepair = scraper.tickerPairMap[pair[0]+pair[1]]
+					lock.RUnlock()
 				}
 
 				trade := models.Trade{

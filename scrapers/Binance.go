@@ -254,7 +254,10 @@ func (scraper *binanceScraper) getExchangePairInfo(foreignName string, delay int
 	if err != nil {
 		return models.ExchangePair{}, fmt.Errorf("GetSymbolIdentificationMap(%s): %w", BINANCE_EXCHANGE, err)
 	}
-	ep := models.ConstructExchangePair(BINANCE_EXCHANGE, foreignName, delay, idMap)
+	ep, err := models.ConstructExchangePair(BINANCE_EXCHANGE, foreignName, delay, idMap)
+	if err != nil {
+		return models.ExchangePair{}, fmt.Errorf("ConstructExchangePair(%s, %s, %v): %w", BINANCE_EXCHANGE, foreignName, delay, err)
+	}
 	return ep, nil
 }
 
@@ -319,9 +322,10 @@ func (scraper *binanceScraper) fetchTrades(lock *sync.RWMutex) {
 		}
 
 		trade := binanceParseWSResponse(message)
+		lock.RLock()
 		trade.QuoteToken = scraper.tickerPairMap[message.ForeignName].QuoteToken
 		trade.BaseToken = scraper.tickerPairMap[message.ForeignName].BaseToken
-
+		lock.RUnlock()
 		log.Tracef("Binance - got trade %s -- %v -- %v -- %v.", trade.QuoteToken.Symbol+"-"+trade.BaseToken.Symbol, trade.Price, trade.Volume, trade.ForeignTradeID)
 		lock.Lock()
 		scraper.lastTradeTimeMap[trade.QuoteToken.Symbol+"-"+trade.BaseToken.Symbol] = trade.Time

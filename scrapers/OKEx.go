@@ -292,7 +292,10 @@ func (scraper *OKExScraper) getExchangePairInfo(foreignName string, delay int64)
 	if err != nil {
 		return models.ExchangePair{}, fmt.Errorf("GetSymbolIdentificationMap(%s): %w", OKEX_EXCHANGE, err)
 	}
-	ep := models.ConstructExchangePair(OKEX_EXCHANGE, foreignName, delay, idMap)
+	ep, err := models.ConstructExchangePair(OKEX_EXCHANGE, foreignName, delay, idMap)
+	if err != nil {
+		return models.ExchangePair{}, fmt.Errorf("ConstructExchangePair(%s, %s, %v): %w", OKEX_EXCHANGE, foreignName, delay, err)
+	}
 	return ep, nil
 }
 
@@ -376,8 +379,10 @@ func (scraper *OKExScraper) handleWSResponse(data OKEXDATA, lock *sync.RWMutex) 
 	ep := data.InstID
 	pair := strings.Split(ep, "-")
 	if len(pair) > 1 {
+		lock.RLock()
 		trade.QuoteToken = scraper.tickerPairMap[pair[0]+pair[1]].QuoteToken
 		trade.BaseToken = scraper.tickerPairMap[pair[0]+pair[1]].BaseToken
+		lock.RUnlock()
 
 		log.Tracef("OKEx - got trade: %s -- %v -- %v -- %s -- %s.", trade.QuoteToken.Symbol+"-"+trade.BaseToken.Symbol, trade.Price, trade.Volume, trade.ForeignTradeID, trade.Time)
 		lock.Lock()

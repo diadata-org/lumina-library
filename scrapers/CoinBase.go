@@ -252,7 +252,10 @@ func (scraper *coinbaseScraper) getExchangePairInfo(foreignName string, delay in
 	if err != nil {
 		return models.ExchangePair{}, fmt.Errorf("GetSymbolIdentificationMap(%s): %w", COINBASE_EXCHANGE, err)
 	}
-	ep := models.ConstructExchangePair(COINBASE_EXCHANGE, foreignName, delay, idMap)
+	ep, err := models.ConstructExchangePair(COINBASE_EXCHANGE, foreignName, delay, idMap)
+	if err != nil {
+		return models.ExchangePair{}, fmt.Errorf("ConstructExchangePair(%s, %s, %v): %w", COINBASE_EXCHANGE, foreignName, delay, err)
+	}
 	return ep, nil
 }
 
@@ -331,9 +334,10 @@ func (scraper *coinbaseScraper) handleWSResponse(message coinBaseWSResponse, loc
 	// Identify ticker symbols with underlying assets.
 	pair := strings.Split(message.ProductID, "-")
 	if len(pair) > 1 {
+		lock.RLock()
 		trade.QuoteToken = scraper.tickerPairMap[pair[0]+pair[1]].QuoteToken
 		trade.BaseToken = scraper.tickerPairMap[pair[0]+pair[1]].BaseToken
-
+		lock.RUnlock()
 		log.Tracef("CoinBase - got trade: %s -- %v -- %v -- %s.", trade.QuoteToken.Symbol+"-"+trade.BaseToken.Symbol, trade.Price, trade.Volume, trade.ForeignTradeID)
 		lock.Lock()
 		scraper.lastTradeTimeMap[pair[0]+"-"+pair[1]] = trade.Time

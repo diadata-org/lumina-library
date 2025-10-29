@@ -289,7 +289,10 @@ func (scraper *kucoinScraper) getExchangePairInfo(foreignName string, delay int6
 	if err != nil {
 		return models.ExchangePair{}, fmt.Errorf("GetSymbolIdentificationMap(%s): %w", KUCOIN_EXCHANGE, err)
 	}
-	ep := models.ConstructExchangePair(KUCOIN_EXCHANGE, foreignName, delay, idMap)
+	ep, err := models.ConstructExchangePair(KUCOIN_EXCHANGE, foreignName, delay, idMap)
+	if err != nil {
+		return models.ExchangePair{}, fmt.Errorf("ConstructExchangePair(%s, %s, %v): %w", KUCOIN_EXCHANGE, foreignName, delay, err)
+	}
 	return ep, nil
 }
 
@@ -337,7 +340,9 @@ func (scraper *kucoinScraper) handleWSResponse(message kuCoinWSResponse, lock *s
 		return
 	}
 
+	lock.RLock()
 	exchangepair := scraper.tickerPairMap[pair[0]+pair[1]]
+	lock.RUnlock()
 
 	trade := models.Trade{
 		QuoteToken:     exchangepair.QuoteToken,

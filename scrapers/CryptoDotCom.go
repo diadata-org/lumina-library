@@ -250,7 +250,10 @@ func (scraper *cryptodotcomScraper) getExchangePairInfo(foreignName string, dela
 	if err != nil {
 		return models.ExchangePair{}, fmt.Errorf("GetSymbolIdentificationMap(%s): %w", CRYPTODOTCOM_EXCHANGE, err)
 	}
-	ep := models.ConstructExchangePair(CRYPTODOTCOM_EXCHANGE, foreignName, delay, idMap)
+	ep, err := models.ConstructExchangePair(CRYPTODOTCOM_EXCHANGE, foreignName, delay, idMap)
+	if err != nil {
+		return models.ExchangePair{}, fmt.Errorf("ConstructExchangePair(%s, %s, %v): %w", CRYPTODOTCOM_EXCHANGE, foreignName, delay, err)
+	}
 	return ep, nil
 }
 
@@ -352,8 +355,10 @@ func (scraper *cryptodotcomScraper) handleWSResponse(message cryptodotcomWSRespo
 
 		pair := strings.Split(message.Result.Data[0].ForeignName, "_")
 		if len(pair) > 1 {
+			lock.RLock()
 			trade.QuoteToken = scraper.tickerPairMap[pair[0]+pair[1]].QuoteToken
 			trade.BaseToken = scraper.tickerPairMap[pair[0]+pair[1]].BaseToken
+			lock.RUnlock()
 		}
 
 		log.Tracef("Crypto.com - got trade: %v -- %s -- %v -- %v -- %s.", trade.Time, trade.QuoteToken.Symbol+"-"+trade.BaseToken.Symbol, trade.Price, trade.Volume, trade.ForeignTradeID)

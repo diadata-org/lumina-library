@@ -140,7 +140,7 @@ func TestHandleWSResponse_GateIO(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := scraper.handleWSResponse(tc.input)
+			got := scraper.handleWSResponse(tc.input, &sync.RWMutex{})
 			if got.Exchange != tc.expect.Exchange {
 				t.Errorf("Exchange: got %v, want %v", got.Exchange, tc.expect.Exchange)
 			}

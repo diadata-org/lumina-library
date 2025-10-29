@@ -286,7 +286,10 @@ func (scraper *MEXCScraper) getExchangePairInfo(foreignName string, delay int64)
 	if err != nil {
 		return models.ExchangePair{}, fmt.Errorf("GetSymbolIdentificationMap(%s): %w", MEXC_EXCHANGE, err)
 	}
-	ep := models.ConstructExchangePair(MEXC_EXCHANGE, foreignName, delay, idMap)
+	ep, err := models.ConstructExchangePair(MEXC_EXCHANGE, foreignName, delay, idMap)
+	if err != nil {
+		return models.ExchangePair{}, fmt.Errorf("ConstructExchangePair(%s, %s, %v): %w", MEXC_EXCHANGE, foreignName, delay, err)
+	}
 	return ep, nil
 }
 
@@ -411,8 +414,10 @@ func (scraper *MEXCScraper) handleWSResponse(message *mexcproto.PublicAggreDeals
 
 	// Identify ticker symbols with underlying assets.
 	if pair != "" {
+		scraper.mu.RLock()
 		trade.QuoteToken = scraper.tickerPairMap[pair].QuoteToken
 		trade.BaseToken = scraper.tickerPairMap[pair].BaseToken
+		scraper.mu.RUnlock()
 
 		log.Tracef("MEXC - got trade: %s -- %v -- %v -- %s -- %v.", trade.QuoteToken.Symbol+"-"+trade.BaseToken.Symbol, trade.Price, trade.Volume, trade.ForeignTradeID, trade.Time)
 		scraper.mu.Lock()
