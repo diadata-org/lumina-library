@@ -54,7 +54,11 @@ func PoolsFromConfigFile(exchange string) ([]Pool, error) {
 		Pools []filePool `json:"Pools"`
 	}
 
-	path := getPath2Config("pools") + strings.TrimSpace(exchange) + ".json"
+	poolConfigPath, err := getPath2Config("pools")
+	if err != nil {
+		return nil, fmt.Errorf("getPath2Config(pools): %w", err)
+	}
+	path := poolConfigPath + strings.TrimSpace(exchange) + ".json"
 
 	// read and deserialize the file
 	var cfg fileSchema

@@ -49,17 +49,17 @@ func (p *Pair) Identifier() string {
 	return p.QuoteToken.Blockchain + "-" + p.QuoteToken.Address + "-" + p.BaseToken.Blockchain + "-" + p.BaseToken.Address
 }
 
-func getPath2Config(directory string) string {
+func getPath2Config(directory string) (string, error) {
 	usr, err := user.Current()
 	if err != nil {
-		return fmt.Sprintf("error getting user: %v", err)
+		return "", fmt.Errorf("error getting user: %v", err)
 	}
 	dir := usr.HomeDir
 	configPath := "/config/" + directory + "/"
 	if dir == "/root" || dir == "/home" {
-		return configPath
+		return configPath, nil
 	}
-	return os.Getenv("GOPATH") + "/src/github.com/diadata-org/decentral-feeder" + configPath
+	return os.Getenv("GOPATH") + "/src/github.com/diadata-org/decentral-feeder" + configPath, nil
 }
 
 // According to pairs config file + symbol identifiers directory, construct []ExchangePair
@@ -143,7 +143,10 @@ func ConstructExchangePair(exchange string, pair string, watchDogDelay int64, id
 }
 
 func GetExchangePairMap(exchange string) (map[string]int64, error) {
-	configPath := getPath2Config("exchangePairs")
+	configPath, err := getPath2Config("exchangePairs")
+	if err != nil {
+		return nil, err
+	}
 	path := configPath + exchange + ".json"
 	jsonFile, err := os.Open(path)
 	if err != nil {

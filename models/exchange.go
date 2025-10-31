@@ -39,7 +39,10 @@ func GetSymbolIdentificationMap(exchange string) (map[string]Asset, error) {
 		Tokens []IdentifiedAsset
 	}
 	var identifiedAssets IdentifiedAssets
-	configPath := getPath2Config("symbolIdentification")
+	configPath, configErr := getPath2Config("symbolIdentification")
+	if configErr != nil {
+		return nil, configErr
+	}
 	path := configPath + exchange + ".json"
 	err := gonfig.GetConf(path, &identifiedAssets)
 	if err != nil {

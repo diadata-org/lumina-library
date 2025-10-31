@@ -87,8 +87,6 @@ func NewBinanceScraper(ctx context.Context, pairs []models.ExchangePair, failove
 		scraper.activePairs[pair.ForeignName] = pair
 	}
 
-	go scraper.wsWriter(&lock)
-
 	err := errors.New("cannot connect to API")
 	var errCount int
 	for err != nil {
@@ -106,6 +104,7 @@ func NewBinanceScraper(ctx context.Context, pairs []models.ExchangePair, failove
 		}
 	}
 
+	go scraper.wsWriter(&lock)
 	go scraper.fetchTrades(&lock)
 	go scraper.resubscribe(ctx)
 	go scraper.watchConfig(ctx, &lock)
@@ -123,13 +122,17 @@ func (scraper *binanceScraper) wsWriter(lock *sync.RWMutex) {
 	for msg := range scraper.writeQueue {
 		_ = scraper.writeLimiter.Wait(context.Background())
 		lock.Lock()
-		if err := scraper.wsClient.WriteJSON(msg); err != nil {
+		err := scraper.wsClient.WriteJSON(msg)
+		lock.Unlock()
+		if err != nil {
 			log.Errorf("Binance - WriteJSON failed: %v", err)
 			time.Sleep(200 * time.Microsecond)
-			scraper.writeQueue <- msg
-			continue
+			select {
+			case scraper.writeQueue <- msg:
+			default:
+				log.Errorf("Binance - WriteQueue is full, dropping message.")
+			}
 		}
-		lock.Unlock()
 	}
 }
 
