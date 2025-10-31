@@ -420,7 +420,7 @@ func (s *CurveScraper) applyConfigDiff(
 		}
 		// new entry: first append the pair to the poolMap
 		if err := s.ensurePairInPoolMap(p); err != nil {
-			log.Errorf("Curve - ensurePairInPoolMap(add) %s#%s: %v", p.Address, p.Order, err)
+			log.Errorf("Curve - ensurePairInPoolMap(add) %s#%v: %v", p.Address, p.Order, err)
 			continue
 		}
 		addrLower := strings.ToLower(p.Address)
