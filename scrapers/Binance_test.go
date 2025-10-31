@@ -138,7 +138,6 @@ func TestBinanceParseWSResponse(t *testing.T) {
 }
 
 func TestSubscribe(t *testing.T) {
-	lock := &sync.RWMutex{}
 	mockWs := &mockWsConn{}
 	scraper := &binanceScraper{
 		wsClient: mockWs,
@@ -147,7 +146,7 @@ func TestSubscribe(t *testing.T) {
 		ForeignName: "BTC-USDT",
 	}
 	// Test subscribe
-	err := scraper.subscribe(pair, true, lock)
+	err := scraper.subscribe(pair, true)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -155,7 +154,7 @@ func TestSubscribe(t *testing.T) {
 		t.Errorf("expected WriteJSON to be called once")
 	}
 	// Test unsubscribe
-	err = scraper.subscribe(pair, false, lock)
+	err = scraper.subscribe(pair, false)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
