@@ -166,14 +166,13 @@ func TestSubscribe(t *testing.T) {
 func TestResubscribe(t *testing.T) {
 	ch := make(chan models.ExchangePair, 1)
 	ch <- models.ExchangePair{ForeignName: "BTC-USDT"}
-	lock := &sync.RWMutex{}
 	mockWs := &mockWsConn{}
 	s := &binanceScraper{
 		wsClient:         mockWs,
 		subscribeChannel: ch,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	go s.resubscribe(ctx, lock)
+	go s.resubscribe(ctx)
 	time.Sleep(10 * time.Millisecond)
 	cancel()
 }
