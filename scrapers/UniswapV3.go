@@ -41,13 +41,16 @@ type UniswapV3Swap struct {
 }
 
 type UniswapV3Scraper struct {
-	exchange         models.Exchange
-	poolMap          map[common.Address]UniV3Pair
-	wsClient         *ethclient.Client
-	restClient       *ethclient.Client
-	subscribeChannel chan common.Address
-	lastTradeTimeMap map[common.Address]time.Time
-	waitTime         int
+	exchange           models.Exchange
+	poolMap            map[common.Address]UniV3Pair
+	wsClient           *ethclient.Client
+	restClient         *ethclient.Client
+	subscribeChannel   chan common.Address
+	unsubscribeChannel chan common.Address
+	swapStreamCancel   map[common.Address]context.CancelFunc
+	watchdogCancel     map[string]context.CancelFunc
+	lastTradeTimeMap   map[common.Address]time.Time
+	waitTime           int
 }
 
 func NewUniswapV3Scraper(
@@ -66,6 +69,9 @@ func NewUniswapV3Scraper(
 	scraper.exchange.Name = exchangeName
 	scraper.exchange.Blockchain = blockchain
 	scraper.subscribeChannel = make(chan common.Address)
+	scraper.unsubscribeChannel = make(chan common.Address)
+	scraper.watchdogCancel = make(map[string]context.CancelFunc)
+	scraper.swapStreamCancel = make(map[common.Address]context.CancelFunc)
 	scraper.lastTradeTimeMap = make(map[common.Address]time.Time)
 	scraper.waitTime, err = strconv.Atoi(utils.Getenv(strings.ToUpper(exchangeName)+"_WAIT_TIME", "500"))
 	if err != nil {
@@ -84,65 +90,226 @@ func NewUniswapV3Scraper(
 	scraper.makePoolMap(pools)
 
 	var lock sync.RWMutex
-	go scraper.mainLoop(ctx, pools, tradesChannel, &lock)
+	scraper.startInitialPools(ctx, pools, tradesChannel, &lock)
+	scraper.startResubHandler(ctx, tradesChannel, &lock)
+	scraper.startUnsubHandler(ctx, &lock)
+	go scraper.watchConfig(ctx, exchangeName, tradesChannel, &lock)
 }
 
-// runs in a goroutine until scraper is closed.
-func (scraper *UniswapV3Scraper) mainLoop(ctx context.Context, pools []models.Pool, tradesChannel chan models.Trade, lock *sync.RWMutex) {
-
-	var wg sync.WaitGroup
-
+func mapPoolsByAddress(pools []models.Pool) map[string]models.Pool {
+	poolMap := make(map[string]models.Pool)
 	for _, pool := range pools {
-
-		// Initialize lastTradeTimeMap.
-		lock.Lock()
-		scraper.lastTradeTimeMap[common.HexToAddress(pool.Address)] = time.Now()
-		lock.Unlock()
-
-		// Set up watchdog.
-		envVar := strings.ToUpper(scraper.exchange.Name) + "_WATCHDOG_" + pool.Address
-		watchdogDelay, err := strconv.ParseInt(utils.Getenv(envVar, "600"), 10, 64)
-		if err != nil {
-			log.Errorf("UniswapV3 - Parse coinbaseWatchdogDelay: %v.", err)
-		}
-		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
-		go watchdogPool(ctx, scraper.exchange.Name, common.HexToAddress(pool.Address), watchdogTicker, scraper.lastTradeTimeMap, watchdogDelay, scraper.subscribeChannel, lock)
-
-		// spawn swaps watching for @pool.Address.
-		time.Sleep(time.Duration(scraper.waitTime) * time.Millisecond)
-		wg.Add(1)
-		go func(ctx context.Context, address common.Address, w *sync.WaitGroup, lock *sync.RWMutex) {
-			defer w.Done()
-			scraper.watchSwaps(ctx, address, tradesChannel, lock)
-		}(ctx, common.HexToAddress(pool.Address), &wg, lock)
-
+		poolMap[strings.ToLower(pool.Address)] = pool
 	}
+	return poolMap
+}
 
-	// Routine for resubscription whenever no trades are registered on a pool
-	// for longer than the corresponding watchdog time.
+func (scraper *UniswapV3Scraper) startInitialPools(ctx context.Context, pools []models.Pool, trades chan models.Trade, lock *sync.RWMutex) {
+	for _, p := range pools {
+		if err := scraper.startPool(ctx, p, trades, lock); err != nil {
+			log.Errorf("startPool %s: %v", p.Address, err)
+		}
+	}
+}
+
+func (s *UniswapV3Scraper) startResubHandler(ctx context.Context, trades chan models.Trade, lock *sync.RWMutex) {
 	go func() {
 		for {
 			select {
-			case addr := <-scraper.subscribeChannel:
-
+			case addr := <-s.subscribeChannel:
 				log.Infof("Resubscribing to pool: %s", addr.Hex())
-
-				// reset lastTradeTime to now to avoid immediate repeat.
 				lock.Lock()
-				scraper.lastTradeTimeMap[addr] = time.Now()
+				s.lastTradeTimeMap[addr] = time.Now()
 				lock.Unlock()
-
-				go scraper.watchSwaps(ctx, addr, tradesChannel, lock)
-
+				if cancel, ok := s.swapStreamCancel[addr]; ok && cancel != nil {
+					cancel()
+					delete(s.swapStreamCancel, addr)
+				}
+				go s.watchSwaps(ctx, addr, trades, lock)
 			case <-ctx.Done():
 				log.Info("Stopping resubscription handler.")
 				return
 			}
 		}
 	}()
+}
 
-	wg.Wait()
+func (scraper *UniswapV3Scraper) startUnsubHandler(ctx context.Context, lock *sync.RWMutex) {
+	go func() {
+		for {
+			select {
+			case addr := <-scraper.unsubscribeChannel:
+				log.Infof("Unsubscribing from pool: %s", addr.Hex())
+				scraper.stopPool(addr, lock)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
 
+func (scraper *UniswapV3Scraper) watchConfig(ctx context.Context, exchangeName string, trades chan models.Trade, lock *sync.RWMutex) {
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+
+	initial, err := models.PoolsFromConfigFile(exchangeName)
+	if err != nil {
+		log.Errorf("UniswapV3 - GetPoolsFromConfigFile: %v.", err)
+		initial = nil
+		return
+	}
+	last := mapPoolsByAddress(initial)
+
+	for _, pool := range last {
+		_ = scraper.startPool(ctx, pool, trades, lock)
+	}
+
+	for {
+		select {
+		case <-t.C:
+			currList, err := models.PoolsFromConfigFile(exchangeName)
+			if err != nil {
+				log.Errorf("UniswapV3 - GetPoolsFromConfigFile: %v.", err)
+				continue
+			}
+			curr := mapPoolsByAddress(currList)
+			scraper.applyConfigDiff(ctx, last, curr, trades, lock)
+			last = curr
+		case <-ctx.Done():
+			log.Info("UniswapV3 - Close watchConfig routine of scraper.")
+			return
+		}
+	}
+}
+
+func (scraper *UniswapV3Scraper) applyConfigDiff(ctx context.Context, last map[string]models.Pool, curr map[string]models.Pool, trades chan models.Trade, lock *sync.RWMutex) {
+	for k := range last {
+		if _, ok := curr[k]; !ok {
+			addr := common.HexToAddress(k)
+			log.Infof("UniswapV3 - Removed pool: %s.", addr.Hex())
+			scraper.unsubscribeChannel <- addr
+		}
+	}
+
+	for k, p := range curr {
+		addr := common.HexToAddress(k)
+
+		if old, ok := last[k]; !ok {
+			log.Infof("UniswapV3 - add pool %s (wd=%d, order=%d)", p.Address, p.WatchDogDelay, p.Order)
+			if err := scraper.startPool(ctx, p, trades, lock); err != nil {
+				log.Errorf("UniswapV3 - startPool %s: %v", p.Address, err)
+			}
+			continue
+		} else {
+			newDelay := p.WatchDogDelay
+			oldDelay := old.WatchDogDelay
+			if newDelay != oldDelay {
+				log.Infof("UniswapV3 - Changed pool %s (wd=%d -> %d)", p.Address, oldDelay, newDelay)
+				scraper.restartWatchdogForPool(ctx, addr, newDelay, lock)
+			}
+
+			if pair, ok := scraper.poolMap[addr]; ok && pair.Order != p.Order {
+				log.Infof("UniswapV3 - Update order %s: %d -> %d", p.Address, pair.Order, p.Order)
+				pair.Order = p.Order
+				scraper.poolMap[addr] = pair
+			}
+		}
+	}
+}
+
+func (scraper *UniswapV3Scraper) startPool(ctx context.Context, pool models.Pool, trades chan models.Trade, lock *sync.RWMutex) error {
+	addr := common.HexToAddress(pool.Address)
+	if _, ok := scraper.poolMap[addr]; !ok {
+		caller, err := UniswapV3Pair.NewUniswapV3PairCaller(addr, scraper.restClient)
+		if err != nil {
+			return err
+		}
+		token0, err := caller.Token0(&bind.CallOpts{})
+		if err != nil {
+			return err
+		}
+		token1, err := caller.Token1(&bind.CallOpts{})
+		if err != nil {
+			return err
+		}
+		t0, err := models.GetAsset(token0, scraper.exchange.Blockchain, scraper.restClient)
+		if err != nil {
+			return err
+		}
+		t1, err := models.GetAsset(token1, scraper.exchange.Blockchain, scraper.restClient)
+		if err != nil {
+			return err
+		}
+		scraper.poolMap[addr] = UniV3Pair{
+			Token0:  t0,
+			Token1:  t1,
+			Address: addr,
+			Order:   pool.Order,
+		}
+	} else {
+		p := scraper.poolMap[addr]
+		p.Order = pool.Order
+		scraper.poolMap[addr] = p
+	}
+	lock.Lock()
+	if _, ok := scraper.lastTradeTimeMap[addr]; !ok {
+		scraper.lastTradeTimeMap[addr] = time.Now()
+	}
+	lock.Unlock()
+
+	watchdogDelay := pool.WatchDogDelay
+	scraper.restartWatchdogForPool(ctx, addr, watchdogDelay, lock)
+	if _, ok := scraper.swapStreamCancel[addr]; ok {
+		return nil
+	}
+
+	pctx, cancel := context.WithCancel(ctx)
+	scraper.swapStreamCancel[addr] = cancel
+	go scraper.watchSwaps(pctx, addr, trades, lock)
+	return nil
+}
+
+func (scraper *UniswapV3Scraper) stopPool(addr common.Address, lock *sync.RWMutex) {
+	if cancel, ok := scraper.swapStreamCancel[addr]; ok && cancel != nil {
+		cancel()
+		delete(scraper.swapStreamCancel, addr)
+	}
+	key := addr.Hex()
+	if cancel, ok := scraper.watchdogCancel[key]; ok && cancel != nil {
+		cancel()
+		delete(scraper.watchdogCancel, key)
+	}
+	lock.Lock()
+	delete(scraper.lastTradeTimeMap, addr)
+	lock.Unlock()
+}
+
+func (scraper *UniswapV3Scraper) restartWatchdogForPool(ctx context.Context, addr common.Address, watchdogDelay int64, lock *sync.RWMutex) {
+	key := addr.Hex()
+	if cancel, ok := scraper.watchdogCancel[key]; ok && cancel != nil {
+		cancel()
+		delete(scraper.watchdogCancel, key)
+	}
+	wdCtx, cancel := context.WithCancel(ctx)
+	scraper.watchdogCancel[key] = cancel
+	watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
+	go func() {
+		defer watchdogTicker.Stop()
+		for {
+			select {
+			case <-wdCtx.Done():
+				return
+			case <-watchdogTicker.C:
+				lock.RLock()
+				lastTradeTime := scraper.lastTradeTimeMap[addr]
+				lock.RUnlock()
+				if time.Since(lastTradeTime) > time.Duration(watchdogDelay)*time.Second {
+					log.Warnf("UniswapV3 - watchdog failover for %s.", addr.Hex())
+					scraper.subscribeChannel <- addr
+				}
+			}
+		}
+	}()
 }
 
 // watchSwaps subscribes to a uniswap pool and forwards trades to the trades channel.
