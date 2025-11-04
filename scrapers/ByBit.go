@@ -10,6 +10,7 @@ import (
 	"time"
 
 	models "github.com/diadata-org/lumina-library/models"
+	"github.com/diadata-org/lumina-library/utils"
 	ws "github.com/gorilla/websocket"
 )
 
@@ -123,37 +124,35 @@ func (scraper *byBitScraper) processUnsubscribe(ctx context.Context, lock *sync.
 
 func (scraper *byBitScraper) watchConfig(ctx context.Context, lock *sync.RWMutex) {
 	// Check for config changes every 30 seconds.
-	const interval = 30 * time.Second
-	ticker := time.NewTicker(interval)
+	envKey := strings.ToUpper(BYBIT_EXCHANGE) + "_WATCH_CONFIG_INTERVAL"
+	interval, err := strconv.Atoi(utils.Getenv(envKey, "30"))
+	if err != nil {
+		log.Errorf("ByBit - Failed to parse %s: %v.", envKey, err)
+		return
+	}
+	ticker := time.NewTicker(time.Duration(interval) * time.Second)
 	defer ticker.Stop()
 
-	// Keep track of the last config.
-	var last map[string]int64
-
 	// Get the initial config.
-	cfg, err := models.GetExchangePairMap(BYBIT_EXCHANGE)
+	last, err := models.GetExchangePairMap(BYBIT_EXCHANGE)
 	if err != nil {
 		log.Errorf("ByBit - GetExchangePairMap: %v.", err)
 		return
-	} else {
-		// Apply the initial config.
-		last = cfg
-		scraper.applyConfigDiff(ctx, lock, nil, cfg)
 	}
 
 	// Watch for config changes.
 	for {
 		select {
 		case <-ticker.C:
-			cfg, err := models.GetExchangePairMap(BYBIT_EXCHANGE)
+			current, err := models.GetExchangePairMap(BYBIT_EXCHANGE)
 			if err != nil {
 				log.Errorf("ByBit - GetExchangePairMap: %v.", err)
 				continue
 			}
 			// Apply the config changes.
-			scraper.applyConfigDiff(ctx, lock, last, cfg)
+			scraper.applyConfigDiff(ctx, lock, last, current)
 			// Update the last config.
-			last = cfg
+			last = current
 		case <-ctx.Done():
 			log.Debugf("ByBit - Close watchConfig routine of scraper with genesis: %v.", scraper.genesis)
 			return

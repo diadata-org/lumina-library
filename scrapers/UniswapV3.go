@@ -90,7 +90,6 @@ func NewUniswapV3Scraper(
 	scraper.makePoolMap(pools)
 
 	var lock sync.RWMutex
-	scraper.startInitialPools(ctx, pools, tradesChannel, &lock)
 	scraper.startResubHandler(ctx, tradesChannel, &lock)
 	scraper.startUnsubHandler(ctx, &lock)
 	go scraper.watchConfig(ctx, exchangeName, tradesChannel, &lock)
@@ -102,14 +101,6 @@ func mapPoolsByAddress(pools []models.Pool) map[string]models.Pool {
 		poolMap[strings.ToLower(pool.Address)] = pool
 	}
 	return poolMap
-}
-
-func (scraper *UniswapV3Scraper) startInitialPools(ctx context.Context, pools []models.Pool, trades chan models.Trade, lock *sync.RWMutex) {
-	for _, p := range pools {
-		if err := scraper.startPool(ctx, p, trades, lock); err != nil {
-			log.Errorf("startPool %s: %v", p.Address, err)
-		}
-	}
 }
 
 func (s *UniswapV3Scraper) startResubHandler(ctx context.Context, trades chan models.Trade, lock *sync.RWMutex) {
@@ -149,7 +140,13 @@ func (scraper *UniswapV3Scraper) startUnsubHandler(ctx context.Context, lock *sy
 }
 
 func (scraper *UniswapV3Scraper) watchConfig(ctx context.Context, exchangeName string, trades chan models.Trade, lock *sync.RWMutex) {
-	t := time.NewTicker(30 * time.Second)
+	envKey := strings.ToUpper(exchangeName) + "_WATCH_CONFIG_INTERVAL"
+	interval, err := strconv.Atoi(utils.Getenv(envKey, "30"))
+	if err != nil {
+		log.Errorf("UniswapV3 - Failed to parse %s: %v.", envKey, err)
+		return
+	}
+	t := time.NewTicker(time.Duration(interval) * time.Second)
 	defer t.Stop()
 
 	initial, err := models.PoolsFromConfigFile(exchangeName)
@@ -314,9 +311,9 @@ func (scraper *UniswapV3Scraper) restartWatchdogForPool(ctx context.Context, add
 
 // watchSwaps subscribes to a uniswap pool and forwards trades to the trades channel.
 func (scraper *UniswapV3Scraper) watchSwaps(ctx context.Context, poolAddress common.Address, tradesChannel chan models.Trade, lock *sync.RWMutex) {
-
 	// Relevant pair info is retrieved from @poolMap.
 	pair := scraper.poolMap[poolAddress]
+	log.Infof("UniswapV3 - subscribe to %s with pair %s", poolAddress.Hex(), pair.Token0.Symbol+"-"+pair.Token1.Symbol)
 
 	if scraper.exchange.Name != PANCAKESWAPV3_EXCHANGE {
 

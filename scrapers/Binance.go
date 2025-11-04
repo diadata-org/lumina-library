@@ -45,6 +45,7 @@ type binanceScraper struct {
 	genesis            time.Time
 	apiConnectRetries  int
 	proxyIndex         int
+	writeTicker        *time.Ticker
 }
 
 const (
@@ -72,6 +73,7 @@ func NewBinanceScraper(ctx context.Context, pairs []models.ExchangePair, failove
 		restartWaitTime:    5,
 		genesis:            time.Now(),
 		proxyIndex:         0,
+		writeTicker:        time.NewTicker(500 * time.Millisecond),
 	}
 
 	err := errors.New("cannot connect to API")
@@ -109,6 +111,7 @@ func (scraper *binanceScraper) processUnsubscribe(ctx context.Context, lock *syn
 	for {
 		select {
 		case pair := <-scraper.unsubscribeChannel:
+
 			// Unsubscribe from this pair.
 			if err := scraper.subscribe(pair, false, lock); err != nil {
 				log.Errorf("Binance - Unsubscribe pair %s: %v.", pair.ForeignName, err)
@@ -129,37 +132,35 @@ func (scraper *binanceScraper) processUnsubscribe(ctx context.Context, lock *syn
 
 func (scraper *binanceScraper) watchConfig(ctx context.Context, lock *sync.RWMutex) {
 	// Check for config changes every 30 seconds.
-	const interval = 30 * time.Second
-	ticker := time.NewTicker(interval)
+	envKey := strings.ToUpper(BINANCE_EXCHANGE) + "_WATCH_CONFIG_INTERVAL"
+	interval, err := strconv.Atoi(utils.Getenv(envKey, "30"))
+	if err != nil {
+		log.Errorf("Binance - Failed to parse %s: %v.", envKey, err)
+		return
+	}
+	ticker := time.NewTicker(time.Duration(interval) * time.Second)
 	defer ticker.Stop()
 
-	// Keep track of the last config.
-	var last map[string]int64
-
 	// Get the initial config.
-	cfg, err := models.GetExchangePairMap(BINANCE_EXCHANGE)
+	last, err := models.GetExchangePairMap(BINANCE_EXCHANGE)
 	if err != nil {
 		log.Errorf("Binance - GetExchangePairMap: %v.", err)
 		return
-	} else {
-		// Apply the initial config.
-		last = cfg
-		scraper.applyConfigDiff(ctx, lock, nil, cfg)
 	}
 
 	// Watch for config changes.
 	for {
 		select {
 		case <-ticker.C:
-			cfg, err := models.GetExchangePairMap(BINANCE_EXCHANGE)
+			current, err := models.GetExchangePairMap(BINANCE_EXCHANGE)
 			if err != nil {
 				log.Errorf("Binance - GetExchangePairMap: %v.", err)
 				continue
 			}
 			// Apply the config changes.
-			scraper.applyConfigDiff(ctx, lock, last, cfg)
+			scraper.applyConfigDiff(ctx, lock, last, current)
 			// Update the last config.
-			last = cfg
+			last = current
 		case <-ctx.Done():
 			log.Debugf("Binance - Close watchConfig routine of scraper with genesis: %v.", scraper.genesis)
 			return
@@ -293,6 +294,9 @@ func (scraper *binanceScraper) stopWatchdogForPair(lock *sync.RWMutex, foreignNa
 func (scraper *binanceScraper) Close(cancel context.CancelFunc) error {
 	log.Warn("Binance - call scraper.Close().")
 	cancel()
+	if scraper.writeTicker != nil {
+		scraper.writeTicker.Stop()
+	}
 	if scraper.wsClient == nil {
 		return nil
 	}
@@ -370,6 +374,7 @@ func (scraper *binanceScraper) subscribe(pair models.ExchangePair, subscribe boo
 		ID:     1,
 	}
 	lock.Lock()
+	<-scraper.writeTicker.C // at most 2 writes per second (500ms interval)
 	return scraper.wsClient.WriteJSON(subscribeMessage)
 }
 

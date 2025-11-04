@@ -9,6 +9,7 @@ import (
 	"time"
 
 	models "github.com/diadata-org/lumina-library/models"
+	"github.com/diadata-org/lumina-library/utils"
 	ws "github.com/gorilla/websocket"
 )
 
@@ -131,37 +132,35 @@ func (scraper *krakenScraper) processUnsubscribe(ctx context.Context, lock *sync
 
 func (scraper *krakenScraper) watchConfig(ctx context.Context, lock *sync.RWMutex) {
 	// Check for config changes every 30 seconds.
-	const interval = 30 * time.Second
-	ticker := time.NewTicker(interval)
+	envKey := strings.ToUpper(KRAKEN_EXCHANGE) + "_WATCH_CONFIG_INTERVAL"
+	interval, err := strconv.Atoi(utils.Getenv(envKey, "30"))
+	if err != nil {
+		log.Errorf("Kraken - Failed to parse %s: %v.", envKey, err)
+		return
+	}
+	ticker := time.NewTicker(time.Duration(interval) * time.Second)
 	defer ticker.Stop()
 
-	// Keep track of the last config.
-	var last map[string]int64
-
 	// Get the initial config.
-	cfg, err := models.GetExchangePairMap(KRAKEN_EXCHANGE)
+	last, err := models.GetExchangePairMap(KRAKEN_EXCHANGE)
 	if err != nil {
 		log.Errorf("Kraken - GetExchangePairMap: %v.", err)
 		return
-	} else {
-		// Apply the initial config.
-		last = cfg
-		scraper.applyConfigDiff(ctx, lock, nil, cfg)
 	}
 
 	// Watch for config changes.
 	for {
 		select {
 		case <-ticker.C:
-			cfg, err := models.GetExchangePairMap(KRAKEN_EXCHANGE)
+			current, err := models.GetExchangePairMap(KRAKEN_EXCHANGE)
 			if err != nil {
 				log.Errorf("Kraken - GetExchangePairMap: %v.", err)
 				continue
 			}
 			// Apply the config changes.
-			scraper.applyConfigDiff(ctx, lock, last, cfg)
+			scraper.applyConfigDiff(ctx, lock, last, current)
 			// Update the last config.
-			last = cfg
+			last = current
 		case <-ctx.Done():
 			log.Debugf("Kraken - Close watchConfig routine of scraper with genesis: %v.", scraper.genesis)
 			return
@@ -391,7 +390,7 @@ func (scraper *krakenScraper) subscribe(pair models.ExchangePair, subscribe bool
 		Method: subscribeType,
 		Params: krakenParams{
 			Channel: "trade",
-			Symbol:  []string{pair.UnderlyingPair.QuoteToken.Symbol + "/" + pair.UnderlyingPair.BaseToken.Symbol},
+			Symbol:  []string{strings.ReplaceAll(pair.ForeignName, "-", "/")},
 		},
 	}
 	lock.Lock()

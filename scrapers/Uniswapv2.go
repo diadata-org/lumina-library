@@ -92,8 +92,6 @@ func NewUniswapV2Scraper(ctx context.Context, exchangeName string, blockchain st
 	scraper.makeUniPoolMap(pools)
 
 	var lock sync.RWMutex
-	// initial pools
-	scraper.startInitialPools(ctx, pools, tradesChannel, &lock)
 
 	// resub handler triggered by watchdog
 	scraper.startResubHandler(ctx, tradesChannel, &lock)
@@ -102,20 +100,6 @@ func NewUniswapV2Scraper(ctx context.Context, exchangeName string, blockchain st
 	scraper.startUnsubHandler(ctx, &lock)
 	// watch config updates
 	go scraper.watchConfig(ctx, exchangeName, tradesChannel, &lock)
-}
-
-func (scraper *UniswapV2Scraper) startInitialPools(ctx context.Context, pools []models.Pool, tradesChannel chan models.Trade, lock *sync.RWMutex) {
-	started := map[string]bool{}
-	for _, p := range pools {
-		lower := strings.ToLower(p.Address)
-		if started[lower] {
-			continue
-		}
-		if err := scraper.startPool(ctx, p, tradesChannel, lock); err != nil {
-			log.Errorf("UniswapV2 - startPool %s: %v", p.Address, err)
-		}
-		started[lower] = true
-	}
 }
 
 func (scraper *UniswapV2Scraper) startResubHandler(ctx context.Context, tradesChannel chan models.Trade, lock *sync.RWMutex) {
@@ -275,7 +259,13 @@ func mapPoolsByAddrLower(pools []models.Pool) map[string]models.Pool {
 }
 
 func (s *UniswapV2Scraper) watchConfig(ctx context.Context, exchangeName string, trades chan models.Trade, lock *sync.RWMutex) {
-	tk := time.NewTicker(60 * time.Second)
+	envKey := strings.ToUpper(exchangeName) + "_WATCH_CONFIG_INTERVAL"
+	interval, err := strconv.Atoi(utils.Getenv(envKey, "30"))
+	if err != nil {
+		log.Errorf("UniswapV2 - Failed to parse %s: %v.", envKey, err)
+		return
+	}
+	tk := time.NewTicker(time.Duration(interval) * time.Second)
 	defer tk.Stop()
 
 	// load initial pools
@@ -409,6 +399,7 @@ func (scraper *UniswapV2Scraper) ListenToPair(ctx context.Context, address commo
 
 	// Relevant pool info is retrieved from @poolMap.
 	pair := scraper.poolMap[address]
+	log.Infof("UniswapV2 - subscribe to %s with pair %s", address.Hex(), pair.Token0.Symbol+"-"+pair.Token1.Symbol)
 
 	sink, sub, err := scraper.GetSwapsChannel(address)
 	if err != nil {

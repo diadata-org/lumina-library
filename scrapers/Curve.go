@@ -90,19 +90,6 @@ func NewCurveScraper(ctx context.Context, exchangeName string, blockchain string
 
 	var lock sync.RWMutex
 
-	// start initial pools, one time for each address
-	started := map[string]bool{}
-	for _, p := range pools {
-		lower := strings.ToLower(p.Address)
-		if started[lower] {
-			continue
-		}
-		if err := scraper.startPool(ctx, p, tradesChannel, &lock); err != nil {
-			log.Errorf("Curve - startPool %s: %v", p.Address, err)
-		}
-		started[lower] = true
-	}
-
 	// resubscribe handler
 	go scraper.startResubHandler(ctx, tradesChannel, &lock)
 
@@ -307,7 +294,13 @@ func aggWatchdogByAddr(m map[string]models.Pool) map[string]int64 {
 }
 
 func (s *CurveScraper) watchConfig(ctx context.Context, exchangeName string, trades chan models.Trade, lock *sync.RWMutex) {
-	t := time.NewTicker(60 * time.Second) // TODO: adjust the interval as needed
+	envKey := strings.ToUpper(CURVE_EXCHANGE) + "_WATCH_CONFIG_INTERVAL"
+	interval, err := strconv.Atoi(utils.Getenv(envKey, "30"))
+	if err != nil {
+		log.Errorf("Curve - Failed to parse %s: %v.", envKey, err)
+		return
+	}
+	t := time.NewTicker(time.Duration(interval) * time.Second)
 	defer t.Stop()
 
 	// load initial pools
@@ -420,7 +413,7 @@ func (s *CurveScraper) applyConfigDiff(
 		}
 		// new entry: first append the pair to the poolMap
 		if err := s.ensurePairInPoolMap(p); err != nil {
-			log.Errorf("Curve - ensurePairInPoolMap(add) %s#%s: %v", p.Address, p.Order, err)
+			log.Errorf("Curve - ensurePairInPoolMap(add) %s#%v: %v", p.Address, p.Order, err)
 			continue
 		}
 		addrLower := strings.ToLower(p.Address)
@@ -593,6 +586,7 @@ func (scraper *CurveScraper) watchSwaps(ctx context.Context, address common.Addr
 						log.Errorf("Curve - no pair found for address %s", swap.addr.Hex())
 						continue
 					}
+					log.Infof("Curve - subscribe to %s with pair %s", address.Hex(), pair.OutAsset.Symbol+"-"+pair.InAsset.Symbol)
 					var decSold, decBought int
 					switch swap.soldID {
 					case pair.InIndex:
@@ -637,6 +631,7 @@ func (scraper *CurveScraper) watchSwaps(ctx context.Context, address common.Addr
 						log.Errorf("Curve - no pair found for address %s", swap.addr.Hex())
 						continue
 					}
+					log.Infof("Curve - subscribe to %s with pair %s", address.Hex(), pair.OutAsset.Symbol+"-"+pair.InAsset.Symbol)
 					var decSold, decBought int
 					switch swap.soldID {
 					case pair.InIndex:
@@ -681,6 +676,7 @@ func (scraper *CurveScraper) watchSwaps(ctx context.Context, address common.Addr
 						log.Errorf("Curve - no pair found for address %s", swap.addr.Hex())
 						continue
 					}
+					log.Infof("Curve - subscribe to %s with pair %s", address.Hex(), pair.OutAsset.Symbol+"-"+pair.InAsset.Symbol)
 					var decSold, decBought int
 					switch swap.soldID {
 					case pair.InIndex:
@@ -725,6 +721,7 @@ func (scraper *CurveScraper) watchSwaps(ctx context.Context, address common.Addr
 						log.Errorf("Curve - no pair found for address %s", swap.addr.Hex())
 						continue
 					}
+					log.Infof("Curve - subscribe to %s with pair %s", address.Hex(), pair.OutAsset.Symbol+"-"+pair.InAsset.Symbol)
 					var decSold, decBought int
 					switch swap.soldID {
 					case pair.InIndex:
