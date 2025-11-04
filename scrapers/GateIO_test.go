@@ -310,7 +310,7 @@ func TestGateIOFetchTrades(t *testing.T) {
 	select {
 	case trade := <-tradesCh:
 		if trade.Price != 65000 {
-			t.Errorf("expected price 100000, got %v", trade.Price)
+			t.Errorf("expected price 65000, got %v", trade.Price)
 		}
 		if trade.Volume != 0.5 {
 			t.Errorf("expected volume 0.5, got %v", trade.Volume)

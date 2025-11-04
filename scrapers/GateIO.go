@@ -72,7 +72,7 @@ func NewGateIOScraper(ctx context.Context, pairs []models.ExchangePair, failover
 	var wsDialer ws.Dialer
 	wsClient, _, err := wsDialer.Dial(_GateIOsocketurl, nil)
 	if err != nil {
-		log.Errorf("GateIO - Dial ws base string: %s." + err.Error())
+		log.Errorf("GateIO - Dial ws base string: %v.", err)
 		failoverChannel <- string(GATEIO_EXCHANGE)
 		return &scraper
 	}
