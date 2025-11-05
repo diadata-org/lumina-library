@@ -148,14 +148,13 @@ func GetExchangePairMap(exchange string) (map[string]int64, error) {
 		return nil, err
 	}
 	path := configPath + exchange + ".json"
-	jsonFile, err := os.Open(path)
+	jsonFile, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer jsonFile.Close()
 
 	var cfg ExchangeConfig
-	if err := json.NewDecoder(jsonFile).Decode(&cfg); err != nil {
+	if err := json.Unmarshal(jsonFile, &cfg); err != nil {
 		return nil, err
 	}
 

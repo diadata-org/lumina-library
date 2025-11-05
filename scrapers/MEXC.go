@@ -35,6 +35,7 @@ type MEXCScraper struct {
 	maxSubscriptions   int
 	pairConnIndex      map[string]int
 	mu                 sync.RWMutex
+	failoverChannel    chan string
 }
 
 var (
@@ -60,9 +61,10 @@ func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, failoverCh
 		connections:        make([]WSConnection, 0),
 		pairConnIndex:      make(map[string]int),
 		mu:                 sync.RWMutex{},
+		failoverChannel:    failoverChannel,
 	}
 
-	if _, err := scraper.newConn(failoverChannel); err != nil {
+	if _, err := scraper.newConn(); err != nil {
 		log.Errorf("MEXC - newConn failed: %v.", err)
 		return &scraper
 	}
@@ -94,7 +96,7 @@ func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, failoverCh
 
 	// Subscribe to pairs and initialize MEXCLastTradeTimeMap.
 	for _, pair := range pairs {
-		if err := scraper.subscribe(pair, true, failoverChannel); err != nil {
+		if err := scraper.subscribe(pair, true); err != nil {
 			log.Errorf("MEXC - subscribe to pair %s: %v.", pair.ForeignName, err)
 		} else {
 			log.Debugf("MEXC - Subscribed to pair %s:%s.", MEXC_EXCHANGE, pair.ForeignName)
@@ -107,8 +109,8 @@ func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, failoverCh
 	for _, conn := range scraper.connections {
 		go scraper.fetchTrades(conn)
 	}
-	go scraper.resubscribe(ctx, failoverChannel)
-	go scraper.processUnsubscribe(ctx, &scraper.mu, failoverChannel)
+	go scraper.resubscribe(ctx)
+	go scraper.processUnsubscribe(ctx, &scraper.mu)
 	go scraper.watchConfig(ctx, &scraper.mu)
 
 	// Check last trade time for each subscribed pair and resubscribe if no activity for more than @MEXCWatchdogDelayMap.
@@ -119,12 +121,12 @@ func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, failoverCh
 	return &scraper
 }
 
-func (s *MEXCScraper) newConn(failoverChannel chan string) (*WSConnection, error) {
+func (s *MEXCScraper) newConn() (*WSConnection, error) {
 	var wsDialer ws.Dialer
 	wsClient, _, err := wsDialer.Dial(MEXCWSBaseString, nil)
 	if err != nil {
 		log.Errorf("MEXC - Failed to open WebSocket connection: %v", err)
-		failoverChannel <- string(MEXC_EXCHANGE)
+		s.failoverChannel <- string(MEXC_EXCHANGE)
 		return nil, err
 	}
 	conn := WSConnection{
@@ -138,12 +140,12 @@ func (s *MEXCScraper) newConn(failoverChannel chan string) (*WSConnection, error
 	return &s.connections[len(s.connections)-1], nil
 }
 
-func (scraper *MEXCScraper) processUnsubscribe(ctx context.Context, lock *sync.RWMutex, failoverChannel chan string) {
+func (scraper *MEXCScraper) processUnsubscribe(ctx context.Context, lock *sync.RWMutex) {
 	for {
 		select {
 		case pair := <-scraper.unsubscribeChannel:
 			// Unsubscribe from this pair.
-			if err := scraper.subscribe(pair, false, failoverChannel); err != nil {
+			if err := scraper.subscribe(pair, false); err != nil {
 				log.Errorf("MEXC - Unsubscribe pair %s: %v.", pair.ForeignName, err)
 			} else {
 				log.Infof("MEXC - Unsubscribed pair %s.", pair.ForeignName)
@@ -246,7 +248,11 @@ func (scraper *MEXCScraper) applyConfigDiff(ctx context.Context, lock *sync.RWMu
 			log.Errorf("MEXC - Failed to GetExchangePairInfo for new pair %s: %v.", p, err)
 			continue
 		}
-		scraper.subscribeChannel <- ep
+		err = scraper.subscribe(ep, true)
+		if err != nil {
+			log.Errorf("MEXC - Failed to subscribe to %s: %v", ep.ForeignName, err)
+			continue // Don't start watchdog if subscription failed
+		}
 		// Start watchdog for this pair.
 		scraper.startWatchdogForPair(ctx, lock, ep)
 		key := strings.ReplaceAll(ep.ForeignName, "-", "")
@@ -427,17 +433,17 @@ func (scraper *MEXCScraper) handleWSResponse(message *mexcproto.PublicAggreDeals
 
 }
 
-func (s *MEXCScraper) resubscribe(ctx context.Context, failoverChannel chan string) {
+func (s *MEXCScraper) resubscribe(ctx context.Context) {
 	for {
 		select {
 		case pair := <-s.subscribeChannel:
-			err := s.subscribe(pair, false, failoverChannel) // unsubscribe first
+			err := s.subscribe(pair, false) // unsubscribe first
 			if err != nil {
 				log.Errorf("MEXC - Unsubscribe failed for %s: %v", pair.ForeignName, err)
 			}
 			time.Sleep(2 * time.Second)
 
-			err = s.subscribe(pair, true, failoverChannel)
+			err = s.subscribe(pair, true)
 			if err != nil {
 				log.Errorf("MEXC - Resubscribe failed for %s: %v", pair.ForeignName, err)
 			}
@@ -449,7 +455,7 @@ func (s *MEXCScraper) resubscribe(ctx context.Context, failoverChannel chan stri
 	}
 }
 
-func (s *MEXCScraper) subscribe(pair models.ExchangePair, subscribe bool, failoverChannel chan string) error {
+func (s *MEXCScraper) subscribe(pair models.ExchangePair, subscribe bool) error {
 	foreignName := strings.ReplaceAll(pair.ForeignName, "-", "")
 	topic := "spot@public.aggre.deals.v3.api.pb@100ms@" + foreignName
 
@@ -475,7 +481,7 @@ func (s *MEXCScraper) subscribe(pair models.ExchangePair, subscribe bool, failov
 
 		// If all are full, create a new connection
 		if targetConnID == -1 {
-			if _, err := s.newConn(failoverChannel); err != nil {
+			if _, err := s.newConn(); err != nil {
 				log.Errorf("MEXC - Failed to create new connection for %s: %v", pair.ForeignName, err)
 				return err
 			}

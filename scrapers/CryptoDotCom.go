@@ -223,7 +223,11 @@ func (scraper *cryptodotcomScraper) applyConfigDiff(ctx context.Context, lock *s
 			log.Errorf("Crypto.com - Failed to GetExchangePairInfo for new pair %s: %v.", p, err)
 			continue
 		}
-		scraper.subscribeChannel <- ep
+		err = scraper.subscribe(ep, true, lock)
+		if err != nil {
+			log.Errorf("Crypto.com - Failed to subscribe to %s: %v", ep.ForeignName, err)
+			continue // Don't start watchdog if subscription failed
+		}
 		// Start watchdog for this pair.
 		scraper.startWatchdogForPair(ctx, lock, ep)
 		key := strings.ReplaceAll(ep.ForeignName, "-", "")

@@ -212,7 +212,11 @@ func (scraper *coinbaseScraper) applyConfigDiff(ctx context.Context, lock *sync.
 			log.Errorf("CoinBase - Failed to GetExchangePairInfo for new pair %s: %v.", p, err)
 			continue
 		}
-		scraper.subscribeChannel <- ep
+		err = scraper.subscribe(ep, true, lock)
+		if err != nil {
+			log.Errorf("CoinBase - Failed to subscribe to %s: %v", ep.ForeignName, err)
+			continue // Don't start watchdog if subscription failed
+		}
 		// Start watchdog for this pair.
 		scraper.startWatchdogForPair(ctx, lock, ep)
 		// Add the pair to the ticker pair map.
