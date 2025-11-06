@@ -1,8 +1,11 @@
 package models
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/user"
 	"sort"
@@ -15,6 +18,11 @@ import (
 
 // Separator for a pair ticker's assets, i.e. BTC-USDT.
 const PAIR_TICKER_SEPARATOR = "-"
+
+type GitHubContent struct {
+	Content  string `json:"content"`
+	Encoding string `json:"encoding"`
+}
 
 // ExchangePair is the container for a pair as used by exchanges.
 // Across exchanges, these pairs cannot be uniquely mapped on asset pairs.
@@ -60,6 +68,44 @@ func getPath2Config(directory string) (string, error) {
 		return configPath, nil
 	}
 	return os.Getenv("GOPATH") + "/src/github.com/diadata-org/decentral-feeder" + configPath, nil
+}
+
+func getLocalConfig(directory string, exchange string) (data []byte, err error) {
+	configPath, err := getPath2Config(directory)
+	if err != nil {
+		return nil, err
+	}
+	path := configPath + exchange + ".json"
+	jsonFile, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return jsonFile, nil
+}
+
+func readFromRemote(directory string, exchange string) (data []byte, err error) {
+	url := "https://api.github.com/repos/diadata-org/decentral-feeder/contents/config/" + directory + "/" + exchange + ".json"
+
+	req, _ := http.NewRequest("GET", url, nil)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		err = fmt.Errorf("GitHub API error: %s\n%s", resp.Status, string(body))
+		return
+	}
+
+	var gh GitHubContent
+	if err = json.NewDecoder(resp.Body).Decode(&gh); err != nil {
+		return
+	}
+	data, err = base64.StdEncoding.DecodeString(gh.Content)
+	return
 }
 
 // According to pairs config file + symbol identifiers directory, construct []ExchangePair
@@ -142,13 +188,24 @@ func ConstructExchangePair(exchange string, pair string, watchDogDelay int64, id
 	return ep, nil
 }
 
-func GetExchangePairMap(exchange string) (map[string]int64, error) {
-	configPath, err := getPath2Config("exchangePairs")
+func GetConfig(directory string, exchange string) (data []byte, err error) {
+	jsonFile, err := readFromRemote(directory, exchange)
 	if err != nil {
-		return nil, err
+		log.Errorf("Failed to read %s from remote config for %s: %v", directory, exchange, err)
+		jsonFile, err = getLocalConfig(directory, exchange)
+		if err != nil {
+			log.Errorf("Failed to read %s from local config for %s: %v", directory, exchange, err)
+			return nil, err
+		}
+		log.Infof("Read %s from local config for %s", directory, exchange)
+	} else {
+		log.Infof("Read %s from remote config for %s", directory, exchange)
 	}
-	path := configPath + exchange + ".json"
-	jsonFile, err := os.ReadFile(path)
+	return jsonFile, nil
+}
+
+func GetExchangePairMap(exchange string) (map[string]int64, error) {
+	jsonFile, err := GetConfig("exchangePairs", exchange)
 	if err != nil {
 		return nil, err
 	}

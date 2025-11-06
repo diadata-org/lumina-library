@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -54,22 +53,14 @@ func PoolsFromConfigFile(exchange string) ([]Pool, error) {
 		Pools []filePool `json:"Pools"`
 	}
 
-	poolConfigPath, err := getPath2Config("pools")
+	jsonFile, err := GetConfig("pools", exchange)
 	if err != nil {
-		return nil, fmt.Errorf("getPath2Config(pools): %w", err)
+		return nil, fmt.Errorf("GetConfig(pools, %s): %w", exchange, err)
 	}
-	path := poolConfigPath + strings.TrimSpace(exchange) + ".json"
 
-	// read and deserialize the file
 	var cfg fileSchema
-
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", path, err)
-	}
-	defer f.Close()
-	if err := json.NewDecoder(f).Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("decode %s: %w", path, err)
+	if err := json.Unmarshal(jsonFile, &cfg); err != nil {
+		return nil, err
 	}
 
 	// construct the output
