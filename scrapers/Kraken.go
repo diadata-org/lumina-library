@@ -131,9 +131,9 @@ func (scraper *krakenScraper) processUnsubscribe(ctx context.Context, lock *sync
 }
 
 func (scraper *krakenScraper) watchConfig(ctx context.Context, lock *sync.RWMutex) {
-	// Check for config changes every 30 seconds.
+	// Check for config changes every 60 minutes.
 	envKey := strings.ToUpper(KRAKEN_EXCHANGE) + "_WATCH_CONFIG_INTERVAL"
-	interval, err := strconv.Atoi(utils.Getenv(envKey, "30"))
+	interval, err := strconv.Atoi(utils.Getenv(envKey, "3600"))
 	if err != nil {
 		log.Errorf("Kraken - Failed to parse %s: %v.", envKey, err)
 		return

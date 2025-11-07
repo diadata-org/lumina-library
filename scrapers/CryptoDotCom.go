@@ -138,9 +138,9 @@ func (scraper *cryptodotcomScraper) processUnsubscribe(ctx context.Context, lock
 }
 
 func (scraper *cryptodotcomScraper) watchConfig(ctx context.Context, lock *sync.RWMutex) {
-	// Check for config changes every 30 seconds.
+	// Check for config changes every 60 minutes.
 	envKey := strings.ToUpper(CRYPTODOTCOM_EXCHANGE) + "_WATCH_CONFIG_INTERVAL"
-	interval, err := strconv.Atoi(utils.Getenv(envKey, "30"))
+	interval, err := strconv.Atoi(utils.Getenv(envKey, "3600"))
 	if err != nil {
 		log.Errorf("Crypto.com - Failed to parse %s: %v.", envKey, err)
 		return

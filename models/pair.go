@@ -10,6 +10,7 @@ import (
 	"os/user"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/diadata-org/lumina-library/utils"
 	"github.com/ethereum/go-ethereum/common"
@@ -87,6 +88,8 @@ func readFromRemote(directory string, exchange string) (data []byte, err error) 
 	url := "https://api.github.com/repos/diadata-org/decentral-feeder/contents/config/" + directory + "/" + exchange + ".json"
 
 	req, _ := http.NewRequest("GET", url, nil)
+
+	time.Sleep(350 * time.Millisecond)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

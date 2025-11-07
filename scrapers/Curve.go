@@ -294,8 +294,9 @@ func aggWatchdogByAddr(m map[string]models.Pool) map[string]int64 {
 }
 
 func (s *CurveScraper) watchConfig(ctx context.Context, exchangeName string, trades chan models.Trade, lock *sync.RWMutex) {
+	// Check for config changes every 60 minutes.
 	envKey := strings.ToUpper(CURVE_EXCHANGE) + "_WATCH_CONFIG_INTERVAL"
-	interval, err := strconv.Atoi(utils.Getenv(envKey, "30"))
+	interval, err := strconv.Atoi(utils.Getenv(envKey, "3600"))
 	if err != nil {
 		log.Errorf("Curve - Failed to parse %s: %v.", envKey, err)
 		return
@@ -578,12 +579,12 @@ func (scraper *CurveScraper) watchSwaps(ctx context.Context, address common.Addr
 					}
 					pairs := scraper.poolMap[swap.addr]
 					if len(pairs) == 0 {
-						log.Errorf("Curve - no pairs found for address %s", swap.addr.Hex())
+						log.Warnf("Curve - Sink - no pairs found for address %s", swap.addr.Hex())
 						continue
 					}
 					pair, ok := findPairByIdx(pairs, swap.soldID, swap.boughtID)
 					if !ok {
-						log.Errorf("Curve - no pair found for address %s", swap.addr.Hex())
+						log.Warnf("Curve - Sink - no pair found for address %s", swap.addr.Hex())
 						continue
 					}
 					log.Infof("Curve - subscribe to %s with pair %s", address.Hex(), pair.OutAsset.Symbol+"-"+pair.InAsset.Symbol)
@@ -623,12 +624,12 @@ func (scraper *CurveScraper) watchSwaps(ctx context.Context, address common.Addr
 					}
 					pairs := scraper.poolMap[swap.addr]
 					if len(pairs) == 0 {
-						log.Errorf("Curve - no pairs found for address %s", swap.addr.Hex())
+						log.Warnf("Curve - factorySink - no pairs found for address %s", swap.addr.Hex())
 						continue
 					}
 					pair, ok := findPairByIdx(pairs, swap.soldID, swap.boughtID)
 					if !ok {
-						log.Errorf("Curve - no pair found for address %s", swap.addr.Hex())
+						log.Warnf("Curve - factorySink - no pair found for address %s", swap.addr.Hex())
 						continue
 					}
 					log.Infof("Curve - subscribe to %s with pair %s", address.Hex(), pair.OutAsset.Symbol+"-"+pair.InAsset.Symbol)
@@ -668,12 +669,12 @@ func (scraper *CurveScraper) watchSwaps(ctx context.Context, address common.Addr
 					}
 					pairs := scraper.poolMap[swap.addr]
 					if len(pairs) == 0 {
-						log.Errorf("Curve - no pairs found for address %s", swap.addr.Hex())
+						log.Warnf("Curve - twoSink - no pairs found for address %s", swap.addr.Hex())
 						continue
 					}
 					pair, ok := findPairByIdx(pairs, swap.soldID, swap.boughtID)
 					if !ok {
-						log.Errorf("Curve - no pair found for address %s", swap.addr.Hex())
+						log.Warnf("Curve - twoSink - no pair found for address %s", swap.addr.Hex())
 						continue
 					}
 					log.Infof("Curve - subscribe to %s with pair %s", address.Hex(), pair.OutAsset.Symbol+"-"+pair.InAsset.Symbol)
@@ -713,12 +714,12 @@ func (scraper *CurveScraper) watchSwaps(ctx context.Context, address common.Addr
 					}
 					pairs := scraper.poolMap[swap.addr]
 					if len(pairs) == 0 {
-						log.Errorf("Curve - no pairs found for address %s", swap.addr.Hex())
+						log.Warnf("Curve - underlyingSink - no pairs found for address %s", swap.addr.Hex())
 						continue
 					}
 					pair, ok := findPairByIdx(pairs, swap.soldID, swap.boughtID)
 					if !ok {
-						log.Errorf("Curve - no pair found for address %s", swap.addr.Hex())
+						log.Warnf("Curve - underlyingSink - no pair found for address %s", swap.addr.Hex())
 						continue
 					}
 					log.Infof("Curve - subscribe to %s with pair %s", address.Hex(), pair.OutAsset.Symbol+"-"+pair.InAsset.Symbol)

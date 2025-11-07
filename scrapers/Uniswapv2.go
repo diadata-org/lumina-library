@@ -89,9 +89,9 @@ func NewUniswapV2Scraper(ctx context.Context, exchangeName string, blockchain st
 		log.Error("UniswapV2 - init ws client: ", err)
 	}
 
-	scraper.makeUniPoolMap(pools)
-
 	var lock sync.RWMutex
+
+	scraper.makeUniPoolMap(pools, &lock)
 
 	// resub handler triggered by watchdog
 	scraper.startResubHandler(ctx, tradesChannel, &lock)
@@ -259,8 +259,9 @@ func mapPoolsByAddrLower(pools []models.Pool) map[string]models.Pool {
 }
 
 func (s *UniswapV2Scraper) watchConfig(ctx context.Context, exchangeName string, trades chan models.Trade, lock *sync.RWMutex) {
+	// Check for config changes every 60 minutes.
 	envKey := strings.ToUpper(exchangeName) + "_WATCH_CONFIG_INTERVAL"
-	interval, err := strconv.Atoi(utils.Getenv(envKey, "30"))
+	interval, err := strconv.Atoi(utils.Getenv(envKey, "3600"))
 	if err != nil {
 		log.Errorf("UniswapV2 - Failed to parse %s: %v.", envKey, err)
 		return
@@ -349,7 +350,7 @@ func (s *UniswapV2Scraper) applyConfigDiff(
 }
 
 // makeUniPoolMap returns a map with pool addresses as keys and the underlying UniswapPair as values.
-func (scraper *UniswapV2Scraper) makeUniPoolMap(pools []models.Pool) error {
+func (scraper *UniswapV2Scraper) makeUniPoolMap(pools []models.Pool, lock *sync.RWMutex) error {
 	var assetMap = make(map[common.Address]models.Asset)
 
 	for _, p := range pools {
@@ -381,6 +382,7 @@ func (scraper *UniswapV2Scraper) makeUniPoolMap(pools []models.Pool) error {
 			}
 			assetMap[token1Address] = token1
 		}
+		lock.Lock()
 		scraper.poolMap[common.HexToAddress(p.Address)] = UniswapPair{
 			Address:     common.HexToAddress(p.Address),
 			Token0:      assetMap[token0Address],
@@ -388,6 +390,7 @@ func (scraper *UniswapV2Scraper) makeUniPoolMap(pools []models.Pool) error {
 			ForeignName: assetMap[token0Address].Symbol + "-" + assetMap[token1Address].Symbol,
 			Order:       p.Order,
 		}
+		lock.Unlock()
 	}
 	return nil
 }

@@ -140,8 +140,9 @@ func (scraper *UniswapV3Scraper) startUnsubHandler(ctx context.Context, lock *sy
 }
 
 func (scraper *UniswapV3Scraper) watchConfig(ctx context.Context, exchangeName string, trades chan models.Trade, lock *sync.RWMutex) {
+	// Check for config changes every 60 minutes.
 	envKey := strings.ToUpper(exchangeName) + "_WATCH_CONFIG_INTERVAL"
-	interval, err := strconv.Atoi(utils.Getenv(envKey, "30"))
+	interval, err := strconv.Atoi(utils.Getenv(envKey, "3600"))
 	if err != nil {
 		log.Errorf("UniswapV3 - Failed to parse %s: %v.", envKey, err)
 		return
@@ -208,7 +209,9 @@ func (scraper *UniswapV3Scraper) applyConfigDiff(ctx context.Context, last map[s
 			if pair, ok := scraper.poolMap[addr]; ok && pair.Order != p.Order {
 				log.Infof("UniswapV3 - Update order %s: %d -> %d", p.Address, pair.Order, p.Order)
 				pair.Order = p.Order
+				lock.Lock()
 				scraper.poolMap[addr] = pair
+				lock.Unlock()
 			}
 		}
 	}
@@ -237,16 +240,20 @@ func (scraper *UniswapV3Scraper) startPool(ctx context.Context, pool models.Pool
 		if err != nil {
 			return err
 		}
+		lock.Lock()
 		scraper.poolMap[addr] = UniV3Pair{
 			Token0:  t0,
 			Token1:  t1,
 			Address: addr,
 			Order:   pool.Order,
 		}
+		lock.Unlock()
 	} else {
 		p := scraper.poolMap[addr]
 		p.Order = pool.Order
+		lock.Lock()
 		scraper.poolMap[addr] = p
+		lock.Unlock()
 	}
 	lock.Lock()
 	if _, ok := scraper.lastTradeTimeMap[addr]; !ok {
