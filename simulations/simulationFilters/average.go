@@ -22,13 +22,13 @@ func Average(trades []models.SimulatedTrade, USDPrice bool) (avgPrice float64, t
 
 			if _, ok := basePriceMap[t.BaseToken]; !ok {
 				// TO DO: We can change this to GetOnchainPrice in order to fetch price from Lumina.
-				basePrice, err := utils.GetPriceFromDiaAPI(t.BaseToken.Blockchain, t.BaseToken.Address)
+				basePrice, err := t.BaseToken.GetPriceFromDiaAPI()
 				if err != nil {
 					log.Errorf("GetPriceFromDiaAPI for %s -- %s: %v ", t.BaseToken.Blockchain, t.BaseToken.Address, err)
 					continue
 				}
-				prices = append(prices, basePrice*t.Price)
-				basePriceMap[t.BaseToken] = basePrice
+				prices = append(prices, basePrice.Price*t.Price)
+				basePriceMap[t.BaseToken] = basePrice.Price
 			} else {
 				prices = append(prices, basePriceMap[t.BaseToken]*t.Price)
 			}

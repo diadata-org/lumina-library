@@ -423,7 +423,7 @@ func (scraper *SimulationScraperVersion2) initAssetsAndMapsVersion2() error {
 // updatePriceMap fetches the current price of each of the involved assets from DIA lumina meta contract.
 func (scraper *SimulationScraperVersion2) updatePriceMapVersion2(lock *sync.RWMutex) {
 	for asset := range scraper.priceMap {
-		quotation, err := asset.GetOnchainPrice(common.HexToAddress(DIA_Meta_Contract_AddressVersion2), DIA_Meta_Contract_PrecisionVersion2, scraper.luminaClient)
+		quotation, err := asset.GetPrice(common.HexToAddress(DIA_Meta_Contract_AddressVersion2), DIA_Meta_Contract_PrecisionVersion2, scraper.luminaClient)
 		if err != nil && quotation.Price == 1 {
 			log.Errorf("Failed to GetOnchainPrice for %s -- %s: %v ; continue with default price of 1", asset.Symbol, asset.Address, err)
 			continue

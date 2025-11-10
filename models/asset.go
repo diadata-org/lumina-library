@@ -1,6 +1,8 @@
 package models
 
 import (
+	"encoding/json"
+	"errors"
 	"math"
 	"math/big"
 	"strings"
@@ -34,33 +36,76 @@ func (a *Asset) AssetIdentifier() string {
 	return a.Blockchain + "-" + a.Address
 }
 
-// GetOnchainPrice returns the latest price of asset @a as published by DIA metacontract with @address.
-func (a *Asset) GetOnchainPrice(metacontractAddress common.Address, precision int, client *ethclient.Client) (assetQuotation AssetQuotation, err error) {
-	var caller *luminametacontract.LuminametacontractCaller
+// GetPrice returns the latest price of asset @a as published by DIA metacontract with @address.
+// Fallback in case of error or 0 price is diadata API.
+func (a *Asset) GetPrice(
+	metacontractAddress common.Address,
+	precision int,
+	client *ethclient.Client,
+) (assetQuotation AssetQuotation, err error) {
 
+	assetQuotation, err = a.GetOnchainPrice(metacontractAddress, precision, client)
+	if err != nil || assetQuotation.Price == 0 {
+		log.Warnf("On-chain price not available for address-blockchain: %s -- %s", a.Blockchain, a.Address)
+		return a.GetPriceFromDiaAPI()
+	}
+
+	// TO DO: Should we add a threshold such that onchain price is only taken into account if timestamp not older?
+	assetQuotation.Source = "DIA_Lumina_" + metacontractAddress.Hex()
+
+	return
+}
+
+// GetOnchainPrice returns a quotation for asset @a by querying the metactontract with @metacontractAddress.
+func (a *Asset) GetOnchainPrice(
+	metacontractAddress common.Address,
+	precision int,
+	client *ethclient.Client,
+) (aq AssetQuotation, err error) {
+
+	var caller *luminametacontract.LuminametacontractCaller
 	caller, err = luminametacontract.NewLuminametacontractCaller(metacontractAddress, client)
 	if err != nil {
 		return
 	}
+
 	priceBig, timeUnixBig, err := caller.GetValue(&bind.CallOpts{}, a.Symbol+"/USD")
-	if err != nil || priceBig.Cmp(big.NewInt(0)) == 0 || priceBig == nil {
-		priceFloat64, err := utils.GetPriceFromDiaAPI(a.Address, a.Blockchain)
-		if err != nil {
-			log.Errorf("Failed to retrieve price from both on-chain and the DIA API: %v\n", err)
-			priceFloat64 = 1
-		}
-		assetQuotation.Price = priceFloat64
-	} else {
-		assetQuotation.Price, _ = new(big.Float).Mul(new(big.Float).SetInt(priceBig), big.NewFloat(math.Pow10(-precision))).Float64()
-	}
-	if timeUnixBig != nil {
-		assetQuotation.Time = time.Unix(timeUnixBig.Int64(), 0)
-	} else {
-		assetQuotation.Time = time.Now()
+	if err != nil {
+		return
 	}
 
-	assetQuotation.Asset = *a
-	assetQuotation.Source = "DIA_Lumina_" + metacontractAddress.Hex()
+	if priceBig == nil {
+		err = errors.New("price is zero")
+		return
+	}
+
+	aq.Price, _ = new(big.Float).Mul(new(big.Float).SetInt(priceBig), big.NewFloat(math.Pow10(-precision))).Float64()
+
+	if timeUnixBig != nil {
+		aq.Time = time.Unix(timeUnixBig.Int64(), 0)
+	} else {
+		aq.Time = time.Now()
+	}
+
+	aq.Asset = *a
+	aq.Source = "DIA_Lumina_" + metacontractAddress.Hex()
+
+	return
+}
+
+// GetPriceFromDiaAPI returns the price of the asset given by @address and @blockchain as returned by
+// assetQuotation endpoint of diadata API.
+func (a *Asset) GetPriceFromDiaAPI() (aq AssetQuotation, err error) {
+
+	baseString := "https://api.diadata.org/v1/assetQuotation/" + a.Blockchain + "/" + a.Address
+
+	var response []byte
+	response, _, err = utils.GetRequest(baseString)
+	if err != nil {
+		return
+	}
+
+	err = json.Unmarshal(response, &aq)
 
 	return
 }

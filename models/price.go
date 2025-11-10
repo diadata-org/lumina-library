@@ -3,8 +3,6 @@ package models
 import (
 	"errors"
 	"time"
-
-	"github.com/diadata-org/lumina-library/utils"
 )
 
 // AssetQuotation is the most recent price point information on an asset.
@@ -31,12 +29,12 @@ func GetPriceBaseAsset(tb TradesBlock, priceCacheMap map[string]float64) (basePr
 		basePrice, ok = priceCacheMap[basetoken.AssetIdentifier()]
 		if !ok {
 			// TO DO: Should we get price from metacontract by using GetOnchainPrice?
-			var price float64
-			price, err = utils.GetPriceFromDiaAPI(basetoken.Address, basetoken.Blockchain)
+			var assetQuotation AssetQuotation
+			assetQuotation, err = basetoken.GetPriceFromDiaAPI()
 			if err != nil {
 				return
 			}
-			basePrice = price
+			basePrice = assetQuotation.Price
 			priceCacheMap[basetoken.AssetIdentifier()] = basePrice
 		}
 

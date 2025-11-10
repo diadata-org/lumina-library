@@ -201,9 +201,9 @@ func (scraper *UniswapV4Simulator) getExchangePairs() error {
 // If not existing in the meta contract, if fetches the price from diadata API.
 func (scraper *UniswapV4Simulator) updatePriceMap(lock *sync.RWMutex) {
 	for asset := range scraper.priceMap {
-		quotation, err := asset.GetOnchainPrice(common.HexToAddress(DIAMetaContractAddress), DIAMetaContractPrecision, scraper.luminaClient)
+		quotation, err := asset.GetPrice(common.HexToAddress(DIAMetaContractAddress), DIAMetaContractPrecision, scraper.luminaClient)
 		if err != nil {
-			log.Errorf("GetOnchainPrice for %s -- %s: %v", asset.Symbol, asset.Address, err)
+			log.Errorf("GetPrice for %s -- %s: %v", asset.Symbol, asset.Address, err)
 			quotation.Price = scraper.getPriceFromAPI(asset)
 		} else {
 			log.Infof("USD price for (base-)token %s: %v", asset.Symbol, quotation.Price)
@@ -410,13 +410,15 @@ func (scraper *UniswapV4Simulator) simulateTrades(tradesChannel chan models.Simu
 	}
 }
 
+// TO DO: We cannot return price 1 for arbitrary assets.
 // getPriceFromAPI returns the price of @asset in diadata API.
 func (scraper *UniswapV4Simulator) getPriceFromAPI(asset models.Asset) float64 {
 	log.Warnf("Could not determine price of %s on chain. Checking DIA API.", asset.Symbol)
-	price, err := utils.GetPriceFromDiaAPI(asset.Address, asset.Blockchain)
+	assetQuotation, err := asset.GetPriceFromDiaAPI()
 	if err != nil {
-		price = 1
+		price := float64(1)
 		log.Errorf("Failed to get price of %s (blockchain -- address: %s -- %s) from DIA API: %v. Set to default %v", asset.Symbol, asset.Blockchain, asset.Address, err, price)
+		return price
 	} else {
 		log.Infof("Fetched price of %s from DIA API: %.4f", asset.Symbol, price)
 	}
