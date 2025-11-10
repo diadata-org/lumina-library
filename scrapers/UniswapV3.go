@@ -438,6 +438,8 @@ func (scraper *UniswapV3Scraper) GetSwapsChannel(pairAddress common.Address) (ch
 	sub, err := pairFiltererContract.WatchSwap(&bind.WatchOpts{}, sink, []common.Address{}, []common.Address{})
 	if err != nil {
 		log.Error("error in get swaps channel: ", err)
+	} else {
+		log.Infof("Subscribed to swaps channel for %s", pairAddress.Hex())
 	}
 
 	return sink, sub, nil

@@ -19,7 +19,7 @@ const (
 
 	CURVE_EXCHANGE          = "Curve"
 	UNISWAPV2_EXCHANGE      = "UniswapV2"
-	UNISWAPV2_BASE_EXCHANGE = "UniswapV2-Base"
+	UNISWAPV2_BASE_EXCHANGE = "UniswapV2_Base"
 	UNISWAPV3_EXCHANGE      = "UniswapV3"
 	PANCAKESWAPV3_EXCHANGE  = "PancakeswapV3"
 	UNISWAP_SIMULATION      = "UniswapSimulation"
