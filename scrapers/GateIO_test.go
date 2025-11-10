@@ -140,7 +140,7 @@ func TestHandleWSResponse_GateIO(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := scraper.handleWSResponse(tc.input)
+			got := scraper.handleWSResponse(tc.input, &sync.RWMutex{})
 			if got.Exchange != tc.expect.Exchange {
 				t.Errorf("Exchange: got %v, want %v", got.Exchange, tc.expect.Exchange)
 			}
@@ -310,7 +310,7 @@ func TestGateIOFetchTrades(t *testing.T) {
 	select {
 	case trade := <-tradesCh:
 		if trade.Price != 65000 {
-			t.Errorf("expected price 100000, got %v", trade.Price)
+			t.Errorf("expected price 65000, got %v", trade.Price)
 		}
 		if trade.Volume != 0.5 {
 			t.Errorf("expected volume 0.5, got %v", trade.Volume)
