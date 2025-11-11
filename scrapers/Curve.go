@@ -45,19 +45,17 @@ type CurveSwap struct {
 	Amount1   float64
 }
 
-type poolSub struct {
-	cancel  context.CancelFunc
-	lastSub time.Time
-}
-
 type CurveScraper struct {
-	exchange         models.Exchange
-	poolMap          map[common.Address][]CurvePair
-	subscribeChannel chan common.Address
-	lastTradeTimeMap map[common.Address]time.Time
-	restClient       *ethclient.Client
-	wsClient         *ethclient.Client
-	waitTime         int
+	exchange           models.Exchange
+	poolMap            map[common.Address][]CurvePair
+	subscribeChannel   chan common.Address
+	unsubscribeChannel chan common.Address
+	watchdogCancel     map[string]context.CancelFunc
+	swapStreamCancel   map[common.Address]context.CancelFunc
+	lastTradeTimeMap   map[common.Address]time.Time
+	restClient         *ethclient.Client
+	wsClient           *ethclient.Client
+	waitTime           int
 }
 
 func NewCurveScraper(ctx context.Context, exchangeName string, blockchain string, pools []models.Pool, tradesChannel chan models.Trade, wg *sync.WaitGroup) {
@@ -68,6 +66,9 @@ func NewCurveScraper(ctx context.Context, exchangeName string, blockchain string
 	scraper.exchange.Name = exchangeName
 	scraper.exchange.Blockchain = blockchain
 	scraper.subscribeChannel = make(chan common.Address)
+	scraper.unsubscribeChannel = make(chan common.Address)
+	scraper.watchdogCancel = make(map[string]context.CancelFunc)
+	scraper.swapStreamCancel = make(map[common.Address]context.CancelFunc)
 	scraper.lastTradeTimeMap = make(map[common.Address]time.Time)
 	scraper.waitTime, err = strconv.Atoi(utils.Getenv(strings.ToUpper(exchangeName)+"_WAIT_TIME", "500"))
 	if err != nil {
@@ -88,92 +89,390 @@ func NewCurveScraper(ctx context.Context, exchangeName string, blockchain string
 	}
 
 	var lock sync.RWMutex
-	go scraper.mainLoop(ctx, pools, tradesChannel, &lock)
+
+	// resubscribe handler
+	go scraper.startResubHandler(ctx, tradesChannel, &lock)
+
+	// unsubscribe handler
+	go scraper.startUnsubHandler(ctx, &lock)
+
+	// watch config updates
+	go scraper.watchConfig(ctx, exchangeName, tradesChannel, &lock)
 }
 
-func (scraper *CurveScraper) mainLoop(ctx context.Context, pools []models.Pool, tradesChannel chan models.Trade, lock *sync.RWMutex) {
-	var wg sync.WaitGroup
-	subs := make(map[common.Address]*poolSub)
-	seen := map[common.Address]bool{} // to avoid duplicate pools
-	for _, pool := range pools {
-		addr := common.HexToAddress(pool.Address)
-		if seen[addr] {
-			continue
-		}
-		seen[addr] = true
-
-		lock.Lock()
-		scraper.lastTradeTimeMap[addr] = time.Now()
-		lock.Unlock()
-
-		envVar := strings.ToUpper(scraper.exchange.Name) + "_WATCHDOG_" + pool.Address
-		watchdogDelay, err := strconv.ParseInt(utils.Getenv(envVar, "600"), 10, 64)
-		if err != nil {
-			log.Errorf("Curve - Parse curveWatchdogDelay: %v.", err)
-		}
-		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
-		go watchdogPool(ctx, scraper.exchange.Name, addr, watchdogTicker, scraper.lastTradeTimeMap, watchdogDelay, scraper.subscribeChannel, lock)
-
-		time.Sleep(time.Duration(scraper.waitTime) * time.Millisecond)
-		subCtx, cancel := context.WithCancel(ctx)
-		wg.Add(1)
-		go func(address common.Address, cancel context.CancelFunc) {
-			defer wg.Done()
-			scraper.watchSwaps(subCtx, address, tradesChannel, lock)
-		}(addr, cancel)
-		subs[addr] = &poolSub{cancel: cancel, lastSub: time.Now()}
-	}
-
-	cooldown := 30 * time.Second
-
+func (scraper *CurveScraper) startResubHandler(ctx context.Context, trades chan models.Trade, lock *sync.RWMutex) {
 	go func() {
 		for {
 			select {
 			case addr := <-scraper.subscribeChannel:
 				lock.Lock()
-				ps := subs[addr]
-				if ps == nil {
-					subCtx, cancel := context.WithCancel(ctx)
-					wg.Add(1)
-					go func(address common.Address, cancel context.CancelFunc) {
-						defer wg.Done()
-						scraper.watchSwaps(subCtx, address, tradesChannel, lock)
-					}(addr, cancel)
-					subs[addr] = &poolSub{cancel: cancel, lastSub: time.Now()}
-					log.Infof("Initial subscription to pool: %s", addr.Hex())
-					lock.Unlock()
-					continue
+				scraper.lastTradeTimeMap[addr] = time.Now()
+				// if already running, restart the stream
+				if cancel, ok := scraper.swapStreamCancel[addr]; ok && cancel != nil {
+					cancel()
+					delete(scraper.swapStreamCancel, addr)
 				}
-
-				if time.Since(ps.lastSub) < cooldown {
-					// Pool already active, skipping resubscription
-					lock.Unlock()
-					continue
-				}
-				// Cancel the old subscription before starting a new one.
-				ps.cancel()
-				subCtx, cancel := context.WithCancel(ctx)
-				wg.Add(1)
-				go func(address common.Address, cancel context.CancelFunc) {
-					defer wg.Done()
-					scraper.watchSwaps(subCtx, address, tradesChannel, lock)
-				}(addr, cancel)
-				ps.cancel = cancel
-				ps.lastSub = time.Now()
-				log.Infof("Watchdog re-subscription to pool: %s", addr.Hex())
 				lock.Unlock()
+				go scraper.watchSwaps(ctx, addr, trades, lock)
 			case <-ctx.Done():
 				log.Info("Stopping resubscription handler.")
-				lock.Lock()
-				for _, ps := range subs {
-					ps.cancel()
-				}
-				lock.Unlock()
 				return
 			}
 		}
 	}()
-	wg.Wait()
+}
+
+func (scraper *CurveScraper) startUnsubHandler(ctx context.Context, lock *sync.RWMutex) {
+	go func() {
+		for {
+			select {
+			case addr := <-scraper.unsubscribeChannel:
+				scraper.stopPool(addr, lock)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+// start the pool, ensure the current order is in the poolMap[addr], initialize lastTradeTime, restart watchdog, start watchSwaps
+func (s *CurveScraper) startPool(ctx context.Context, pool models.Pool, trades chan models.Trade, lock *sync.RWMutex) error {
+	addr := common.HexToAddress(pool.Address)
+
+	// 1) ensure the current order is in the poolMap[addr], will automatically add token information and append
+	if err := s.ensurePairInPoolMap(pool); err != nil {
+		return fmt.Errorf("ensurePairInPoolMap(%s): %w", pool.Address, err)
+	}
+
+	// 2) initialize lastTradeTime, avoid triggering watchdog immediately
+	lock.Lock()
+	if _, ok := s.lastTradeTimeMap[addr]; !ok {
+		s.lastTradeTimeMap[addr] = time.Now()
+	}
+	lock.Unlock()
+
+	// 3) restart watchdog (use the maximum WatchDogDelay when there are multiple orders)
+	delay := pool.WatchDogDelay
+
+	s.restartWatchdogForAddr(ctx, addr, delay, lock)
+
+	// 4) start watchSwaps (if already running, don't repeat)
+	if _, ok := s.swapStreamCancel[addr]; ok {
+		return nil
+	}
+	pctx, cancel := context.WithCancel(ctx)
+	s.swapStreamCancel[addr] = cancel
+	go s.watchSwaps(pctx, addr, trades, lock)
+	return nil
+}
+
+// stop the pool, stop the stream and watchdog, clean the state
+func (s *CurveScraper) stopPool(addr common.Address, lock *sync.RWMutex) {
+	if c, ok := s.swapStreamCancel[addr]; ok && c != nil {
+		c()
+		delete(s.swapStreamCancel, addr)
+	}
+	key := addr.Hex()
+	if c, ok := s.watchdogCancel[key]; ok && c != nil {
+		c()
+		delete(s.watchdogCancel, key)
+	}
+	lock.Lock()
+	delete(s.lastTradeTimeMap, addr)
+	lock.Unlock()
+}
+
+func (s *CurveScraper) restartWatchdogForAddr(ctx context.Context, addr common.Address, delay int64, lock *sync.RWMutex) {
+	key := addr.Hex()
+	if c, ok := s.watchdogCancel[key]; ok && c != nil {
+		c()
+		delete(s.watchdogCancel, key)
+	}
+	wdCtx, cancel := context.WithCancel(ctx)
+	s.watchdogCancel[key] = cancel
+
+	t := time.NewTicker(time.Duration(delay) * time.Second)
+	go func() {
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				lock.RLock()
+				last := s.lastTradeTimeMap[addr]
+				lock.RUnlock()
+				if time.Since(last) >= time.Duration(delay)*time.Second {
+					// trigger resubscribe
+					s.subscribeChannel <- addr
+				}
+			case <-wdCtx.Done():
+				return
+			}
+		}
+	}()
+}
+
+// ensure the current order is in the poolMap[addr], will automatically add token information and append
+func (s *CurveScraper) ensurePairInPoolMap(pool models.Pool) error {
+	if s.poolMap == nil {
+		s.poolMap = make(map[common.Address][]CurvePair)
+	}
+
+	outIdx, inIdx, err := parseIndexCode(pool.Order)
+	if err != nil {
+		return err
+	}
+
+	addr := common.HexToAddress(pool.Address)
+
+	// if already exists, don't repeat
+	for _, p := range s.poolMap[addr] {
+		if p.InIndex == inIdx && p.OutIndex == outIdx {
+			// if already exists, it's ready
+			return nil
+		}
+	}
+
+	// add token information and append
+	ctx := context.Background()
+	tokenOutAddr, err := coinAddressFromPool(ctx, s.restClient, addr, outIdx)
+	if err != nil || tokenOutAddr == (common.Address{}) {
+		return fmt.Errorf("get out-coin addr: %w", err)
+	}
+	tokenInAddr, err := coinAddressFromPool(ctx, s.restClient, addr, inIdx)
+	if err != nil || tokenInAddr == (common.Address{}) {
+		return fmt.Errorf("get in-coin addr: %w", err)
+	}
+
+	getAsset := func(a common.Address) (models.Asset, error) {
+		if isNative(a) {
+			return nativeAsset(s.exchange.Blockchain), nil
+		}
+		return models.GetAsset(a, s.exchange.Blockchain, s.restClient)
+	}
+	outAsset, err := getAsset(tokenOutAddr)
+	if err != nil {
+		return err
+	}
+	inAsset, err := getAsset(tokenInAddr)
+	if err != nil {
+		return err
+	}
+
+	pair := CurvePair{
+		OutAsset: outAsset, InAsset: inAsset,
+		OutIndex: outIdx, InIndex: inIdx,
+		Address: addr,
+	}
+	s.poolMap[addr] = append(s.poolMap[addr], pair)
+	return nil
+}
+
+// flatten the slice to map[key]Pool; key = lower(addr) + "#" + Order(original string)
+func flatByAddrOrder(pools []models.Pool) map[string]models.Pool {
+	m := make(map[string]models.Pool, len(pools))
+	for _, p := range pools {
+		k := strings.ToLower(p.Address) + "#" + strconv.Itoa(p.Order)
+		m[k] = p
+	}
+	return m
+}
+
+// calculate the effective watchdog for each address based on the flat map (max)
+func aggWatchdogByAddr(m map[string]models.Pool) map[string]int64 {
+	out := make(map[string]int64)
+	for k, p := range m {
+		addrLower := strings.SplitN(k, "#", 2)[0]
+		d := p.WatchDogDelay
+		if d <= 0 {
+			d = 300
+		}
+		if d > out[addrLower] {
+			out[addrLower] = d
+		}
+	}
+	return out
+}
+
+func (s *CurveScraper) watchConfig(ctx context.Context, exchangeName string, trades chan models.Trade, lock *sync.RWMutex) {
+	// Check for config changes every 60 minutes.
+	envKey := strings.ToUpper(CURVE_EXCHANGE) + "_WATCH_CONFIG_INTERVAL"
+	interval, err := strconv.Atoi(utils.Getenv(envKey, "3600"))
+	if err != nil {
+		log.Errorf("Curve - Failed to parse %s: %v.", envKey, err)
+		return
+	}
+	t := time.NewTicker(time.Duration(interval) * time.Second)
+	defer t.Stop()
+
+	// load initial pools
+	curList, err := models.PoolsFromConfigFile(exchangeName)
+	if err != nil {
+		log.Errorf("Curve - load initial pools: %v", err)
+		curList = nil
+	}
+	lastFlat := flatByAddrOrder(curList)
+	lastDelay := aggWatchdogByAddr(lastFlat)
+
+	// start existing addresses (one time for each address; other orders will be added in ensurePairInPoolMap)
+	s.startAllFromFlat(ctx, lastFlat, trades, lock)
+
+	for {
+		select {
+		case <-t.C:
+			nowList, err := models.PoolsFromConfigFile(exchangeName)
+			if err != nil {
+				log.Errorf("Curve - reload pools: %v", err)
+				continue
+			}
+			nowFlat := flatByAddrOrder(nowList)
+			nowDelay := aggWatchdogByAddr(nowFlat)
+
+			s.applyConfigDiff(ctx, lastFlat, nowFlat, lastDelay, nowDelay, trades, lock)
+			lastFlat = nowFlat
+			lastDelay = nowDelay
+
+		case <-ctx.Done():
+			log.Info("Curve - watchConfig exit")
+			return
+		}
+	}
+}
+
+func (s *CurveScraper) startAllFromFlat(ctx context.Context, flat map[string]models.Pool, trades chan models.Trade, lock *sync.RWMutex) {
+	// first merge by address, start each address once (internal will ensurePairInPoolMap append all orders)
+	seenAddr := make(map[string]bool)
+	for _, p := range flat {
+		addrLower := strings.ToLower(p.Address)
+		if seenAddr[addrLower] {
+			continue
+		}
+		// start this address (will ensure the current order, and start the stream & watchdog)
+		if err := s.startPool(ctx, p, trades, lock); err != nil {
+			log.Errorf("Curve - startPool %s: %v", p.Address, err)
+		}
+		seenAddr[addrLower] = true
+	}
+	// then ensure all other orders for the same address are appended to the poolMap
+	for _, p := range flat {
+		if err := s.ensurePairInPoolMap(p); err != nil {
+			log.Errorf("Curve - ensurePairInPoolMap %s#%v: %v", p.Address, p.Order, err)
+		}
+	}
+}
+
+func (s *CurveScraper) applyConfigDiff(
+	ctx context.Context,
+	lastFlat map[string]models.Pool,
+	currFlat map[string]models.Pool,
+	lastDelay map[string]int64, // address -> last effective watchdog
+	currDelay map[string]int64, // address -> current effective watchdog
+	trades chan models.Trade,
+	lock *sync.RWMutex,
+) {
+	// ---- 1) handle deletion: find removed (addr,order) keys ----
+	removed := make([]string, 0)
+	for k := range lastFlat {
+		if _, ok := currFlat[k]; !ok {
+			removed = append(removed, k)
+		}
+	}
+	// remove these pairs from the poolMap; if an address has no pairs anymore, stop it
+	toStop := make(map[string]bool)
+	for _, key := range removed {
+		parts := strings.SplitN(key, "#", 2)
+		addrLower, order := parts[0], parts[1]
+		addr := common.HexToAddress(addrLower)
+
+		// remove the pair corresponding to this order from the poolMap[addr]
+		outIdx, inIdx, _ := parseIndexCode(mustAtoi(order)) // order is a two-digit string like "10"
+		pairs := s.poolMap[addr]
+		filtered := make([]CurvePair, 0, len(pairs))
+		for _, pr := range pairs {
+			if !(pr.InIndex == inIdx && pr.OutIndex == outIdx) {
+				filtered = append(filtered, pr)
+			}
+		}
+		s.poolMap[addr] = filtered
+
+		if len(filtered) == 0 {
+			toStop[addrLower] = true
+		}
+	}
+	for addrLower := range toStop {
+		addr := common.HexToAddress(addrLower)
+		log.Infof("Curve - stop pool %s (all orders removed)", addr.Hex())
+		s.stopPool(addr, lock)
+	}
+
+	// ---- 2) handle addition: find new (addr,order) keys, ensure pair in poolMap, and start the address if necessary ----
+	// first record which addresses are "new" (no entries before)
+	newlyAddress := make(map[string]bool)
+	for k, p := range currFlat {
+		if _, ok := lastFlat[k]; ok {
+			// not a new entry
+			continue
+		}
+		// new entry: first append the pair to the poolMap
+		if err := s.ensurePairInPoolMap(p); err != nil {
+			log.Errorf("Curve - ensurePairInPoolMap(add) %s#%v: %v", p.Address, p.Order, err)
+			continue
+		}
+		addrLower := strings.ToLower(p.Address)
+		// if this address is completely not in last, need to start the stream/watchdog for it
+		if !hasAnyAddr(lastFlat, addrLower) {
+			newlyAddress[addrLower] = true
+		}
+	}
+	// for new addresses: start the stream/watchdog
+	for addrLower := range newlyAddress {
+		// find any order for this address in currFlat, use it to startPool (startPool will restart watchdog and start stream)
+		var pick *models.Pool
+		for k, p := range currFlat {
+			if strings.HasPrefix(k, addrLower+"#") {
+				pick = &p
+				break
+			}
+		}
+		if pick != nil {
+			if err := s.startPool(ctx, *pick, trades, lock); err != nil {
+				log.Errorf("Curve - startPool(new addr) %s: %v", pick.Address, err)
+			} else {
+				log.Infof("Curve - added new pool %s", pick.Address)
+			}
+		}
+	}
+
+	// ---- 3) handle watchdog updates: compare lastDelay vs currDelay for each address, restart watchdog if different ----
+	for addrLower, newD := range currDelay {
+		oldD := lastDelay[addrLower]
+		if newD <= 0 {
+			newD = 300
+		}
+		if oldD <= 0 {
+			oldD = 300
+		}
+		if newD != oldD {
+			addr := common.HexToAddress(addrLower)
+			log.Infof("Curve - update watchdog %s: %d -> %d", addr.Hex(), oldD, newD)
+			s.restartWatchdogForAddr(ctx, addr, newD, lock)
+		}
+	}
+}
+
+func hasAnyAddr(flat map[string]models.Pool, addrLower string) bool {
+	prefix := addrLower + "#"
+	for k := range flat {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// only used for parseIndexCode (Order is a two-digit string like "10")
+func mustAtoi(s string) int {
+	n, _ := strconv.Atoi(s)
+	return n
 }
 
 func getSwapDataCurve(swap CurveSwap) (price float64, volume float64) {
@@ -280,14 +579,15 @@ func (scraper *CurveScraper) watchSwaps(ctx context.Context, address common.Addr
 					}
 					pairs := scraper.poolMap[swap.addr]
 					if len(pairs) == 0 {
-						log.Errorf("Curve - no pairs found for address %s", swap.addr.Hex())
+						log.Warnf("Curve - Sink - no pairs found for address %s", swap.addr.Hex())
 						continue
 					}
 					pair, ok := findPairByIdx(pairs, swap.soldID, swap.boughtID)
 					if !ok {
-						log.Errorf("Curve - no pair found for address %s", swap.addr.Hex())
+						log.Warnf("Curve - Sink - no pair found for address %s", swap.addr.Hex())
 						continue
 					}
+					log.Infof("Curve - subscribe to %s with pair %s", address.Hex(), pair.OutAsset.Symbol+"-"+pair.InAsset.Symbol)
 					var decSold, decBought int
 					switch swap.soldID {
 					case pair.InIndex:
@@ -324,14 +624,15 @@ func (scraper *CurveScraper) watchSwaps(ctx context.Context, address common.Addr
 					}
 					pairs := scraper.poolMap[swap.addr]
 					if len(pairs) == 0 {
-						log.Errorf("Curve - no pairs found for address %s", swap.addr.Hex())
+						log.Warnf("Curve - factorySink - no pairs found for address %s", swap.addr.Hex())
 						continue
 					}
 					pair, ok := findPairByIdx(pairs, swap.soldID, swap.boughtID)
 					if !ok {
-						log.Errorf("Curve - no pair found for address %s", swap.addr.Hex())
+						log.Warnf("Curve - factorySink - no pair found for address %s", swap.addr.Hex())
 						continue
 					}
+					log.Infof("Curve - subscribe to %s with pair %s", address.Hex(), pair.OutAsset.Symbol+"-"+pair.InAsset.Symbol)
 					var decSold, decBought int
 					switch swap.soldID {
 					case pair.InIndex:
@@ -368,14 +669,15 @@ func (scraper *CurveScraper) watchSwaps(ctx context.Context, address common.Addr
 					}
 					pairs := scraper.poolMap[swap.addr]
 					if len(pairs) == 0 {
-						log.Errorf("Curve - no pairs found for address %s", swap.addr.Hex())
+						log.Warnf("Curve - twoSink - no pairs found for address %s", swap.addr.Hex())
 						continue
 					}
 					pair, ok := findPairByIdx(pairs, swap.soldID, swap.boughtID)
 					if !ok {
-						log.Errorf("Curve - no pair found for address %s", swap.addr.Hex())
+						log.Warnf("Curve - twoSink - no pair found for address %s", swap.addr.Hex())
 						continue
 					}
+					log.Infof("Curve - subscribe to %s with pair %s", address.Hex(), pair.OutAsset.Symbol+"-"+pair.InAsset.Symbol)
 					var decSold, decBought int
 					switch swap.soldID {
 					case pair.InIndex:
@@ -412,14 +714,15 @@ func (scraper *CurveScraper) watchSwaps(ctx context.Context, address common.Addr
 					}
 					pairs := scraper.poolMap[swap.addr]
 					if len(pairs) == 0 {
-						log.Errorf("Curve - no pairs found for address %s", swap.addr.Hex())
+						log.Warnf("Curve - underlyingSink - no pairs found for address %s", swap.addr.Hex())
 						continue
 					}
 					pair, ok := findPairByIdx(pairs, swap.soldID, swap.boughtID)
 					if !ok {
-						log.Errorf("Curve - no pair found for address %s", swap.addr.Hex())
+						log.Warnf("Curve - underlyingSink - no pair found for address %s", swap.addr.Hex())
 						continue
 					}
+					log.Infof("Curve - subscribe to %s with pair %s", address.Hex(), pair.OutAsset.Symbol+"-"+pair.InAsset.Symbol)
 					var decSold, decBought int
 					switch swap.soldID {
 					case pair.InIndex:

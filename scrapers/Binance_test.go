@@ -141,8 +141,11 @@ func TestSubscribe(t *testing.T) {
 	lock := &sync.RWMutex{}
 	mockWs := &mockWsConn{}
 	scraper := &binanceScraper{
-		wsClient: mockWs,
+		wsClient:    mockWs,
+		writeTicker: time.NewTicker(500 * time.Millisecond),
 	}
+	t.Cleanup(func() { scraper.writeTicker.Stop() })
+	<-scraper.writeTicker.C
 	pair := models.ExchangePair{
 		ForeignName: "BTC-USDT",
 	}
@@ -172,7 +175,10 @@ func TestResubscribe(t *testing.T) {
 	s := &binanceScraper{
 		wsClient:         mockWs,
 		subscribeChannel: ch,
+		writeTicker:      time.NewTicker(500 * time.Millisecond),
 	}
+	t.Cleanup(func() { s.writeTicker.Stop() })
+	<-s.writeTicker.C
 	ctx, cancel := context.WithCancel(context.Background())
 	go s.resubscribe(ctx, lock)
 	time.Sleep(10 * time.Millisecond)
