@@ -106,11 +106,15 @@ func readFromRemote(directory string, exchange string) ([]byte, error) {
 	if ratelimitRemaining == 0 {
 		rateLimitReset, errParseInt := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64)
 		if errParseInt != nil {
-			log.Error("rateLimitReset for github api calls: ", err)
+			log.Error("rateLimitReset for github api calls: ", errParseInt)
 		}
 		timeWait := rateLimitReset - time.Now().Unix()
+		if timeWait < 0 {
+			timeWait = 0
+		}
 		log.Warnf("rate limit reached, wait for refresh in %v", time.Duration(timeWait)*time.Second)
 		time.Sleep(time.Duration(timeWait+30) * time.Second)
+		resp.Body.Close()
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return []byte{}, err
