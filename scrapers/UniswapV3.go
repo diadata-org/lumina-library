@@ -339,6 +339,10 @@ func (scraper *UniswapV3Scraper) watchSwaps(ctx context.Context, poolAddress com
 							log.Error("UniswapV3 - error normalizing swap: ", err)
 						}
 						price, volume := getSwapDataUniV3(swap)
+						if math.IsNaN(price) || math.IsInf(price, 0) || price == 0 {
+							log.Debugf("UniswapV3 - skip zero/+inf price, tx=%s", swap.ID)
+							continue
+						}
 						t := makeTrade(pair, price, volume, time.Unix(swap.Timestamp, 0), poolAddress, swap.ID, scraper.exchange.Name, scraper.exchange.Blockchain)
 
 						// Update lastTradeTimeMap
@@ -389,6 +393,10 @@ func (scraper *UniswapV3Scraper) watchSwaps(ctx context.Context, poolAddress com
 							log.Error("PancakeswapV3 - error normalizing swap: ", err)
 						}
 						price, volume := getSwapDataUniV3(swap)
+						if math.IsNaN(price) || math.IsInf(price, 0) || price == 0 {
+							log.Debugf("PancakeswapV3 - skip zero/+inf price, tx=%s", swap.ID)
+							continue
+						}
 						t := makeTrade(pair, price, volume, time.Unix(swap.Timestamp, 0), poolAddress, swap.ID, scraper.exchange.Name, scraper.exchange.Blockchain)
 
 						// Update lastTradeTimeMap
@@ -522,7 +530,6 @@ func (scraper *UniswapV3Scraper) normalizeUniV3Swap(swapI interface{}) (normaliz
 		decimals1 := int(pair.Token1.Decimals)
 		amount0, _ := new(big.Float).Quo(big.NewFloat(0).SetInt(swap.Amount0), new(big.Float).SetFloat64(math.Pow10(decimals0))).Float64()
 		amount1, _ := new(big.Float).Quo(big.NewFloat(0).SetInt(swap.Amount1), new(big.Float).SetFloat64(math.Pow10(decimals1))).Float64()
-
 		normalizedSwap = UniswapV3Swap{
 			ID:        swap.Raw.TxHash.Hex(),
 			Timestamp: time.Now().Unix(),
