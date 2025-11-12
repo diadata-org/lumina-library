@@ -9,6 +9,7 @@ import (
 	models "github.com/diadata-org/lumina-library/models"
 	simulationfilters "github.com/diadata-org/lumina-library/simulations/simulationFilters"
 	"github.com/diadata-org/lumina-library/simulations/simulators"
+	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 // Processor handles blocks from @tradesblockChannel.
@@ -20,6 +21,9 @@ func Processor(
 	tradesblockChannel chan map[string]models.SimulatedTradesBlock,
 	filtersChannel chan []models.FilterPointPair,
 	triggerChannel chan time.Time,
+	metacontractClient *ethclient.Client,
+	metacontractAddress string,
+	metacontractPrecision int,
 	wg *sync.WaitGroup,
 ) {
 
@@ -42,7 +46,7 @@ func Processor(
 			var atomicFilterValue float64
 			reducedTradesBlock := models.SimulatedTradesBlockToTradesBlock(tb)
 
-			basePrice, err := models.GetPriceBaseAsset(reducedTradesBlock, priceCacheMap)
+			basePrice, err := models.GetPriceBaseAsset(reducedTradesBlock, priceCacheMap, metacontractClient, metacontractAddress, metacontractPrecision)
 			if err != nil {
 				log.Errorf("Processor - GetPriceBaseAsset: %v", err)
 				continue
