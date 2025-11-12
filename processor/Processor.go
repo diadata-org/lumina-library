@@ -8,6 +8,7 @@ import (
 	"github.com/diadata-org/lumina-library/metafilters"
 	models "github.com/diadata-org/lumina-library/models"
 	"github.com/diadata-org/lumina-library/scrapers"
+	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 // Processor handles blocks from @tradesblockChannel.
@@ -21,6 +22,9 @@ func Processor(
 	filtersChannel chan []models.FilterPointPair,
 	triggerChannel chan time.Time,
 	failoverChannel chan string,
+	metacontractClient *ethclient.Client,
+	metacontractAddress string,
+	metacontractPrecision int,
 	wg *sync.WaitGroup,
 ) {
 
@@ -41,7 +45,7 @@ func Processor(
 		for _, tb := range tradesblocks {
 
 			// Get price of base asset from cache if possible.
-			basePrice, err := models.GetPriceBaseAsset(tb, priceCacheMap)
+			basePrice, err := models.GetPriceBaseAsset(tb, priceCacheMap, metacontractClient, metacontractAddress, metacontractPrecision)
 			if err != nil {
 				log.Errorf("Processor - GetPriceBaseAsset: %v", err)
 				continue
