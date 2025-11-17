@@ -56,7 +56,7 @@ func (a *Asset) GetPrice(
 	return
 }
 
-// GetOnchainPrice returns a quotation for asset @a by querying the metactontract with @metacontractAddress.
+// GetOnchainPrice returns a quotation for asset @a by querying the metacontract with @metacontractAddress.
 func (a *Asset) GetOnchainPrice(
 	metacontractAddress common.Address,
 	precision int,

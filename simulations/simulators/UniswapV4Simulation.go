@@ -206,7 +206,7 @@ func (scraper *UniswapV4Simulator) updatePriceMap(lock *sync.RWMutex) {
 			log.Errorf("GetPrice for %s -- %s: %v. Fetch from diadata API instead.", asset.Symbol, asset.Address, err)
 			quotation, err = asset.GetPriceFromDiaAPI()
 			if err != nil {
-				log.Errorf("UniswapV4Simulation - Price for%s -- %s in diadata API: %v.", asset.Symbol, asset.Address, err)
+				log.Errorf("UniswapV4Simulation - Price for %s -- %s in diadata API: %v.", asset.Symbol, asset.Address, err)
 			}
 		} else {
 			log.Infof("USD price for (base-)token %s: %v", asset.Symbol, quotation.Price)
@@ -214,7 +214,7 @@ func (scraper *UniswapV4Simulator) updatePriceMap(lock *sync.RWMutex) {
 		if quotation.Price == 0 {
 			quotation, err = asset.GetPriceFromDiaAPI()
 			if err != nil {
-				log.Errorf("UniswapV4Simulation - Price for%s -- %s in diadata API: %v.", asset.Symbol, asset.Address, err)
+				log.Errorf("UniswapV4Simulation - Price for %s -- %s in diadata API: %v.", asset.Symbol, asset.Address, err)
 			}
 		}
 		lock.Lock()
