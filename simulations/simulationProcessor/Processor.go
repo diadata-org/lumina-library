@@ -57,7 +57,7 @@ func Processor(
 				atomicFilterValue, _ = filters.LastPrice(reducedTradesBlock.Trades, basePrice)
 
 			case "Average":
-				atomicFilterValue, _, err = simulationfilters.Average(tb.Trades, true)
+				atomicFilterValue, _, err = simulationfilters.Average(tb.Trades, true, metacontractClient, metacontractAddress, metacontractPrecision)
 				if err != nil {
 					log.Errorf("Processor - Average: %v.", err)
 					continue
