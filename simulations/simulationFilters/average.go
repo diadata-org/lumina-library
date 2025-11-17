@@ -5,30 +5,37 @@ import (
 
 	"github.com/diadata-org/lumina-library/models"
 	"github.com/diadata-org/lumina-library/utils"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient"
 	log "github.com/sirupsen/logrus"
 )
 
 // Average returns the average price of all @trades.
 // If @USDPrice=true it returns a USD price.
 // basePrice is only evaluated for now, i.e. not for each trade's specific timestamp.
-func Average(trades []models.SimulatedTrade, USDPrice bool) (avgPrice float64, timestamp time.Time, err error) {
+func Average(
+	trades []models.SimulatedTrade,
+	USDPrice bool,
+	metacontractClient *ethclient.Client,
+	metacontractAddress string,
+	metacontractPrecision int,
+) (avgPrice float64, timestamp time.Time, err error) {
 
 	var prices []float64
 	var basePriceMap = make(map[models.Asset]float64)
 
-	// Fetch USD price of basetoken from DIA API.
+	// Fetch USD price of basetoken.
 	if USDPrice {
 		for _, t := range trades {
 
 			if _, ok := basePriceMap[t.BaseToken]; !ok {
-				// TO DO: We can change this to GetOnchainPrice in order to fetch price from Lumina.
-				basePrice, err := utils.GetPriceFromDiaAPI(t.BaseToken.Blockchain, t.BaseToken.Address)
+				basePrice, err := t.BaseToken.GetPrice(common.HexToAddress(metacontractAddress), metacontractPrecision, metacontractClient)
 				if err != nil {
-					log.Errorf("GetPriceFromDiaAPI for %s -- %s: %v ", t.BaseToken.Blockchain, t.BaseToken.Address, err)
+					log.Errorf("GetPrice for %s -- %s: %v ", t.BaseToken.Blockchain, t.BaseToken.Address, err)
 					continue
 				}
-				prices = append(prices, basePrice*t.Price)
-				basePriceMap[t.BaseToken] = basePrice
+				prices = append(prices, basePrice.Price*t.Price)
+				basePriceMap[t.BaseToken] = basePrice.Price
 			} else {
 				prices = append(prices, basePriceMap[t.BaseToken]*t.Price)
 			}

@@ -11,9 +11,10 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
-func SetupOnchain(blockchainNode string, backupNode string, privateKeyHex string, chainID int64) (
+func SetupOnchain(blockchainNode string, backupNode string, metacontractNode string, privateKeyHex string, chainID int64) (
 	conn *ethclient.Client,
 	connBackup *ethclient.Client,
+	connMetacontract *ethclient.Client,
 	privateKey *ecdsa.PrivateKey,
 	auth *bind.TransactOpts,
 ) {
@@ -24,6 +25,10 @@ func SetupOnchain(blockchainNode string, backupNode string, privateKeyHex string
 	connBackup, err = MakeEthClient(backupNode, blockchainNode)
 	if err != nil {
 		log.Fatalf("MakeEthClient for backup connection: %v", err)
+	}
+	connMetacontract, err = MakeEthClient(metacontractNode, metacontractNode)
+	if err != nil {
+		log.Fatalf("MakeEthClient for metacontract connection: %v", err)
 	}
 
 	privateKeyHex = strings.TrimPrefix(privateKeyHex, "0x")
