@@ -153,7 +153,7 @@ func (scraper *CurveSimulator) getExchangePairs() (err error) {
 
 func (scraper *CurveSimulator) updatePriceMap(lock *sync.RWMutex) {
 	for asset := range scraper.priceMap {
-		quotation, err := asset.GetOnchainPrice(common.HexToAddress(DIAMetaContractAddress), DIAMetaContractPrecision, scraper.luminaClient)
+		quotation, err := asset.GetPrice(common.HexToAddress(DIAMetaContractAddress), DIAMetaContractPrecision, scraper.luminaClient)
 		if err != nil {
 			log.Errorf("GetOnchainPrice for %s -- %s: %v", asset.Symbol, asset.Address, err)
 			quotation.Price = scraper.getPriceFromAPI(asset)
@@ -171,14 +171,13 @@ func (scraper *CurveSimulator) updatePriceMap(lock *sync.RWMutex) {
 
 func (scraper *CurveSimulator) getPriceFromAPI(asset models.Asset) float64 {
 	log.Warnf("Could not determine price of %s on chain. Checking DIA API.", asset.Symbol)
-	price, err := utils.GetPriceFromDiaAPI(asset.Address, asset.Blockchain)
+	assetQuotation, err := asset.GetPriceFromDiaAPI()
 	if err != nil {
-		log.Errorf("Failed to get price of %s from DIA API: %v\n", asset.Symbol, err)
-		log.Errorf("asset blockchain: %v\n", asset.Blockchain)
-		log.Errorf("asset address: %v\n", asset.Address)
-		price = 100
+		log.Errorf("Failed to get price of %s from DIA API: %v", asset.Symbol, err)
+		log.Errorf("asset blockchain -- address: %v -- %v", asset.Blockchain, asset.Address)
+		return 100
 	}
-	return price
+	return assetQuotation.Price
 }
 
 func (scraper *CurveSimulator) getRegistry(registryName string, registryAddress string) interface{} {
