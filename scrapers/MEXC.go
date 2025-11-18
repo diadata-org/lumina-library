@@ -11,7 +11,6 @@ import (
 
 	models "github.com/diadata-org/lumina-library/models"
 	"github.com/diadata-org/lumina-library/scrapers/mexcproto"
-	"github.com/diadata-org/lumina-library/utils"
 	ws "github.com/gorilla/websocket"
 	"google.golang.org/protobuf/proto"
 )
@@ -168,72 +167,14 @@ func (scraper *MEXCScraper) processUnsubscribe(ctx context.Context, lock *sync.R
 }
 
 func (scraper *MEXCScraper) watchConfig(ctx context.Context, lock *sync.RWMutex) {
-	// Check for config changes every 60 minutes.
-	envKey := strings.ToUpper(MEXC_EXCHANGE) + "_WATCH_CONFIG_INTERVAL"
-	interval, err := strconv.Atoi(utils.Getenv(envKey, "3600"))
-	if err != nil {
-		log.Errorf("MEXC - Failed to parse %s: %v.", envKey, err)
-		return
-	}
-	ticker := time.NewTicker(time.Duration(interval) * time.Second)
-	defer ticker.Stop()
-
-	// Get the initial config.
-	last, err := models.GetExchangePairMap(MEXC_EXCHANGE)
-	if err != nil {
-		log.Errorf("MEXC - GetExchangePairMap: %v.", err)
-		return
-	}
-
-	// Watch for config changes.
-	for {
-		select {
-		case <-ticker.C:
-			current, err := models.GetExchangePairMap(MEXC_EXCHANGE)
-			if err != nil {
-				log.Errorf("MEXC - GetExchangePairMap: %v.", err)
-				continue
-			}
-			// Apply the config changes.
-			scraper.applyConfigDiff(ctx, lock, last, current)
-			// Update the last config.
-			last = current
-		case <-ctx.Done():
-			log.Debugf("MEXC - Close watchConfig routine of scraper with genesis: %v.", scraper.genesis)
-			return
-		}
-	}
+	go WatchConfigLoop(ctx, MEXC_EXCHANGE, 30, func(ctx context.Context, last, current map[string]int64) {
+		scraper.applyConfigDiff(ctx, lock, last, current)
+	})
 }
 
 func (scraper *MEXCScraper) applyConfigDiff(ctx context.Context, lock *sync.RWMutex, last map[string]int64, current map[string]int64) {
 
-	added := make([]string, 0)
-	removed := make([]string, 0)
-	changed := make([]string, 0)
-
-	// If last is nil, add all pairs from current.
-	if last == nil {
-		for p := range current {
-			added = append(added, p)
-		}
-	} else {
-		// If last is not nil, check for added and removed pairs.
-		for p := range current {
-			if _, ok := last[p]; !ok {
-				added = append(added, p)
-			}
-		}
-		for p := range last {
-			if _, ok := current[p]; !ok {
-				removed = append(removed, p)
-			}
-		}
-		for p, newDelay := range current {
-			if oldDelay, ok := last[p]; ok && oldDelay != newDelay {
-				changed = append(changed, p)
-			}
-		}
-	}
+	added, removed, changed := diffPairMap(last, current)
 
 	// Unsubscribe from removed pairs.
 	for _, p := range removed {
@@ -304,32 +245,16 @@ func (scraper *MEXCScraper) getExchangePairInfo(foreignName string, delay int64)
 }
 
 func (scraper *MEXCScraper) startWatchdogForPair(ctx context.Context, lock *sync.RWMutex, pair models.ExchangePair) {
-	// Check if watchdog is already running for this pair.
-	lock.Lock()
-	if cancel, exists := scraper.watchdogCancel[pair.ForeignName]; exists && cancel != nil {
-		lock.Unlock()
-		return
-	}
-	lock.Unlock()
-
-	wdCtx, cancel := context.WithCancel(ctx)
-	lock.Lock()
-	scraper.watchdogCancel[pair.ForeignName] = cancel
-	lock.Unlock()
-
-	// Start watchdog for this pair.
-	watchdogTicker := time.NewTicker(time.Duration(pair.WatchDogDelay) * time.Second)
-	go watchdog(wdCtx, pair, watchdogTicker, scraper.lastTradeTimeMap, pair.WatchDogDelay, scraper.subscribeChannel, lock)
+	StartWatchdogForPair(
+		ctx, lock, pair,
+		scraper.watchdogCancel,
+		scraper.lastTradeTimeMap,
+		scraper.subscribeChannel,
+	)
 }
 
 func (scraper *MEXCScraper) stopWatchdogForPair(lock *sync.RWMutex, foreignName string) {
-	lock.Lock()
-	cancel, ok := scraper.watchdogCancel[foreignName]
-	if ok && cancel != nil {
-		cancel()
-		delete(scraper.watchdogCancel, foreignName)
-	}
-	lock.Unlock()
+	StopWatchdogForPair(lock, foreignName, scraper.watchdogCancel)
 }
 
 func (scraper *MEXCScraper) Close(cancel context.CancelFunc) error {

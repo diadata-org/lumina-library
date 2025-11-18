@@ -235,35 +235,46 @@ func (bs *BaseCEXScraper) runProcessUnsubscribe(ctx context.Context, lock *sync.
 }
 
 func (bs *BaseCEXScraper) runWatchConfig(ctx context.Context, lock *sync.RWMutex) {
-	ex := strings.ToUpper(bs.hooks.ExchangeKey())
-	envKey := ex + "_WATCH_CONFIG_INTERVAL"
-	interval, err := strconv.Atoi(utils.Getenv(envKey, "30"))
+	ex := bs.hooks.ExchangeKey()
+	go WatchConfigLoop(ctx, ex, 30, func(ctx context.Context, last, current map[string]int64) {
+		bs.applyConfigDiff(ctx, lock, last, current)
+	})
+}
+
+func WatchConfigLoop(
+	ctx context.Context,
+	exKey string, // e.g. "MEXC" / hooks.ExchangeKey()
+	defaultIntervalSec int, // Base uses 300
+	apply func(ctx context.Context, last, current map[string]int64),
+) {
+	envKey := strings.ToUpper(exKey) + "_WATCH_CONFIG_INTERVAL"
+	interval, err := strconv.Atoi(utils.Getenv(envKey, strconv.Itoa(defaultIntervalSec)))
 	if err != nil {
-		log.Errorf("%s - Failed to parse %s: %v.", ex, envKey, err)
+		log.Errorf("%s - Failed to parse %s: %v.", strings.ToUpper(exKey), envKey, err)
 		return
 	}
+
 	ticker := time.NewTicker(time.Duration(interval) * time.Second)
 	defer ticker.Stop()
 
-	// initial config
-	last, err := models.GetExchangePairMap(bs.hooks.ExchangeKey())
+	last, err := models.GetExchangePairMap(exKey)
 	if err != nil {
-		log.Errorf("%s - GetExchangePairMap: %v.", ex, err)
+		log.Errorf("%s - GetExchangePairMap: %v.", strings.ToUpper(exKey), err)
 		return
 	}
 
 	for {
 		select {
 		case <-ticker.C:
-			current, err := models.GetExchangePairMap(bs.hooks.ExchangeKey())
+			current, err := models.GetExchangePairMap(exKey)
 			if err != nil {
-				log.Errorf("%s - GetExchangePairMap: %v.", ex, err)
+				log.Errorf("%s - GetExchangePairMap: %v.", strings.ToUpper(exKey), err)
 				continue
 			}
-			bs.applyConfigDiff(ctx, lock, last, current)
+			apply(ctx, last, current)
 			last = current
 		case <-ctx.Done():
-			log.Debugf("%s - Close watchConfig routine of scraper with genesis: %v.", ex, bs.genesis)
+			log.Debugf("%s - Close watchConfig routine.", strings.ToUpper(exKey))
 			return
 		}
 	}
@@ -350,30 +361,16 @@ func (bs *BaseCEXScraper) getExchangePairInfo(foreignName string, delay int64) (
 }
 
 func (bs *BaseCEXScraper) startWatchdogForPair(ctx context.Context, lock *sync.RWMutex, pair models.ExchangePair) {
-	lock.Lock()
-	if cancel, exists := bs.watchdogCancel[pair.ForeignName]; exists && cancel != nil {
-		lock.Unlock()
-		return
-	}
-	lock.Unlock()
-
-	wdCtx, cancel := context.WithCancel(ctx)
-	lock.Lock()
-	bs.watchdogCancel[pair.ForeignName] = cancel
-	lock.Unlock()
-
-	ticker := time.NewTicker(time.Duration(pair.WatchDogDelay) * time.Second)
-	go watchdog(wdCtx, pair, ticker, bs.lastTradeTimeMap, pair.WatchDogDelay, bs.subscribeChannel, lock)
+	StartWatchdogForPair(
+		ctx, lock, pair,
+		bs.watchdogCancel,
+		bs.lastTradeTimeMap,
+		bs.subscribeChannel,
+	)
 }
 
 func (bs *BaseCEXScraper) stopWatchdogForPair(lock *sync.RWMutex, foreignName string) {
-	lock.Lock()
-	if cancel, ok := bs.watchdogCancel[foreignName]; ok && cancel != nil {
-		cancel()
-		delete(bs.watchdogCancel, foreignName)
-		log.Debugf("%s - Stopped watchdog for pair %s.", strings.ToUpper(bs.hooks.ExchangeKey()), foreignName)
-	}
-	lock.Unlock()
+	StopWatchdogForPair(lock, foreignName, bs.watchdogCancel)
 }
 
 func (bs *BaseCEXScraper) restartWatchdogForPair(ctx context.Context, lock *sync.RWMutex, foreignName string, newDelay int64) {
