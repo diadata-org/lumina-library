@@ -2,18 +2,18 @@ package scrapers
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	models "github.com/diadata-org/lumina-library/models"
-	"github.com/diadata-org/lumina-library/utils"
 	ws "github.com/gorilla/websocket"
 )
 
-// A coinBaseWSSubscribeMessage represents a message to subscribe the public/private channel.
+var coinbaseWSBaseString = "wss://ws-feed.exchange.coinbase.com"
+
 type coinBaseWSSubscribeMessage struct {
 	Type     string            `json:"type"`
 	Channels []coinBaseChannel `json:"channels"`
@@ -25,400 +25,105 @@ type coinBaseChannel struct {
 }
 
 type coinBaseWSResponse struct {
-	Type         string `json:"type"`
-	TradeID      int64  `json:"trade_id"`
-	Sequence     int64  `json:"sequence"`
-	MakerOrderID string `json:"maker_order_id"`
-	TakerOrderID string `json:"taker_order_id"`
-	Time         string `json:"time"`
-	ProductID    string `json:"product_id"`
-	Size         string `json:"size"`
-	Price        string `json:"price"`
-	Side         string `json:"side"`
+	Type      string `json:"type"` // "match"
+	TradeID   int64  `json:"trade_id"`
+	Time      string `json:"time"`       // "2006-01-02T15:04:05.000000Z"
+	ProductID string `json:"product_id"` // "BTC-USD"
+	Size      string `json:"size"`
+	Price     string `json:"price"`
+	Side      string `json:"side"` // "buy"/"sell"
 }
 
-type coinbaseScraper struct {
-	wsClient           wsConn
-	tradesChannel      chan models.Trade
-	subscribeChannel   chan models.ExchangePair
-	unsubscribeChannel chan models.ExchangePair
-	watchdogCancel     map[string]context.CancelFunc
-	tickerPairMap      map[string]models.Pair
-	lastTradeTimeMap   map[string]time.Time
-	maxErrCount        int
-	restartWaitTime    int
-	genesis            time.Time
-}
+type coinbaseHooks struct{}
 
-var (
-	coinbaseWSBaseString = "wss://ws-feed.exchange.coinbase.com"
-)
+func (coinbaseHooks) ExchangeKey() string { return COINBASE_EXCHANGE }
+func (coinbaseHooks) WSURL() string       { return coinbaseWSBaseString }
 
-func NewCoinBaseScraper(ctx context.Context, pairs []models.ExchangePair, failoverChannel chan string, wg *sync.WaitGroup) Scraper {
-	defer wg.Done()
-	var lock sync.RWMutex
-	log.Info("CoinBase - Started scraper.")
+func (coinbaseHooks) OnOpen(ctx context.Context, bs *BaseCEXScraper) { /* no ping */ }
 
-	scraper := coinbaseScraper{
-		tradesChannel:      make(chan models.Trade),
-		subscribeChannel:   make(chan models.ExchangePair),
-		unsubscribeChannel: make(chan models.ExchangePair),
-		watchdogCancel:     make(map[string]context.CancelFunc),
-		tickerPairMap:      models.MakeTickerPairMap(pairs),
-		lastTradeTimeMap:   make(map[string]time.Time),
-		maxErrCount:        20,
-		restartWaitTime:    5,
-		genesis:            time.Now(),
-	}
-
-	// Dial websocket API.
-	var wsDialer ws.Dialer
-	wsClient, _, err := wsDialer.Dial(coinbaseWSBaseString, nil)
-	if err != nil {
-		log.Errorf("CoinBase - Dial ws base string: %v.", err)
-		failoverChannel <- string(COINBASE_EXCHANGE)
-		return &scraper
-	}
-	scraper.wsClient = wsClient
-
-	// Subscribe to pairs and initialize coinbaseLastTradeTimeMap.
-	for _, pair := range pairs {
-		if err := scraper.subscribe(pair, true, &lock); err != nil {
-			log.Errorf("CoinBase - subscribe to pair %s: %v.", pair.ForeignName, err)
-		} else {
-			log.Debugf("CoinBase - Subscribed to pair %s:%s.", COINBASE_EXCHANGE, pair.ForeignName)
-			scraper.lastTradeTimeMap[pair.ForeignName] = time.Now()
-		}
-	}
-
-	go scraper.fetchTrades(&lock)
-	go scraper.resubscribe(ctx, &lock)
-	go scraper.processUnsubscribe(ctx, &lock)
-	go scraper.watchConfig(ctx, &lock)
-
-	// Check last trade time for each subscribed pair and resubscribe if no activity for more than @coinbaseWatchdogDelayMap.
-	for _, pair := range pairs {
-		scraper.startWatchdogForPair(ctx, &lock, pair)
-	}
-
-	return &scraper
-}
-
-func (scraper *coinbaseScraper) processUnsubscribe(ctx context.Context, lock *sync.RWMutex) {
-	for {
-		select {
-		case pair := <-scraper.unsubscribeChannel:
-			// Unsubscribe from this pair.
-			if err := scraper.subscribe(pair, false, lock); err != nil {
-				log.Errorf("CoinBase - Unsubscribe pair %s: %v.", pair.ForeignName, err)
-			} else {
-				log.Infof("CoinBase - Unsubscribed pair %s.", pair.ForeignName)
-			}
-			// Delete last trade time for this pair.
-			lock.Lock()
-			delete(scraper.lastTradeTimeMap, pair.ForeignName)
-			lock.Unlock()
-			scraper.stopWatchdogForPair(lock, pair.ForeignName)
-		case <-ctx.Done():
-			log.Debugf("CoinBase - Close processUnsubscribe routine of scraper with genesis: %v.", scraper.genesis)
-			return
-		}
-	}
-}
-
-func (scraper *coinbaseScraper) watchConfig(ctx context.Context, lock *sync.RWMutex) {
-	// Check for config changes every 60 minutes.
-	envKey := strings.ToUpper(COINBASE_EXCHANGE) + "_WATCH_CONFIG_INTERVAL"
-	interval, err := strconv.Atoi(utils.Getenv(envKey, "3600"))
-	if err != nil {
-		log.Errorf("CoinBase - Failed to parse %s: %v.", envKey, err)
-		return
-	}
-	ticker := time.NewTicker(time.Duration(interval) * time.Second)
-	defer ticker.Stop()
-
-	// Get the initial config.
-	last, err := models.GetExchangePairMap(COINBASE_EXCHANGE)
-	if err != nil {
-		log.Errorf("CoinBase - GetExchangePairMap: %v.", err)
-		return
-	}
-
-	// Watch for config changes.
-	for {
-		select {
-		case <-ticker.C:
-			current, err := models.GetExchangePairMap(COINBASE_EXCHANGE)
-			if err != nil {
-				log.Errorf("CoinBase - GetExchangePairMap: %v.", err)
-				continue
-			}
-			// Apply the config changes.
-			scraper.applyConfigDiff(ctx, lock, last, current)
-			// Update the last config.
-			last = current
-		case <-ctx.Done():
-			log.Debugf("CoinBase - Close watchConfig routine of scraper with genesis: %v.", scraper.genesis)
-			return
-		}
-	}
-}
-
-func (scraper *coinbaseScraper) applyConfigDiff(ctx context.Context, lock *sync.RWMutex, last map[string]int64, current map[string]int64) {
-
-	added := make([]string, 0)
-	removed := make([]string, 0)
-	changed := make([]string, 0)
-
-	// If last is nil, add all pairs from current.
-	if last == nil {
-		for p := range current {
-			added = append(added, p)
-		}
-	} else {
-		// If last is not nil, check for added and removed pairs.
-		for p := range current {
-			if _, ok := last[p]; !ok {
-				added = append(added, p)
-			}
-		}
-		for p := range last {
-			if _, ok := current[p]; !ok {
-				removed = append(removed, p)
-			}
-		}
-		for p, newDelay := range current {
-			if oldDelay, ok := last[p]; ok && oldDelay != newDelay {
-				changed = append(changed, p)
-			}
-		}
-	}
-
-	// Unsubscribe from removed pairs.
-	for _, p := range removed {
-		log.Infof("CoinBase - Removed pair %s.", p)
-		scraper.unsubscribeChannel <- models.ExchangePair{
-			ForeignName: p,
-		}
-	}
-	// Subscribe to added pairs.
-	for _, p := range added {
-		// Get the delay for this pair.
-		delay := current[p]
-		log.Infof("CoinBase - Added pair %s with delay %v.", p, delay)
-
-		ep, err := scraper.getExchangePairInfo(p, delay)
-		if err != nil {
-			log.Errorf("CoinBase - Failed to GetExchangePairInfo for new pair %s: %v.", p, err)
-			continue
-		}
-		err = scraper.subscribe(ep, true, lock)
-		if err != nil {
-			log.Errorf("CoinBase - Failed to subscribe to %s: %v", ep.ForeignName, err)
-			continue // Don't start watchdog if subscription failed
-		}
-		// Start watchdog for this pair.
-		scraper.startWatchdogForPair(ctx, lock, ep)
-		// Add the pair to the ticker pair map.
-		key := strings.ReplaceAll(ep.ForeignName, "-", "")
-		lock.Lock()
-		scraper.tickerPairMap[key] = ep.UnderlyingPair
-		// Set the last trade time for this pair.
-		if _, exists := scraper.lastTradeTimeMap[ep.ForeignName]; !exists {
-			scraper.lastTradeTimeMap[ep.ForeignName] = time.Now()
-		}
-		lock.Unlock()
-	}
-	// Resubscribe to changed pairs.
-	for _, p := range changed {
-		newDelay := current[p]
-		log.Infof("CoinBase - Changed pair %s with delay %v.", p, newDelay)
-		scraper.restartWatchdogForPair(ctx, lock, p, newDelay)
-	}
-}
-
-func (scraper *coinbaseScraper) restartWatchdogForPair(ctx context.Context, lock *sync.RWMutex, foreignName string, newDelay int64) {
-	// 1. Stop the watchdog for the pair.
-	scraper.stopWatchdogForPair(lock, foreignName)
-	// 2. Get the new exchange pair info (only for watchdog, no effect on subscription).
-	ep, err := scraper.getExchangePairInfo(foreignName, newDelay)
-	if err != nil {
-		log.Errorf("CoinBase - Failed to GetExchangePairInfo for changed pair %s: %v.", foreignName, err)
-		return
-	}
-	// 3. Start the watchdog for the pair with the new delay.
-	scraper.startWatchdogForPair(ctx, lock, ep)
-}
-
-func (scraper *coinbaseScraper) getExchangePairInfo(foreignName string, delay int64) (models.ExchangePair, error) {
-	idMap, err := models.GetSymbolIdentificationMap(COINBASE_EXCHANGE)
-	if err != nil {
-		return models.ExchangePair{}, fmt.Errorf("GetSymbolIdentificationMap(%s): %w", COINBASE_EXCHANGE, err)
-	}
-	ep, err := models.ConstructExchangePair(COINBASE_EXCHANGE, foreignName, delay, idMap)
-	if err != nil {
-		return models.ExchangePair{}, fmt.Errorf("ConstructExchangePair(%s, %s, %v): %w", COINBASE_EXCHANGE, foreignName, delay, err)
-	}
-	return ep, nil
-}
-
-func (scraper *coinbaseScraper) startWatchdogForPair(ctx context.Context, lock *sync.RWMutex, pair models.ExchangePair) {
-	// Check if watchdog is already running for this pair.
-	lock.Lock()
-	if cancel, exists := scraper.watchdogCancel[pair.ForeignName]; exists && cancel != nil {
-		lock.Unlock()
-		return
-	}
-	lock.Unlock()
-
-	wdCtx, cancel := context.WithCancel(ctx)
-	lock.Lock()
-	scraper.watchdogCancel[pair.ForeignName] = cancel
-	lock.Unlock()
-
-	// Start watchdog for this pair.
-	watchdogTicker := time.NewTicker(time.Duration(pair.WatchDogDelay) * time.Second)
-	go watchdog(wdCtx, pair, watchdogTicker, scraper.lastTradeTimeMap, pair.WatchDogDelay, scraper.subscribeChannel, lock)
-}
-
-func (scraper *coinbaseScraper) stopWatchdogForPair(lock *sync.RWMutex, foreignName string) {
-	lock.Lock()
-	cancel, ok := scraper.watchdogCancel[foreignName]
-	if ok && cancel != nil {
-		cancel()
-		delete(scraper.watchdogCancel, foreignName)
-	}
-	lock.Unlock()
-}
-
-func (scraper *coinbaseScraper) Close(cancel context.CancelFunc) error {
-	log.Warn("CoinBase - call scraper.Close().")
-	cancel()
-	if scraper.wsClient == nil {
-		return nil
-	}
-	return scraper.wsClient.Close()
-}
-
-func (scraper *coinbaseScraper) TradesChannel() chan models.Trade {
-	return scraper.tradesChannel
-}
-
-func (scraper *coinbaseScraper) fetchTrades(lock *sync.RWMutex) {
-	// Read trades stream.
-	var errCount int
-
-	for {
-
-		var message coinBaseWSResponse
-		err := scraper.wsClient.ReadJSON(&message)
-		if err != nil {
-			if handleErrorReadJSON(err, &errCount, scraper.maxErrCount, COINBASE_EXCHANGE, scraper.restartWaitTime) {
-				return
-			}
-			continue
-		}
-
-		if message.Type == "match" {
-			scraper.handleWSResponse(message, lock)
-		}
-
-	}
-
-}
-
-func (scraper *coinbaseScraper) handleWSResponse(message coinBaseWSResponse, lock *sync.RWMutex) {
-	trade, err := coinbaseParseTradeMessage(message)
-	if err != nil {
-		log.Errorf("CoinBase - parseCoinBaseTradeMessage: %s.", err.Error())
-		return
-	}
-
-	// Identify ticker symbols with underlying assets.
-	pair := strings.Split(message.ProductID, "-")
-	if len(pair) > 1 {
-		lock.RLock()
-		trade.QuoteToken = scraper.tickerPairMap[pair[0]+pair[1]].QuoteToken
-		trade.BaseToken = scraper.tickerPairMap[pair[0]+pair[1]].BaseToken
-		lock.RUnlock()
-		log.Tracef("CoinBase - got trade: %s -- %v -- %v -- %s.", trade.QuoteToken.Symbol+"-"+trade.BaseToken.Symbol, trade.Price, trade.Volume, trade.ForeignTradeID)
-		lock.Lock()
-		scraper.lastTradeTimeMap[pair[0]+"-"+pair[1]] = trade.Time
-		lock.Unlock()
-		scraper.tradesChannel <- trade
-	}
-
-}
-
-func (scraper *coinbaseScraper) resubscribe(ctx context.Context, lock *sync.RWMutex) {
-	for {
-		select {
-		case pair := <-scraper.subscribeChannel:
-			err := scraper.subscribe(pair, false, lock)
-			if err != nil {
-				log.Errorf("CoinBase - Unsubscribe pair %s: %v.", pair.ForeignName, err)
-			} else {
-				log.Debugf("CoinBase - Unsubscribed pair %s.", pair.ForeignName)
-			}
-			time.Sleep(2 * time.Second)
-			err = scraper.subscribe(pair, true, lock)
-			if err != nil {
-				log.Errorf("CoinBase - Resubscribe pair %s: %v.", pair.ForeignName, err)
-			} else {
-				log.Debugf("CoinBase - Subscribed to pair %s.", pair.ForeignName)
-			}
-		case <-ctx.Done():
-			log.Debugf("CoinBase - Close resubscribe routine of scraper with genesis: %v.", scraper.genesis)
-			return
-		}
-	}
-}
-
-func (scraper *coinbaseScraper) subscribe(pair models.ExchangePair, subscribe bool, lock *sync.RWMutex) error {
-	defer lock.Unlock()
-	subscribeType := "unsubscribe"
+func (coinbaseHooks) Subscribe(bs *BaseCEXScraper, pair models.ExchangePair, subscribe bool, lock *sync.RWMutex) error {
+	typ := "unsubscribe"
 	if subscribe {
-		subscribeType = "subscribe"
+		typ = "subscribe"
 	}
-	a := &coinBaseWSSubscribeMessage{
-		Type: subscribeType,
-		Channels: []coinBaseChannel{
-			{
-				Name:       "matches",
-				ProductIDs: []string{pair.ForeignName},
-			},
-		},
+	msg := &coinBaseWSSubscribeMessage{
+		Type: typ,
+		Channels: []coinBaseChannel{{
+			Name:       "matches",
+			ProductIDs: []string{pair.ForeignName},
+		}},
 	}
-	lock.Lock()
-	return scraper.wsClient.WriteJSON(a)
+	return bs.SafeWriteJSON(msg)
 }
 
-func coinbaseParseTradeMessage(message coinBaseWSResponse) (models.Trade, error) {
-	price, err := strconv.ParseFloat(message.Price, 64)
-	if err != nil {
-		return models.Trade{}, nil
-	}
-	volume, err := strconv.ParseFloat(message.Size, 64)
-	if err != nil {
-		return models.Trade{}, nil
-	}
-	if message.Side == "sell" {
-		volume *= -1
-	}
-	timestamp, err := time.Parse("2006-01-02T15:04:05.000000Z", message.Time)
-	if err != nil {
-		return models.Trade{}, nil
+func (coinbaseHooks) ReadLoop(ctx context.Context, bs *BaseCEXScraper, lock *sync.RWMutex) (handled bool) {
+	return false
+}
+
+func (coinbaseHooks) OnMessage(bs *BaseCEXScraper, mt int, data []byte, lock *sync.RWMutex) {
+	if mt != ws.TextMessage {
+		return
 	}
 
-	foreignTradeID := strconv.Itoa(int(message.TradeID))
+	var m coinBaseWSResponse
+	if err := json.Unmarshal(data, &m); err != nil {
+		return
+	}
+	if m.Type != "match" {
+		return
+	}
+
+	price, err := strconv.ParseFloat(m.Price, 64)
+	if err != nil {
+		return
+	}
+	vol, err := strconv.ParseFloat(m.Size, 64)
+	if err != nil {
+		return
+	}
+	if m.Side == "sell" {
+		vol = -vol
+	}
+	ts, err := time.Parse("2006-01-02T15:04:05.000000Z", m.Time)
+	if err != nil {
+		return
+	}
+
+	parts := strings.Split(m.ProductID, "-")
+	if len(parts) < 2 {
+		return
+	}
+	key := parts[0] + parts[1] // key for tickerPairMap: remove '-'
+
+	lock.RLock()
+	pair, ok := bs.tickerPairMap[key]
+	lock.RUnlock()
+	if !ok {
+		return
+	}
 
 	trade := models.Trade{
 		Price:          price,
-		Volume:         volume,
-		Time:           timestamp,
+		Volume:         vol,
+		Time:           ts,
 		Exchange:       Exchanges[COINBASE_EXCHANGE],
-		ForeignTradeID: foreignTradeID,
+		ForeignTradeID: strconv.Itoa(int(m.TradeID)),
+		BaseToken:      pair.BaseToken,
+		QuoteToken:     pair.QuoteToken,
 	}
 
-	return trade, nil
+	bs.setLastTradeTime(lock, parts[0]+"-"+parts[1], trade.Time)
+
+	bs.tradesChannel <- trade
+}
+
+func (coinbaseHooks) TickerKeyFromForeign(foreign string) string {
+	return strings.ReplaceAll(foreign, "-", "")
+}
+func (coinbaseHooks) LastTradeTimeKeyFromForeign(foreign string) string {
+	return foreign // "BTC-USDT"
+}
+
+func NewCoinBaseScraper(ctx context.Context, pairs []models.ExchangePair, failoverChannel chan string, wg *sync.WaitGroup) Scraper {
+	return NewBaseCEXScraper(ctx, pairs, failoverChannel, wg, coinbaseHooks{})
 }
