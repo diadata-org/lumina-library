@@ -127,6 +127,10 @@ func parseGateIOTrade(
 		err    error
 	)
 
+	if message.Result.Price == "" || message.Result.Amount == "" {
+		return models.Trade{}, false
+	}
+
 	price, err = strconv.ParseFloat(message.Result.Price, 64)
 	if err != nil {
 		log.Errorf("GateIO - error parsing float Price %v: %v.", message.Result.Price, err)
@@ -173,8 +177,7 @@ func parseGateIOTrade(
 func NewGateIOScraper(
 	ctx context.Context,
 	pairs []models.ExchangePair,
-	failoverChannel chan string,
 	wg *sync.WaitGroup,
 ) Scraper {
-	return NewBaseCEXScraper(ctx, pairs, failoverChannel, wg, gateIOHooks{})
+	return NewBaseCEXScraper(ctx, pairs, wg, gateIOHooks{})
 }

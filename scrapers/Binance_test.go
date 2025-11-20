@@ -1,326 +1,216 @@
 package scrapers
 
 import (
-	"context"
-	"errors"
-	"strconv"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
 
 	models "github.com/diadata-org/lumina-library/models"
+	ws "github.com/gorilla/websocket"
 )
 
-func TestBinanceParseWSResponse(t *testing.T) {
-	cases := []struct {
-		name   string
-		input  binanceWSResponse
-		expect models.Trade
-	}{
-		{
-			name: "valid buy trade",
-			input: binanceWSResponse{
-				Timestamp:      1721923200000,
-				Price:          "40000.5",
-				Volume:         "0.1",
-				ForeignTradeID: 1234,
-				ForeignName:    "BTCUSDT",
-				Type:           "trade",
-				Buy:            true,
-			},
-			expect: models.Trade{
-				Exchange:       Exchanges[BINANCE_EXCHANGE],
-				Time:           time.Unix(0, 1721923200000*1e6),
-				Price:          40000.5,
-				Volume:         0.1,
-				ForeignTradeID: strconv.Itoa(1234),
-			},
-		},
-		{
-			name: "valid sell trade",
-			input: binanceWSResponse{
-				Timestamp:      1721923200000,
-				Price:          "40000.5",
-				Volume:         "0.1",
-				ForeignTradeID: 1234,
-				ForeignName:    "BTCUSDT",
-				Type:           "trade",
-				Buy:            false,
-			},
-			expect: models.Trade{
-				Exchange:       Exchanges[BINANCE_EXCHANGE],
-				Time:           time.Unix(0, 1721923200000*1e6),
-				Price:          40000.5,
-				Volume:         -0.1,
-				ForeignTradeID: strconv.Itoa(1234),
-			},
-		},
-		{
-			name: "invalid price (should be 0)",
-			input: binanceWSResponse{
-				Timestamp:      1000000000000,
-				Price:          "bad-price",
-				Volume:         "2.1",
-				ForeignTradeID: 42,
-				ForeignName:    "XRPUSDT",
-				Type:           "trade",
-				Buy:            true,
-			},
-			expect: models.Trade{
-				Exchange:       Exchanges[BINANCE_EXCHANGE],
-				Time:           time.Unix(0, 1000000000000*1e6),
-				Price:          0,
-				Volume:         2.1,
-				ForeignTradeID: strconv.Itoa(42),
-			},
-		},
-		{
-			name: "invalid volume (should be 0)",
-			input: binanceWSResponse{
-				Timestamp:      2000000000000,
-				Price:          "12345.6",
-				Volume:         "bad-volume",
-				ForeignTradeID: 55,
-				ForeignName:    "BNBUSDT",
-				Type:           "trade",
-				Buy:            true,
-			},
-			expect: models.Trade{
-				Exchange:       Exchanges[BINANCE_EXCHANGE],
-				Time:           time.Unix(0, 2000000000000*1e6),
-				Price:          12345.6,
-				Volume:         0,
-				ForeignTradeID: strconv.Itoa(55),
-			},
-		},
-		{
-			name: "nil type (should skip, but parser doesn't check)",
-			input: binanceWSResponse{
-				Timestamp:      2000000000000,
-				Price:          "12345.6",
-				Volume:         "1.23",
-				ForeignTradeID: 88,
-				ForeignName:    "LTCUSDT",
-				Type:           nil,
-				Buy:            true,
-			},
-			expect: models.Trade{
-				Exchange:       Exchanges[BINANCE_EXCHANGE],
-				Time:           time.Unix(0, 2000000000000*1e6),
-				Price:          12345.6,
-				Volume:         1.23,
-				ForeignTradeID: strconv.Itoa(88),
-			},
-		},
+// ------- fake wsConn implementation, for intercepting WriteJSON -------
+
+type fakeWSConn struct {
+	writeJSONCount int
+	lastWritten    interface{}
+}
+
+func (f *fakeWSConn) ReadMessage() (int, []byte, error) {
+	return 0, nil, nil
+}
+
+func (f *fakeWSConn) WriteMessage(messageType int, data []byte) error {
+	return nil
+}
+
+func (f *fakeWSConn) ReadJSON(v interface{}) error {
+	return nil
+}
+
+func (f *fakeWSConn) WriteJSON(v interface{}) error {
+	f.writeJSONCount++
+	f.lastWritten = v
+	return nil
+}
+
+func (f *fakeWSConn) Close() error {
+	return nil
+}
+
+// ------- Test: TickerKey / LastTradeKey -------
+
+func TestBinanceHooks_TickerAndLastTradeKey(t *testing.T) {
+	h := &binanceHooks{}
+	got := h.TickerKeyFromForeign("BTC-USDT")
+	if got != "BTCUSDT" {
+		t.Fatalf("TickerKeyFromForeign: expected BTCUSDT, got %s", got)
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := binanceParseWSResponse(tc.input)
-			// Compare main fields
-			if got.Exchange != tc.expect.Exchange {
-				t.Errorf("Exchange: got %v, want %v", got.Exchange, tc.expect.Exchange)
-			}
-			if !got.Time.Equal(tc.expect.Time) {
-				t.Errorf("Time: got %v, want %v", got.Time, tc.expect.Time)
-			}
-			if got.Price != tc.expect.Price {
-				t.Errorf("Price: got %v, want %v", got.Price, tc.expect.Price)
-			}
-			if got.Volume != tc.expect.Volume {
-				t.Errorf("Volume: got %v, want %v", got.Volume, tc.expect.Volume)
-			}
-			if got.ForeignTradeID != tc.expect.ForeignTradeID {
-				t.Errorf("ForeignTradeID: got %v, want %v", got.ForeignTradeID, tc.expect.ForeignTradeID)
-			}
-		})
+	got = h.LastTradeTimeKeyFromForeign("ETH-USDT")
+	if got != "ETHUSDT" {
+		t.Fatalf("LastTradeTimeKeyFromForeign: expected ETHUSDT, got %s", got)
 	}
 }
 
-func TestSubscribe(t *testing.T) {
-	lock := &sync.RWMutex{}
-	mockWs := &mockWsConn{}
-	scraper := &binanceScraper{
-		wsClient:    mockWs,
-		writeTicker: time.NewTicker(500 * time.Millisecond),
+// ------- Test: Subscribe / Unsubscribe -------
+
+func TestBinanceHooks_SubscribeAndUnsubscribe(t *testing.T) {
+	oldInterval := binanceWriteInterval
+	binanceWriteInterval = 0
+	defer func() { binanceWriteInterval = oldInterval }()
+
+	fc := &fakeWSConn{}
+	bs := &BaseCEXScraper{
+		wsClient: fc,
 	}
-	t.Cleanup(func() { scraper.writeTicker.Stop() })
-	<-scraper.writeTicker.C
-	pair := models.ExchangePair{
-		ForeignName: "BTC-USDT",
+	h := &binanceHooks{}
+
+	var lock sync.RWMutex
+	pair := models.ExchangePair{ForeignName: "BTC-USDT"}
+
+	// subscribe = true
+	if err := h.Subscribe(bs, pair, true, &lock); err != nil {
+		t.Fatalf("Subscribe(true) returned error: %v", err)
 	}
-	// Test subscribe
-	err := scraper.subscribe(pair, true, lock)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
+	if fc.writeJSONCount != 1 {
+		t.Fatalf("expected 1 WriteJSON call, got %d", fc.writeJSONCount)
 	}
-	if len(mockWs.writeJSONCalls) != 1 {
-		t.Errorf("expected WriteJSON to be called once")
+	msg, ok := fc.lastWritten.(*binanceWSSubscribeMessage)
+	if !ok {
+		t.Fatalf("expected lastWritten to be *binanceWSSubscribeMessage, got %T", fc.lastWritten)
 	}
-	// Test unsubscribe
-	err = scraper.subscribe(pair, false, lock)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
+	if msg.Method != "SUBSCRIBE" {
+		t.Fatalf("expected Method=SUBSCRIBE, got %s", msg.Method)
 	}
-	if len(mockWs.writeJSONCalls) != 2 {
-		t.Errorf("expected WriteJSON to be called twice")
+	if len(msg.Params) != 1 || msg.Params[0] != "btcusdt@trade" {
+		t.Fatalf("expected Params=[btcusdt@trade], got %+v", msg.Params)
+	}
+
+	// subscribe = false (UNSUBSCRIBE)
+	if err := h.Subscribe(bs, pair, false, &lock); err != nil {
+		t.Fatalf("Subscribe(false) returned error: %v", err)
+	}
+	if fc.writeJSONCount != 2 {
+		t.Fatalf("expected 2 WriteJSON calls in total, got %d", fc.writeJSONCount)
+	}
+	msg, ok = fc.lastWritten.(*binanceWSSubscribeMessage)
+	if !ok {
+		t.Fatalf("expected lastWritten to be *binanceWSSubscribeMessage, got %T", fc.lastWritten)
+	}
+	if msg.Method != "UNSUBSCRIBE" {
+		t.Fatalf("expected Method=UNSUBSCRIBE, got %s", msg.Method)
+	}
+	if len(msg.Params) != 1 || msg.Params[0] != "btcusdt@trade" {
+		t.Fatalf("expected Params=[btcusdt@trade], got %+v", msg.Params)
 	}
 }
 
-func TestResubscribe(t *testing.T) {
-	ch := make(chan models.ExchangePair, 1)
-	ch <- models.ExchangePair{ForeignName: "BTC-USDT"}
-	lock := &sync.RWMutex{}
-	mockWs := &mockWsConn{}
-	s := &binanceScraper{
-		wsClient:         mockWs,
-		subscribeChannel: ch,
-		writeTicker:      time.NewTicker(500 * time.Millisecond),
-	}
-	t.Cleanup(func() { s.writeTicker.Stop() })
-	<-s.writeTicker.C
-	ctx, cancel := context.WithCancel(context.Background())
-	go s.resubscribe(ctx, lock)
-	time.Sleep(10 * time.Millisecond)
-	cancel()
-}
+// ------- Test: OnMessage parse trade and write to channel -------
 
-func TestTradesChannel(t *testing.T) {
-	s := &binanceScraper{tradesChannel: make(chan models.Trade)}
-	if s.TradesChannel() == nil {
-		t.Fatal("expected non-nil channel")
-	}
-}
+func TestBinanceHooks_OnMessage_ValidTrade(t *testing.T) {
+	h := &binanceHooks{}
 
-func TestClose(t *testing.T) {
-	mockWs := &mockWsConn{}
-	cancel := func() {}
-	s := &binanceScraper{wsClient: mockWs}
-	err := s.Close(cancel)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if !mockWs.closeCalled {
-		t.Errorf("expected Close to be called")
-	}
-}
-
-func TestCloseNilWsClient(t *testing.T) {
-	cancel := func() {}
-	s := &binanceScraper{wsClient: nil}
-	err := s.Close(cancel)
-	if err != nil {
-		t.Errorf("expected nil error when wsClient is nil, got %v", err)
-	}
-}
-
-func TestFetchTrades(t *testing.T) {
-	mockWs := &mockWsConn{
-		readJSONQueue: []interface{}{
-			binanceWSResponse{
-				Timestamp:      1620000000000,
-				Price:          "123.45",
-				Volume:         "6.78",
-				ForeignTradeID: 99,
-				ForeignName:    "BTCUSDT",
-				Type:           "trade",
-				Buy:            true,
-			},
-			binanceWSResponse{
-				Timestamp:      1620000001000,
-				Price:          "0.01",
-				Volume:         "0.1",
-				ForeignTradeID: 100,
-				ForeignName:    "BTCUSDT",
-				Type:           nil,
-				Buy:            true,
-			},
-		},
-		readJSONErrs: []error{
-			nil,
-			nil,
-		},
-	}
-	pair := models.Pair{}
-	tickerMap := map[string]models.Pair{
-		"BTCUSDT": pair,
-	}
-
-	scraper := &binanceScraper{
-		wsClient:         mockWs,
+	bs := &BaseCEXScraper{
 		tradesChannel:    make(chan models.Trade, 1),
-		tickerPairMap:    tickerMap,
+		tickerPairMap:    make(map[string]models.Pair),
 		lastTradeTimeMap: make(map[string]time.Time),
 	}
 
-	var lock sync.RWMutex
-	go scraper.fetchTrades(&lock)
+	// prepare tickerPairMap: key use Binance symbol (e.g. "BTCUSDT")
+	bs.tickerPairMap["BTCUSDT"] = models.Pair{
+		BaseToken: models.Asset{Symbol: "BTC"},
+		QuoteToken: models.Asset{
+			Symbol: "USDT",
+		},
+	}
 
-	// Assert we get a trade
+	// construct a WebSocket message (Binance trade)
+	msg := binanceWSResponse{
+		Timestamp:      1700000000000, // 只是个示例
+		Price:          "100.5",
+		Volume:         "1.23",
+		ForeignTradeID: 123456,
+		ForeignName:    "BTCUSDT",
+		Type:           "trade",
+		Buy:            true,
+	}
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("json.Marshal error: %v", err)
+	}
+
+	var lock sync.RWMutex
+
+	// call OnMessage, simulate TextMessage
+	h.OnMessage(bs, ws.TextMessage, raw, &lock)
+
+	// should write a trade to tradesChannel
 	select {
-	case trade := <-scraper.tradesChannel:
-		if trade.Price != 123.45 {
-			t.Errorf("expected price 123.45, got %v", trade.Price)
+	case trade := <-bs.tradesChannel:
+		if trade.Price != 100.5 {
+			t.Fatalf("expected trade.Price=100.5, got %v", trade.Price)
 		}
-		if trade.Volume != 6.78 {
-			t.Errorf("expected volume 6.78, got %v", trade.Volume)
+		if trade.Volume != 1.23 {
+			t.Fatalf("expected trade.Volume=1.23, got %v", trade.Volume)
 		}
-		if trade.ForeignTradeID != "99" {
-			t.Errorf("expected ForeignTradeID '99', got %v", trade.ForeignTradeID)
+		if trade.BaseToken.Symbol != "BTC" || trade.QuoteToken.Symbol != "USDT" {
+			t.Fatalf("unexpected tokens: base=%s quote=%s",
+				trade.BaseToken.Symbol, trade.QuoteToken.Symbol)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("expected trade, got none")
-	}
 
-	err := scraper.Close(func() {})
-	if err != nil {
-		t.Errorf("expected nil error, got %v", err)
-	}
-	if !mockWs.closeCalled {
-		t.Error("expected mockWs.Close() to be called")
+		// lastTradeTimeMap should be updated, key use LastTradeTimeKeyFromForeign
+		key := h.LastTradeTimeKeyFromForeign("BTC-USDT")
+		lock.RLock()
+		_, ok := bs.lastTradeTimeMap[key]
+		lock.RUnlock()
+		if !ok {
+			t.Fatalf("expected lastTradeTimeMap[%s] to be set", key)
+		}
+	default:
+		t.Fatalf("expected one trade in tradesChannel, but channel is empty")
 	}
 }
 
-func TestFetchTrades_ReadJSONError(t *testing.T) {
-	mockWs := &mockWsConn{
-		readJSONErrs: []error{errors.New("test error")},
-	}
-	scraper := &binanceScraper{
-		wsClient:         mockWs,
+// ------- Test: OnMessage ignores non-TextMessage / invalid JSON / Type == nil -------
+
+func TestBinanceHooks_OnMessage_IgnoresNonTextOrInvalid(t *testing.T) {
+	h := &binanceHooks{}
+	bs := &BaseCEXScraper{
 		tradesChannel:    make(chan models.Trade, 1),
-		tickerPairMap:    map[string]models.Pair{},
+		tickerPairMap:    make(map[string]models.Pair),
 		lastTradeTimeMap: make(map[string]time.Time),
 	}
 	var lock sync.RWMutex
-	go scraper.fetchTrades(&lock)
+
+	// 1) non-TextMessage
+	h.OnMessage(bs, ws.BinaryMessage, []byte(`{}`), &lock)
+
 	select {
-	case trade := <-scraper.tradesChannel:
-		t.Fatalf("did NOT expect a trade, got %+v", trade)
-	case <-time.After(100 * time.Millisecond):
-		// No trade, PASS!
+	case <-bs.tradesChannel:
+		t.Fatalf("expected no trade for non-text message")
+	default:
 	}
-}
 
-func TestFetchTrades_TooManyErrors(t *testing.T) {
-	// Prepare enough errors to exceed maxErrCount
-	mockWs := &mockWsConn{
-		readJSONErrs: []error{
-			errors.New("err1"),
-			errors.New("err2"),
-			errors.New("err3"),
-			errors.New("err4"),
-		},
+	// 2) invalid JSON
+	h.OnMessage(bs, ws.TextMessage, []byte(`not-json`), &lock)
+	select {
+	case <-bs.tradesChannel:
+		t.Fatalf("expected no trade for invalid JSON")
+	default:
 	}
-	scraper := &binanceScraper{
-		wsClient:         mockWs,
-		tradesChannel:    make(chan models.Trade, 1),
-		tickerPairMap:    map[string]models.Pair{},
-		lastTradeTimeMap: make(map[string]time.Time),
-		maxErrCount:      3, // small for the test
+
+	// 3) Type == nil
+	msg := binanceWSResponse{
+		ForeignName: "BTCUSDT",
+		Type:        nil,
 	}
-	var lock sync.RWMutex
-	go scraper.fetchTrades(&lock)
-	// Wait to ensure the goroutine exits after errors
-	time.Sleep(100 * time.Millisecond)
-	// There is no output expected
+	raw, _ := json.Marshal(msg)
+	h.OnMessage(bs, ws.TextMessage, raw, &lock)
+	select {
+	case <-bs.tradesChannel:
+		t.Fatalf("expected no trade when Type is nil")
+	default:
+	}
 }

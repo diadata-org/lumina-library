@@ -11,6 +11,7 @@ import (
 
 	models "github.com/diadata-org/lumina-library/models"
 	"github.com/diadata-org/lumina-library/scrapers/mexcproto"
+	"github.com/diadata-org/lumina-library/utils"
 	ws "github.com/gorilla/websocket"
 	"google.golang.org/protobuf/proto"
 )
@@ -35,7 +36,6 @@ type MEXCScraper struct {
 	maxSubscriptions   int
 	pairConnIndex      map[string]int
 	mu                 sync.RWMutex
-	failoverChannel    chan string
 }
 
 var (
@@ -43,7 +43,7 @@ var (
 	maxSubscriptionPerConn = 20
 )
 
-func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, failoverChannel chan string, wg *sync.WaitGroup) Scraper {
+func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, wg *sync.WaitGroup) Scraper {
 	defer wg.Done()
 	log.Info("MEXC - Started scraper.")
 
@@ -68,10 +68,9 @@ func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, failoverCh
 		connections:        make([]WSConnection, 0),
 		pairConnIndex:      make(map[string]int),
 		mu:                 sync.RWMutex{},
-		failoverChannel:    failoverChannel,
 	}
 
-	if _, err := scraper.newConn(); err != nil {
+	if _, err := scraper.newConn(ctx); err != nil {
 		log.Errorf("MEXC - newConn failed: %v.", err)
 		return &scraper
 	}
@@ -125,23 +124,38 @@ func (scraper *MEXCScraper) pingServer() {
 
 }
 
-func (s *MEXCScraper) newConn() (*WSConnection, error) {
+func (s *MEXCScraper) newConn(ctx context.Context) (*WSConnection, error) {
 	var wsDialer ws.Dialer
-	wsClient, _, err := wsDialer.Dial(MEXCWSBaseString, nil)
-	if err != nil {
-		log.Errorf("MEXC - Failed to open WebSocket connection: %v", err)
-		s.failoverChannel <- string(MEXC_EXCHANGE)
-		return nil, err
+	numRetries := 1
+
+	for {
+		// allow cancellation
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("MEXC - context canceled while dialing: %w", ctx.Err())
+		default:
+		}
+
+		wsClient, _, err := wsDialer.Dial(MEXCWSBaseString, nil)
+		if err == nil {
+			conn := WSConnection{
+				wsConn:           wsClient,
+				numSubscriptions: 0,
+			}
+			s.mu.Lock()
+			s.connections = append(s.connections, conn)
+			idx := len(s.connections) - 1
+			s.mu.Unlock()
+
+			log.Debugf("MEXC - New WS connection established. Total connections: %d", len(s.connections))
+			return &s.connections[idx], nil
+		}
+
+		log.Errorf("MEXC - Dial ws base string failed (try %d): %v", numRetries, err)
+		// backoff: numRetries * restartWaitTime
+		time.Sleep(time.Duration(numRetries*s.restartWaitTime) * time.Second)
+		numRetries++
 	}
-	conn := WSConnection{
-		wsConn:           wsClient,
-		numSubscriptions: 0,
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.connections = append(s.connections, conn)
-	log.Debugf("MEXC - New WS connection established. Total connections: %d", len(s.connections))
-	return &s.connections[len(s.connections)-1], nil
 }
 
 func (scraper *MEXCScraper) processUnsubscribe(ctx context.Context, lock *sync.RWMutex) {
@@ -411,7 +425,7 @@ func (s *MEXCScraper) subscribe(pair models.ExchangePair, subscribe bool) error 
 
 		// If all are full, create a new connection
 		if targetConnID == -1 {
-			if _, err := s.newConn(); err != nil {
+			if _, err := s.newConn(context.Background()); err != nil {
 				log.Errorf("MEXC - Failed to create new connection for %s: %v", pair.ForeignName, err)
 				return err
 			}

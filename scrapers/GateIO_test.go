@@ -2,374 +2,348 @@ package scrapers
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	models "github.com/diadata-org/lumina-library/models"
+	ws "github.com/gorilla/websocket"
 )
 
-var dummyPair = models.Pair{
-	QuoteToken: models.Asset{Symbol: "USDT", Blockchain: "Ethereum", Address: "0xdAC17F958D2ee523a2206206994597C13D831ec7"},
-	BaseToken:  models.Asset{Symbol: "BTC", Blockchain: "Bitcoin", Address: "0x0000000000000000000000000000000000000000"},
+// --------- Fake wsConn implementation for GateIO tests ---------
+
+// fakeWSConnGateIO is a fake implementation of wsConn.
+// It records WriteJSON calls so we can assert on subscription messages.
+type fakeWSConnGateIO struct {
+	writeJSONCount int
+	lastWritten    interface{}
 }
 
-func TestHandleWSResponse_GateIO(t *testing.T) {
-	scraper := &gateIOScraper{
-		tickerPairMap: map[string]models.Pair{
-			"BTCUSDT": dummyPair,
-		},
-	}
+func (f *fakeWSConnGateIO) ReadMessage() (int, []byte, error) {
+	// Not needed in these tests.
+	return 0, nil, nil
+}
 
-	cases := []struct {
-		name   string
-		input  GateIOResponseTrade
-		expect models.Trade
-	}{
-		{
-			name: "valid buy trade",
-			input: GateIOResponseTrade{
-				Result: struct {
-					ID           int    `json:"id"`
-					CreateTime   int    `json:"create_time"`
-					CreateTimeMs string `json:"create_time_ms"`
-					Side         string `json:"side"`
-					CurrencyPair string `json:"currency_pair"`
-					Amount       string `json:"amount"`
-					Price        string `json:"price"`
-				}{
-					ID:           123456,
-					CreateTime:   1721923200,
-					CreateTimeMs: "1721923200000",
-					Side:         "buy",
-					CurrencyPair: "BTC_USDT",
-					Amount:       "0.123",
-					Price:        "42000.99",
-				},
-			},
-			expect: models.Trade{
-				QuoteToken:     dummyPair.QuoteToken,
-				BaseToken:      dummyPair.BaseToken,
-				Price:          42000.99,
-				Volume:         0.123,
-				Time:           time.Unix(1721923200, 0),
-				Exchange:       Exchanges[GATEIO_EXCHANGE],
-				ForeignTradeID: strconv.FormatInt(123456, 16),
-			},
-		},
-		{
-			name: "valid sell trade",
-			input: GateIOResponseTrade{
-				Result: struct {
-					ID           int    `json:"id"`
-					CreateTime   int    `json:"create_time"`
-					CreateTimeMs string `json:"create_time_ms"`
-					Side         string `json:"side"`
-					CurrencyPair string `json:"currency_pair"`
-					Amount       string `json:"amount"`
-					Price        string `json:"price"`
-				}{
-					ID:           123456,
-					CreateTime:   1721923200,
-					CreateTimeMs: "1721923200000",
-					Side:         "sell",
-					CurrencyPair: "BTC_USDT",
-					Amount:       "0.123",
-					Price:        "42000.99",
-				},
-			},
-			expect: models.Trade{
-				QuoteToken:     dummyPair.QuoteToken,
-				BaseToken:      dummyPair.BaseToken,
-				Price:          42000.99,
-				Volume:         -0.123,
-				Time:           time.Unix(1721923200, 0),
-				Exchange:       Exchanges[GATEIO_EXCHANGE],
-				ForeignTradeID: strconv.FormatInt(123456, 16),
-			},
-		},
-		{
-			name: "invalid price (should return zero trade)",
-			input: GateIOResponseTrade{
-				Result: struct {
-					ID           int    `json:"id"`
-					CreateTime   int    `json:"create_time"`
-					CreateTimeMs string `json:"create_time_ms"`
-					Side         string `json:"side"`
-					CurrencyPair string `json:"currency_pair"`
-					Amount       string `json:"amount"`
-					Price        string `json:"price"`
-				}{
-					ID:           77,
-					CreateTime:   1000000000,
-					CreateTimeMs: "1000000000000",
-					Side:         "buy",
-					CurrencyPair: "BTC_USDT",
-					Amount:       "0.5",
-					Price:        "bad-price",
-				},
-			},
-			expect: models.Trade{}, // zero trade on error
-		},
-		{
-			name: "invalid amount (should return zero trade)",
-			input: GateIOResponseTrade{
-				Result: struct {
-					ID           int    `json:"id"`
-					CreateTime   int    `json:"create_time"`
-					CreateTimeMs string `json:"create_time_ms"`
-					Side         string `json:"side"`
-					CurrencyPair string `json:"currency_pair"`
-					Amount       string `json:"amount"`
-					Price        string `json:"price"`
-				}{
-					ID:           88,
-					CreateTime:   2000000000,
-					CreateTimeMs: "2000000000000",
-					Side:         "buy",
-					CurrencyPair: "BTC_USDT",
-					Amount:       "bad-amount",
-					Price:        "1000.99",
-				},
-			},
-			expect: models.Trade{}, // zero trade on error
-		},
-	}
+func (f *fakeWSConnGateIO) WriteMessage(messageType int, data []byte) error {
+	// Not needed in these tests.
+	return nil
+}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := scraper.handleWSResponse(tc.input, &sync.RWMutex{})
-			if got.Exchange != tc.expect.Exchange {
-				t.Errorf("Exchange: got %v, want %v", got.Exchange, tc.expect.Exchange)
-			}
-			if !got.Time.Equal(tc.expect.Time) {
-				t.Errorf("Time: got %v, want %v", got.Time, tc.expect.Time)
-			}
-			if got.Price != tc.expect.Price {
-				t.Errorf("Price: got %v, want %v", got.Price, tc.expect.Price)
-			}
-			if got.Volume != tc.expect.Volume {
-				t.Errorf("Volume: got %v, want %v", got.Volume, tc.expect.Volume)
-			}
-			if got.ForeignTradeID != tc.expect.ForeignTradeID {
-				t.Errorf("ForeignTradeID: got %v, want %v", got.ForeignTradeID, tc.expect.ForeignTradeID)
-			}
-			if got.QuoteToken != tc.expect.QuoteToken {
-				t.Errorf("QuoteToken: got %+v, want %+v", got.QuoteToken, tc.expect.QuoteToken)
-			}
-			if got.BaseToken != tc.expect.BaseToken {
-				t.Errorf("BaseToken: got %+v, want %+v", got.BaseToken, tc.expect.BaseToken)
-			}
-		})
+func (f *fakeWSConnGateIO) ReadJSON(v interface{}) error {
+	// Not needed in these tests.
+	return nil
+}
+
+func (f *fakeWSConnGateIO) WriteJSON(v interface{}) error {
+	f.writeJSONCount++
+	f.lastWritten = v
+	return nil
+}
+
+func (f *fakeWSConnGateIO) Close() error {
+	return nil
+}
+
+// --------- Helpers ---------
+
+// ensureGateExchangeMap makes sure the global Exchanges map
+// has an entry for GATEIO_EXCHANGE so parseGateIOTrade can set Exchange.
+func ensureGateExchangeMap() {
+	if Exchanges == nil {
+		Exchanges = make(map[string]models.Exchange)
+	}
+	if _, ok := Exchanges[GATEIO_EXCHANGE]; !ok {
+		Exchanges[GATEIO_EXCHANGE] = models.Exchange{}
 	}
 }
 
-func TestGateIOSubscribe(t *testing.T) {
-	lock := &sync.RWMutex{}
-	mockWs := &mockWsConn{}
-	s := &gateIOScraper{wsClient: mockWs}
+// --------- Key mapping tests ---------
+
+func TestGateIOHooks_TickerAndLastTradeKeys(t *testing.T) {
+	h := gateIOHooks{}
+
+	// TickerKeyFromForeign should remove '-' (e.g. BTC-USDT -> BTCUSDT)
+	if got := h.TickerKeyFromForeign("BTC-USDT"); got != "BTCUSDT" {
+		t.Fatalf("TickerKeyFromForeign: expected BTCUSDT, got %s", got)
+	}
+
+	// LastTradeTimeKeyFromForeign should keep the original foreign name
+	if got := h.LastTradeTimeKeyFromForeign("ETH-USDT"); got != "ETH-USDT" {
+		t.Fatalf("LastTradeTimeKeyFromForeign: expected ETH-USDT, got %s", got)
+	}
+}
+
+// --------- Subscribe / Unsubscribe tests ---------
+
+func TestGateIOHooks_SubscribeAndUnsubscribe(t *testing.T) {
+	fc := &fakeWSConnGateIO{}
+	bs := &BaseCEXScraper{
+		wsClient: fc,
+	}
+	h := gateIOHooks{}
+	var lock sync.RWMutex
+
 	pair := models.ExchangePair{ForeignName: "BTC-USDT"}
 
-	err := s.subscribe(pair, true, lock)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
+	// subscribe = true -> Event = "subscribe", Channel = "spot.trades", Payload = ["BTC_USDT"]
+	if err := h.Subscribe(bs, pair, true, &lock); err != nil {
+		t.Fatalf("Subscribe(true) returned error: %v", err)
 	}
-	if len(mockWs.writeJSONCalls) != 1 {
-		t.Errorf("expected WriteJSON to be called once")
+	if fc.writeJSONCount != 1 {
+		t.Fatalf("expected 1 WriteJSON call for subscribe, got %d", fc.writeJSONCount)
 	}
-	msg, _ := mockWs.writeJSONCalls[0].(*SubscribeGate)
+	msg, ok := fc.lastWritten.(*SubscribeGate)
+	if !ok {
+		t.Fatalf("expected lastWritten to be *SubscribeGate, got %T", fc.lastWritten)
+	}
 	if msg.Event != "subscribe" {
-		t.Errorf("expected Event=subscribe, got %v", msg.Event)
+		t.Fatalf("expected Event=subscribe, got %s", msg.Event)
+	}
+	if msg.Channel != "spot.trades" {
+		t.Fatalf("expected Channel=spot.trades, got %s", msg.Channel)
+	}
+	if len(msg.Payload) != 1 || msg.Payload[0] != "BTC_USDT" {
+		t.Fatalf("expected Payload=[BTC_USDT], got %+v", msg.Payload)
 	}
 
-	err = s.subscribe(pair, false, lock)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
+	// subscribe = false -> Event = "unsubscribe"
+	if err := h.Subscribe(bs, pair, false, &lock); err != nil {
+		t.Fatalf("Subscribe(false) returned error: %v", err)
 	}
-	if len(mockWs.writeJSONCalls) != 2 {
-		t.Errorf("expected WriteJSON to be called twice")
+	if fc.writeJSONCount != 2 {
+		t.Fatalf("expected 2 WriteJSON calls in total, got %d", fc.writeJSONCount)
 	}
-	msg2, _ := mockWs.writeJSONCalls[1].(*SubscribeGate)
-	if msg2.Event != "unsubscribe" {
-		t.Errorf("expected Event=unsubscribe, got %v", msg2.Event)
+	msg, ok = fc.lastWritten.(*SubscribeGate)
+	if !ok {
+		t.Fatalf("expected lastWritten to be *SubscribeGate, got %T", fc.lastWritten)
+	}
+	if msg.Event != "unsubscribe" {
+		t.Fatalf("expected Event=unsubscribe, got %s", msg.Event)
+	}
+	if msg.Channel != "spot.trades" {
+		t.Fatalf("expected Channel=spot.trades, got %s", msg.Channel)
+	}
+	if len(msg.Payload) != 1 || msg.Payload[0] != "BTC_USDT" {
+		t.Fatalf("expected Payload=[BTC_USDT], got %+v", msg.Payload)
 	}
 }
 
-func TestGateIOResubscribe(t *testing.T) {
-	ch := make(chan models.ExchangePair, 1)
-	lock := &sync.RWMutex{}
-	mockWs := &mockWsConn{
-		writeJSONErrs: []error{
-			errors.New("write error"),
-			nil,
-		},
-	}
-	s := &gateIOScraper{
-		wsClient:         mockWs,
-		subscribeChannel: ch,
-	}
-	// Test error path
-	ch <- models.ExchangePair{ForeignName: "BTC-USDT"}
-	ctx, cancel := context.WithCancel(context.Background())
-	go s.resubscribe(ctx, lock)
-	time.Sleep(10 * time.Millisecond)
-	cancel()
+// --------- parseGateIOTrade tests ---------
 
-	// Test success path
-	ch = make(chan models.ExchangePair, 1)
-	mockWs = &mockWsConn{}
-	s = &gateIOScraper{
-		wsClient:         mockWs,
-		subscribeChannel: ch,
-	}
-	ch <- models.ExchangePair{ForeignName: "BTC-USDT"}
-	ctx, cancel = context.WithCancel(context.Background())
-	go s.resubscribe(ctx, lock)
-	time.Sleep(10 * time.Millisecond)
-	cancel()
-}
+func TestParseGateIOTrade_Basic(t *testing.T) {
+	ensureGateExchangeMap()
 
-func TestGateIOClose(t *testing.T) {
-	// Case 1: wsClient is nil
-	s := &gateIOScraper{}
-	err := s.Close(func() {})
-	if err != nil {
-		t.Errorf("expected nil, got %v", err)
-	}
-
-	// Case 2: wsClient is set
-	mockWs := &mockWsConn{}
-	s = &gateIOScraper{wsClient: mockWs}
-	called := false
-	err = s.Close(func() { called = true })
-	if err != nil {
-		t.Errorf("expected nil, got %v", err)
-	}
-	if !mockWs.closeCalled {
-		t.Error("expected Close() to call wsClient.Close()")
-	}
-	if !called {
-		t.Error("expected cancel func to be called")
-	}
-}
-
-func TestGateIOTradesChannel(t *testing.T) {
-	ch := make(chan models.Trade)
-	s := &gateIOScraper{tradesChannel: ch}
-	if s.TradesChannel() != ch {
-		t.Error("TradesChannel() did not return the expected channel")
-	}
-}
-
-func TestGateIOFetchTrades(t *testing.T) {
-	mockWs := &mockWsConn{}
-	tradesCh := make(chan models.Trade, 1)
-	pairMap := map[string]models.Pair{
-		"BTCUSDT": {
-			QuoteToken: models.Asset{Symbol: "BTC"},
-			BaseToken:  models.Asset{Symbol: "USDT"},
+	now := time.Now().Unix()
+	msg := GateIOResponseTrade{
+		Result: struct {
+			ID           int    `json:"id"`
+			CreateTime   int    `json:"create_time"`
+			CreateTimeMs string `json:"create_time_ms"`
+			Side         string `json:"side"`
+			CurrencyPair string `json:"currency_pair"`
+			Amount       string `json:"amount"`
+			Price        string `json:"price"`
+		}{
+			ID:           123,
+			CreateTime:   int(now),
+			CreateTimeMs: strconv.FormatInt(now*1000, 10),
+			Side:         "buy",
+			CurrencyPair: "BTC_USDT",
+			Amount:       "0.5",
+			Price:        "20000.5",
 		},
 	}
 
-	// Simulate a trade message as received from GateIO.
-	mockWs.readJSONQueue = []interface{}{
-		GateIOResponseTrade{
-			Result: struct {
-				ID           int    `json:"id"`
-				CreateTime   int    `json:"create_time"`
-				CreateTimeMs string `json:"create_time_ms"`
-				Side         string `json:"side"`
-				CurrencyPair string `json:"currency_pair"`
-				Amount       string `json:"amount"`
-				Price        string `json:"price"`
-			}{
-				ID:           1001,
-				CreateTime:   int(time.Now().Unix()),
-				CreateTimeMs: "",
-				Side:         "buy",
-				CurrencyPair: "BTC_USDT",
-				Amount:       "0.5",
-				Price:        "65000",
-			},
-		},
+	bs := &BaseCEXScraper{
+		tickerPairMap:    make(map[string]models.Pair),
+		lastTradeTimeMap: make(map[string]time.Time),
 	}
-
-	scraper := &gateIOScraper{
-		wsClient:         mockWs,
-		tradesChannel:    tradesCh,
-		tickerPairMap:    pairMap,
-		lastTradeTimeMap: map[string]time.Time{},
+	bs.tickerPairMap["BTCUSDT"] = models.Pair{
+		BaseToken:  models.Asset{Symbol: "BTC"},
+		QuoteToken: models.Asset{Symbol: "USDT"},
 	}
 
 	var lock sync.RWMutex
 
-	go scraper.fetchTrades(&lock)
+	tr, ok := parseGateIOTrade(msg, bs, &lock)
+	if !ok {
+		t.Fatalf("parseGateIOTrade returned ok=false")
+	}
+	if tr.Price != 20000.5 {
+		t.Fatalf("expected Price=20000.5, got %v", tr.Price)
+	}
+	if tr.Volume != 0.5 {
+		t.Fatalf("expected Volume=0.5, got %v", tr.Volume)
+	}
+	if tr.BaseToken.Symbol != "BTC" || tr.QuoteToken.Symbol != "USDT" {
+		t.Fatalf("unexpected tokens: base=%s quote=%s",
+			tr.BaseToken.Symbol, tr.QuoteToken.Symbol)
+	}
+	// ForeignTradeID should be hex of Result.ID
+	if tr.ForeignTradeID != strconv.FormatInt(123, 16) {
+		t.Fatalf("expected ForeignTradeID=%s, got %s",
+			strconv.FormatInt(123, 16), tr.ForeignTradeID)
+	}
+	if tr.Exchange != Exchanges[GATEIO_EXCHANGE] {
+		t.Fatalf("expected Exchange to be GateIO exchange entry")
+	}
+}
+
+func TestParseGateIOTrade_SellNegativeVolume(t *testing.T) {
+	ensureGateExchangeMap()
+
+	msg := GateIOResponseTrade{
+		Result: struct {
+			ID           int    `json:"id"`
+			CreateTime   int    `json:"create_time"`
+			CreateTimeMs string `json:"create_time_ms"`
+			Side         string `json:"side"`
+			CurrencyPair string `json:"currency_pair"`
+			Amount       string `json:"amount"`
+			Price        string `json:"price"`
+		}{
+			ID:           1,
+			CreateTime:   int(time.Now().Unix()),
+			CreateTimeMs: "0",
+			Side:         "sell",
+			CurrencyPair: "ETH_USDT",
+			Amount:       "3.0",
+			Price:        "100.0",
+		},
+	}
+
+	bs := &BaseCEXScraper{
+		tickerPairMap:    make(map[string]models.Pair),
+		lastTradeTimeMap: make(map[string]time.Time),
+	}
+	bs.tickerPairMap["ETHUSDT"] = models.Pair{
+		BaseToken:  models.Asset{Symbol: "ETH"},
+		QuoteToken: models.Asset{Symbol: "USDT"},
+	}
+	var lock sync.RWMutex
+
+	tr, ok := parseGateIOTrade(msg, bs, &lock)
+	if !ok {
+		t.Fatalf("parseGateIOTrade returned ok=false for sell trade")
+	}
+	if tr.Price != 100.0 {
+		t.Fatalf("expected Price=100.0, got %v", tr.Price)
+	}
+	if tr.Volume != -3.0 {
+		t.Fatalf("expected Volume=-3.0 for sell side, got %v", tr.Volume)
+	}
+}
+
+// --------- OnMessage tests ---------
+
+func TestGateIOHooks_OnMessage_ValidTrade(t *testing.T) {
+	ensureGateExchangeMap()
+
+	bs := &BaseCEXScraper{
+		tradesChannel:    make(chan models.Trade, 10),
+		tickerPairMap:    make(map[string]models.Pair),
+		lastTradeTimeMap: make(map[string]time.Time),
+	}
+	// matching key: BTCUSDT
+	bs.tickerPairMap["BTCUSDT"] = models.Pair{
+		BaseToken:  models.Asset{Symbol: "USDT"},
+		QuoteToken: models.Asset{Symbol: "BTC"},
+	}
+	h := gateIOHooks{}
+	var lock sync.RWMutex
+
+	now := int(time.Now().Unix())
+	msg := GateIOResponseTrade{
+		Time:    now,
+		Channel: "spot.trades",
+		Event:   "update",
+		Result: struct {
+			ID           int    `json:"id"`
+			CreateTime   int    `json:"create_time"`
+			CreateTimeMs string `json:"create_time_ms"`
+			Side         string `json:"side"`
+			CurrencyPair string `json:"currency_pair"`
+			Amount       string `json:"amount"`
+			Price        string `json:"price"`
+		}{
+			ID:           42,
+			CreateTime:   now,
+			CreateTimeMs: strconv.FormatInt(int64(now*1000), 10),
+			Side:         "buy",
+			CurrencyPair: "BTC_USDT",
+			Amount:       "1.25",
+			Price:        "25000.0",
+		},
+	}
+
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("json.Marshal error: %v", err)
+	}
+
+	h.OnMessage(bs, ws.TextMessage, raw, &lock)
 
 	select {
-	case trade := <-tradesCh:
-		if trade.Price != 65000 {
-			t.Errorf("expected price 65000, got %v", trade.Price)
+	case tr := <-bs.tradesChannel:
+		if tr.Price != 25000.0 {
+			t.Fatalf("expected Price=25000.0, got %v", tr.Price)
 		}
-		if trade.Volume != 0.5 {
-			t.Errorf("expected volume 0.5, got %v", trade.Volume)
+		if tr.Volume != 1.25 {
+			t.Fatalf("expected Volume=1.25, got %v", tr.Volume)
 		}
-		if trade.QuoteToken.Symbol != "BTC" || trade.BaseToken.Symbol != "USDT" {
-			t.Errorf("unexpected tokens: %+v, %+v", trade.QuoteToken, trade.BaseToken)
+		if tr.BaseToken.Symbol != "USDT" || tr.QuoteToken.Symbol != "BTC" {
+			t.Fatalf("unexpected tokens: base=%s quote=%s",
+				tr.BaseToken.Symbol, tr.QuoteToken.Symbol)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("did not receive trade")
+		// lastTradeTimeMap key should be "BTC-USDT" (Quote-Base)
+		lock.RLock()
+		_, ok := bs.lastTradeTimeMap["BTC-USDT"]
+		lock.RUnlock()
+		if !ok {
+			t.Fatalf("expected lastTradeTimeMap[BTC-USDT] to be set")
+		}
+	default:
+		t.Fatalf("expected one trade in tradesChannel, but channel is empty")
 	}
 }
 
-func TestGateIOFetchTrades_ErrorPaths(t *testing.T) {
-	// Case: ReadJSON always errors, should eventually exit
-	mockWs := &mockWsConn{
-		readJSONErrs: []error{errors.New("fail1"), errors.New("fail2"), errors.New("fail3")},
-	}
-	scraper := &gateIOScraper{
-		wsClient:         mockWs,
+func TestGateIOHooks_OnMessage_IgnoresNonTextOrInvalid(t *testing.T) {
+	bs := &BaseCEXScraper{
 		tradesChannel:    make(chan models.Trade, 1),
-		tickerPairMap:    map[string]models.Pair{},
-		lastTradeTimeMap: map[string]time.Time{},
-		maxErrCount:      2, // low threshold for test speed
-		restartWaitTime:  0,
+		tickerPairMap:    make(map[string]models.Pair),
+		lastTradeTimeMap: make(map[string]time.Time),
 	}
+	h := gateIOHooks{}
 	var lock sync.RWMutex
-	go scraper.fetchTrades(&lock)
-	time.Sleep(50 * time.Millisecond)
 
-	// Case: handleWSResponse returns zero trade
-	mockWs = &mockWsConn{
-		readJSONQueue: []interface{}{
-			GateIOResponseTrade{
-				Result: struct {
-					ID           int    `json:"id"`
-					CreateTime   int    `json:"create_time"`
-					CreateTimeMs string `json:"create_time_ms"`
-					Side         string `json:"side"`
-					CurrencyPair string `json:"currency_pair"`
-					Amount       string `json:"amount"`
-					Price        string `json:"price"`
-				}{
-					ID:           1,
-					CreateTime:   1,
-					CreateTimeMs: "",
-					Side:         "buy",
-					CurrencyPair: "BTC_USDT",
-					Amount:       "bad", // invalid
-					Price:        "1000",
-				},
-			},
-		},
+	// Non-text message type should be ignored
+	h.OnMessage(bs, ws.BinaryMessage, []byte(`{}`), &lock)
+	select {
+	case <-bs.tradesChannel:
+		t.Fatalf("expected no trade for non-text message")
+	default:
 	}
-	scraper = &gateIOScraper{
-		wsClient:         mockWs,
-		tradesChannel:    make(chan models.Trade, 1),
-		tickerPairMap:    map[string]models.Pair{"BTCUSDT": dummyPair},
-		lastTradeTimeMap: map[string]time.Time{},
+
+	// Invalid JSON should be ignored
+	h.OnMessage(bs, ws.TextMessage, []byte(`not-json`), &lock)
+	select {
+	case <-bs.tradesChannel:
+		t.Fatalf("expected no trade for invalid JSON")
+	default:
 	}
-	go scraper.fetchTrades(&lock)
-	time.Sleep(20 * time.Millisecond)
+}
+
+// --------- ReadLoop handled flag ---------
+
+func TestGateIOHooks_ReadLoopHandledFalse(t *testing.T) {
+	h := gateIOHooks{}
+	bs := &BaseCEXScraper{}
+	var lock sync.RWMutex
+
+	handled := h.ReadLoop(context.Background(), bs, &lock)
+	if handled {
+		t.Fatalf("expected gateIOHooks.ReadLoop to return false")
+	}
 }

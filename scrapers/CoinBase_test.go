@@ -2,326 +2,247 @@ package scrapers
 
 import (
 	"context"
-	"errors"
-	"strconv"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
 
 	models "github.com/diadata-org/lumina-library/models"
+	ws "github.com/gorilla/websocket"
 )
 
-func mustParseTime(t *testing.T, layout, value string) time.Time {
-	ts, err := time.Parse(layout, value)
-	if err != nil {
-		t.Fatalf("failed to parse time in test: %v", err)
-	}
-	return ts
+// ----------------- Fake wsConn for Coinbase tests -----------------
+
+// fakeWSConnCB is a minimal fake implementation of wsConn that records
+// WriteJSON calls so we can assert on the messages sent by Subscribe.
+type fakeWSConnCB struct {
+	writeJSONCount int
+	lastWritten    interface{}
 }
 
-func TestCoinbaseParseTradeMessage(t *testing.T) {
-	cases := []struct {
-		name   string
-		input  coinBaseWSResponse
-		expect models.Trade
-	}{
-		{
-			name: "valid buy trade",
-			input: coinBaseWSResponse{
-				Price:   "30000.00",
-				Size:    "0.5",
-				Time:    "2024-06-26T01:23:45.123456Z",
-				TradeID: 789,
-				Side:    "buy",
-			},
-			expect: models.Trade{
-				Price:          30000.00,
-				Volume:         0.5,
-				Time:           mustParseTime(t, "2006-01-02T15:04:05.000000Z", "2024-06-26T01:23:45.123456Z"),
-				Exchange:       Exchanges[COINBASE_EXCHANGE],
-				ForeignTradeID: strconv.Itoa(789),
-			},
-		},
-		{
-			name: "valid sell trade",
-			input: coinBaseWSResponse{
-				Price:   "30000.00",
-				Size:    "0.5",
-				Time:    "2024-06-26T01:23:45.123456Z",
-				TradeID: 789,
-				Side:    "sell",
-			},
-			expect: models.Trade{
-				Price:          30000.00,
-				Volume:         -0.5,
-				Time:           mustParseTime(t, "2006-01-02T15:04:05.000000Z", "2024-06-26T01:23:45.123456Z"),
-				Exchange:       Exchanges[COINBASE_EXCHANGE],
-				ForeignTradeID: strconv.Itoa(789),
-			},
-		},
-		{
-			name: "invalid price (should return zero trade)",
-			input: coinBaseWSResponse{
-				Price:   "not-a-number",
-				Size:    "2.2",
-				Time:    "2024-07-01T10:01:00.000000Z",
-				TradeID: 456,
-				Side:    "buy",
-			},
-			expect: models.Trade{}, // all fields zero
-		},
-		{
-			name: "invalid volume (should return zero trade)",
-			input: coinBaseWSResponse{
-				Price:   "1337.99",
-				Size:    "bad-size",
-				Time:    "2024-07-01T10:02:00.000000Z",
-				TradeID: 999,
-				Side:    "buy",
-			},
-			expect: models.Trade{}, // all fields zero
-		},
-		{
-			name: "invalid time (should return zero trade)",
-			input: coinBaseWSResponse{
-				Price:   "10.00",
-				Size:    "1.0",
-				Time:    "bad-time-format",
-				TradeID: 100,
-				Side:    "sell",
-			},
-			expect: models.Trade{}, // all fields zero
-		},
+func (f *fakeWSConnCB) ReadMessage() (int, []byte, error) {
+	// Not used in these tests.
+	return 0, nil, nil
+}
+
+func (f *fakeWSConnCB) WriteMessage(messageType int, data []byte) error {
+	// Not used in these tests.
+	return nil
+}
+
+func (f *fakeWSConnCB) ReadJSON(v interface{}) error {
+	// Not used in these tests.
+	return nil
+}
+
+func (f *fakeWSConnCB) WriteJSON(v interface{}) error {
+	f.writeJSONCount++
+	f.lastWritten = v
+	return nil
+}
+
+func (f *fakeWSConnCB) Close() error {
+	return nil
+}
+
+// ----------------- Tests for key mapping helpers -----------------
+
+func TestCoinbaseHooks_TickerAndLastTradeKey(t *testing.T) {
+	h := coinbaseHooks{}
+
+	// TickerKeyFromForeign should remove "-"
+	gotTicker := h.TickerKeyFromForeign("BTC-USD")
+	if gotTicker != "BTCUSD" {
+		t.Fatalf("TickerKeyFromForeign: expected BTCUSD, got %s", gotTicker)
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, _ := coinbaseParseTradeMessage(tc.input)
-			if got.Exchange != tc.expect.Exchange {
-				t.Errorf("Exchange: got %v, want %v", got.Exchange, tc.expect.Exchange)
-			}
-			if !got.Time.Equal(tc.expect.Time) {
-				t.Errorf("Time: got %v, want %v", got.Time, tc.expect.Time)
-			}
-			if got.Price != tc.expect.Price {
-				t.Errorf("Price: got %v, want %v", got.Price, tc.expect.Price)
-			}
-			if got.Volume != tc.expect.Volume {
-				t.Errorf("Volume: got %v, want %v", got.Volume, tc.expect.Volume)
-			}
-			if got.ForeignTradeID != tc.expect.ForeignTradeID {
-				t.Errorf("ForeignTradeID: got %v, want %v", got.ForeignTradeID, tc.expect.ForeignTradeID)
-			}
-		})
+	// LastTradeTimeKeyFromForeign should keep the original "BASE-QUOTE" form
+	gotLastKey := h.LastTradeTimeKeyFromForeign("ETH-USD")
+	if gotLastKey != "ETH-USD" {
+		t.Fatalf("LastTradeTimeKeyFromForeign: expected ETH-USD, got %s", gotLastKey)
 	}
 }
 
-func TestCoinbaseSubscribe(t *testing.T) {
-	lock := &sync.RWMutex{}
-	mockWs := &mockWsConn{}
-	s := &coinbaseScraper{wsClient: mockWs}
+// ----------------- Tests for Subscribe / Unsubscribe -----------------
+
+func TestCoinbaseHooks_SubscribeAndUnsubscribe(t *testing.T) {
+	fc := &fakeWSConnCB{}
+	bs := &BaseCEXScraper{
+		wsClient: fc,
+	}
+	h := coinbaseHooks{}
+
+	var lock sync.RWMutex
 	pair := models.ExchangePair{ForeignName: "BTC-USD"}
-	err := s.subscribe(pair, true, lock)
-	if err != nil {
-		t.Errorf("subscribe error: %v", err)
+
+	// subscribe = true -> type = "subscribe"
+	if err := h.Subscribe(bs, pair, true, &lock); err != nil {
+		t.Fatalf("Subscribe(true) returned error: %v", err)
 	}
-	if len(mockWs.writeJSONCalls) != 1 {
-		t.Errorf("expected one call, got %d", len(mockWs.writeJSONCalls))
+	if fc.writeJSONCount != 1 {
+		t.Fatalf("expected 1 WriteJSON call, got %d", fc.writeJSONCount)
 	}
-	// Unsubscribe
-	err = s.subscribe(pair, false, lock)
-	if err != nil {
-		t.Errorf("unsubscribe error: %v", err)
+
+	msg, ok := fc.lastWritten.(*coinBaseWSSubscribeMessage)
+	if !ok {
+		t.Fatalf("expected lastWritten to be *coinBaseWSSubscribeMessage, got %T", fc.lastWritten)
 	}
-	if len(mockWs.writeJSONCalls) != 2 {
-		t.Errorf("expected two calls, got %d", len(mockWs.writeJSONCalls))
+	if msg.Type != "subscribe" {
+		t.Fatalf("expected Type=subscribe, got %s", msg.Type)
+	}
+	if len(msg.Channels) != 1 {
+		t.Fatalf("expected 1 channel, got %d", len(msg.Channels))
+	}
+	ch := msg.Channels[0]
+	if ch.Name != "matches" {
+		t.Fatalf("expected channel name 'matches', got %s", ch.Name)
+	}
+	if len(ch.ProductIDs) != 1 || ch.ProductIDs[0] != "BTC-USD" {
+		t.Fatalf("expected ProductIDs=[BTC-USD], got %+v", ch.ProductIDs)
+	}
+
+	// subscribe = false -> type = "unsubscribe"
+	if err := h.Subscribe(bs, pair, false, &lock); err != nil {
+		t.Fatalf("Subscribe(false) returned error: %v", err)
+	}
+	if fc.writeJSONCount != 2 {
+		t.Fatalf("expected 2 WriteJSON calls in total, got %d", fc.writeJSONCount)
+	}
+
+	msg, ok = fc.lastWritten.(*coinBaseWSSubscribeMessage)
+	if !ok {
+		t.Fatalf("expected lastWritten to be *coinBaseWSSubscribeMessage, got %T", fc.lastWritten)
+	}
+	if msg.Type != "unsubscribe" {
+		t.Fatalf("expected Type=unsubscribe, got %s", msg.Type)
+	}
+	if len(msg.Channels) != 1 {
+		t.Fatalf("expected 1 channel, got %d", len(msg.Channels))
+	}
+	ch = msg.Channels[0]
+	if len(ch.ProductIDs) != 1 || ch.ProductIDs[0] != "BTC-USD" {
+		t.Fatalf("expected ProductIDs=[BTC-USD], got %+v", ch.ProductIDs)
 	}
 }
 
-func TestCoinbaseResubscribe(t *testing.T) {
-	ch := make(chan models.ExchangePair, 1)
-	ch <- models.ExchangePair{ForeignName: "BTC-USD"}
+// ----------------- Tests for OnMessage -----------------
 
-	lock := &sync.RWMutex{}
-	mockWs := &mockWsConn{
-		writeJSONErrs: []error{
-			errors.New("write error"),
-			nil,
-		},
-	}
-	s := &coinbaseScraper{
-		wsClient:         mockWs,
-		subscribeChannel: ch,
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	go s.resubscribe(ctx, lock)
-	time.Sleep(10 * time.Millisecond)
-	cancel()
-}
+func TestCoinbaseHooks_OnMessage_ValidMatch(t *testing.T) {
+	h := coinbaseHooks{}
 
-func TestCoinbaseClose(t *testing.T) {
-	// Case 1: wsClient is nil
-	s := &coinbaseScraper{}
-	cancelCalled := false
-	err := s.Close(func() { cancelCalled = true })
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if !cancelCalled {
-		t.Error("expected cancel to be called")
-	}
-
-	// Case 2: wsClient is not nil
-	mockWs := &mockWsConn{}
-	s = &coinbaseScraper{wsClient: mockWs}
-	cancelCalled = false
-	err = s.Close(func() { cancelCalled = true })
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if !mockWs.closeCalled {
-		t.Error("expected Close to be called")
-	}
-	if !cancelCalled {
-		t.Error("expected cancel to be called")
-	}
-}
-
-func TestCoinbaseHandleWSResponse(t *testing.T) {
-	mockWs := &mockWsConn{}
-	s := &coinbaseScraper{
-		wsClient:         mockWs,
+	bs := &BaseCEXScraper{
 		tradesChannel:    make(chan models.Trade, 1),
-		tickerPairMap:    map[string]models.Pair{"BTCUSD": {}},
+		tickerPairMap:    make(map[string]models.Pair),
 		lastTradeTimeMap: make(map[string]time.Time),
+	}
+
+	// tickerPairMap key is "BASEQUOTE" (without "-"), e.g. "BTCUSD"
+	bs.tickerPairMap["BTCUSD"] = models.Pair{
+		BaseToken:  models.Asset{Symbol: "BTC"},
+		QuoteToken: models.Asset{Symbol: "USD"},
+	}
+
+	// Build a Coinbase "match" message for BTC-USD
+	resp := coinBaseWSResponse{
+		Type:      "match",
+		TradeID:   42,
+		Time:      "2024-01-02T15:04:05.000000Z",
+		ProductID: "BTC-USD",
+		Size:      "0.5",
+		Price:     "30000.12",
+		Side:      "buy",
+	}
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("json.Marshal error: %v", err)
 	}
 
 	var lock sync.RWMutex
 
-	// Valid trade
-	msg := coinBaseWSResponse{
-		Price:     "10",
-		Size:      "2",
-		Time:      "2024-07-01T10:00:00.000000Z",
-		TradeID:   123,
-		ProductID: "BTC-USD",
-		Side:      "buy",
-	}
-	s.handleWSResponse(msg, &lock)
+	// Call OnMessage as if it came from WebSocket as TextMessage.
+	h.OnMessage(bs, ws.TextMessage, raw, &lock)
+
+	// We expect one trade in tradesChannel.
 	select {
-	case trade := <-s.tradesChannel:
-		if trade.Price != 10 || trade.Volume != 2 {
-			t.Errorf("bad trade: %+v", trade)
+	case tr := <-bs.tradesChannel:
+		// Price and volume
+		if tr.Price != 30000.12 {
+			t.Fatalf("expected Price=30000.12, got %v", tr.Price)
+		}
+		if tr.Volume != 0.5 {
+			t.Fatalf("expected Volume=0.5, got %v", tr.Volume)
+		}
+		// Tokens
+		if tr.BaseToken.Symbol != "BTC" || tr.QuoteToken.Symbol != "USD" {
+			t.Fatalf("unexpected tokens: base=%s quote=%s",
+				tr.BaseToken.Symbol, tr.QuoteToken.Symbol)
+		}
+		// ForeignTradeID
+		if tr.ForeignTradeID != "42" {
+			t.Fatalf("expected ForeignTradeID=42, got %s", tr.ForeignTradeID)
+		}
+		// lastTradeTimeMap key should be "BTC-USD"
+		lock.RLock()
+		_, ok := bs.lastTradeTimeMap["BTC-USD"]
+		lock.RUnlock()
+		if !ok {
+			t.Fatalf("expected lastTradeTimeMap[BTC-USD] to be set")
 		}
 	default:
-		t.Error("expected trade")
+		t.Fatalf("expected one trade in tradesChannel, but channel is empty")
 	}
-
-	// Error case (invalid price)
-	badMsg := coinBaseWSResponse{
-		Price:     "bad",
-		Size:      "2",
-		Time:      "2024-07-01T10:00:00.000000Z",
-		TradeID:   123,
-		ProductID: "BTC-USD",
-		Side:      "buy",
-	}
-	s.handleWSResponse(badMsg, &lock)
-	select {
-	case trade := <-s.tradesChannel:
-		if trade.Price != 0 || trade.Volume != 0 {
-			t.Errorf("expected zero-value trade, got: %+v", trade)
-		}
-	default:
-		t.Errorf("expected a zero-value trade, got none")
-	}
-
-	// // ProductID missing dash
-	// noDashMsg := coinBaseWSResponse{
-	// 	Price:     "123.45",
-	// 	Size:      "0.01",
-	// 	Time:      "2024-07-01T10:05:00.000000Z",
-	// 	TradeID:   999,
-	// 	ProductID: "BTCUSD", // <-- no dash
-	// 	Side:      "buy",
-	// }
-	// s.handleWSResponse(noDashMsg, &lock)
-	// select {
-	// case trade := <-s.tradesChannel:
-	// 	// Should not receive a trade when parse fails
-	// 	t.Errorf("expected no trade, got: %+v", trade)
-	// default:
-	// 	// Good, nothing sent
-	// }
 }
 
-func TestCoinbaseFetchTrades(t *testing.T) {
-	mockWs := &mockWsConn{
-		readJSONQueue: []interface{}{
-			// Case 1: match
-			coinBaseWSResponse{
-				Type:      "match",
-				TradeID:   123,
-				Price:     "1.23",
-				Size:      "0.5",
-				Time:      "2024-07-01T10:01:00.000000Z",
-				ProductID: "BTC-USD",
-				Side:      "buy",
-			},
-			// Case 2: non-match
-			coinBaseWSResponse{Type: "last_match"},
-			// Case 3: match again, but will be skipped by tickerPairMap
-			coinBaseWSResponse{
-				Type:      "match",
-				TradeID:   456,
-				Price:     "100.0",
-				Size:      "0.1",
-				Time:      "2024-07-01T10:02:00.000000Z",
-				ProductID: "FAKE-PAIR",
-				Side:      "buy",
-			},
-		},
-		readJSONErrs: []error{
-			nil, nil, nil,
-			errors.New("test connection error"),
-		},
-	}
-
-	tickerMap := map[string]models.Pair{
-		"BTCUSD": {},
-	}
-
-	s := &coinbaseScraper{
-		wsClient:         mockWs,
-		tradesChannel:    make(chan models.Trade, 2),
-		tickerPairMap:    tickerMap,
+func TestCoinbaseHooks_OnMessage_IgnoresNonTextOrNonMatch(t *testing.T) {
+	h := coinbaseHooks{}
+	bs := &BaseCEXScraper{
+		tradesChannel:    make(chan models.Trade, 1),
+		tickerPairMap:    make(map[string]models.Pair),
 		lastTradeTimeMap: make(map[string]time.Time),
-		maxErrCount:      2,
 	}
-
 	var lock sync.RWMutex
-	go s.fetchTrades(&lock)
 
-	// Get the first trade
+	// Non-text message should be ignored.
+	h.OnMessage(bs, ws.BinaryMessage, []byte(`{}`), &lock)
 	select {
-	case trade := <-s.tradesChannel:
-		if trade.Price != 1.23 {
-			t.Errorf("expected price 1.23, got %v", trade.Price)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("expected trade, got none")
+	case <-bs.tradesChannel:
+		t.Fatalf("expected no trade for non-text message")
+	default:
 	}
 
-	// No second trade (since ProductID FAKE-PAIR not in tickerMap)
+	// Invalid JSON should be ignored.
+	h.OnMessage(bs, ws.TextMessage, []byte(`not-json`), &lock)
 	select {
-	case trade := <-s.tradesChannel:
-		// Check if the tokens are empty; if so, that's actually expected, so don't fail.
-		if trade.QuoteToken.Symbol == "" && trade.BaseToken.Symbol == "" {
-			// This is an empty/invalid trade, which is ok for this test.
-		} else {
-			t.Errorf("expected no trade, got: %+v", trade)
-		}
-	case <-time.After(100 * time.Millisecond):
-		// Expected
+	case <-bs.tradesChannel:
+		t.Fatalf("expected no trade for invalid JSON")
+	default:
+	}
+
+	// Type != "match" should be ignored.
+	resp := coinBaseWSResponse{
+		Type:      "subscriptions",
+		ProductID: "BTC-USD",
+	}
+	raw, _ := json.Marshal(resp)
+	h.OnMessage(bs, ws.TextMessage, raw, &lock)
+	select {
+	case <-bs.tradesChannel:
+		t.Fatalf("expected no trade for non-match type")
+	default:
+	}
+}
+
+// ----------------- Optional: ReadLoop handled flag -----------------
+
+func TestCoinbaseHooks_ReadLoopHandledFalse(t *testing.T) {
+	h := coinbaseHooks{}
+	bs := &BaseCEXScraper{}
+	var lock sync.RWMutex
+
+	// Coinbase ReadLoop always returns false, so BaseCEXScraper.runReadLoop
+	// will use the default ReadMessage path.
+	handled := h.ReadLoop(context.Background(), bs, &lock)
+	if handled {
+		t.Fatalf("expected coinbaseHooks.ReadLoop to return false")
 	}
 }

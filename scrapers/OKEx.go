@@ -226,8 +226,7 @@ func handleOKExData(d *OKEXDATA, bs *BaseCEXScraper, lock *sync.RWMutex) {
 func NewOKExScraper(
 	ctx context.Context,
 	pairs []models.ExchangePair,
-	failoverChannel chan string,
 	wg *sync.WaitGroup,
 ) Scraper {
-	return NewBaseCEXScraper(ctx, pairs, failoverChannel, wg, okexHooks{})
+	return NewBaseCEXScraper(ctx, pairs, wg, okexHooks{})
 }

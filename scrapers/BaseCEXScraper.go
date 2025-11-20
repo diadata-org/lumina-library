@@ -39,7 +39,8 @@ type ScraperHooks interface {
 	LastTradeTimeKeyFromForeign(foreign string) string
 }
 
-type DialerHooks interface {
+// optional: some exchanges (like Binance) can implement this interface to customize Dial (like using proxy)
+type CustomDialer interface {
 	Dial(ctx context.Context, url string) (wsConn, error)
 }
 
@@ -66,7 +67,6 @@ type BaseCEXScraper struct {
 func NewBaseCEXScraper(
 	ctx context.Context,
 	pairs []models.ExchangePair,
-	failoverChannel chan string,
 	wg *sync.WaitGroup,
 	hooks ScraperHooks,
 ) *BaseCEXScraper {
@@ -89,28 +89,12 @@ func NewBaseCEXScraper(
 		genesis:            time.Now(),
 	}
 
-	// 1) connect: if implements DialerHooks, use custom Dial, otherwise use default Dial
-	var (
-		conn wsConn
-		err  error
-	)
-
-	if dh, ok := hooks.(DialerHooks); ok {
-		// custom Dial (e.g. Binance uses proxy)
-		conn, err = dh.Dial(ctx, hooks.WSURL())
-	} else {
-		// default: no proxy, direct dial
-		var d ws.Dialer
-		c, _, e := d.Dial(hooks.WSURL(), nil)
-		conn, err = c, e
-	}
-
-	if err != nil {
-		log.Errorf("%s - WebSocket connection failed: %v", key, err)
-		failoverChannel <- key
+	// 1) connect + retry
+	if ok := bs.connectWithRetry(ctx); !ok {
+		log.Errorf("%s - initial WebSocket connection failed.", key)
+		// ctx is already canceled, return directly (wsClient is nil)
 		return bs
 	}
-	bs.wsClient = conn
 
 	// 2) exchange custom initialization (like ping)
 	hooks.OnOpen(ctx, bs)
@@ -136,6 +120,46 @@ func NewBaseCEXScraper(
 	}
 
 	return bs
+}
+
+// first call hooks' custom Dial, if not implemented, use default Dialer
+func (bs *BaseCEXScraper) dialOnce(ctx context.Context) (wsConn, error) {
+	if d, ok := bs.hooks.(CustomDialer); ok {
+		// exchange implemented Dial (can use proxy)
+		return d.Dial(ctx, bs.hooks.WSURL())
+	}
+
+	// default: no proxy, direct Dial
+	var dialer ws.Dialer
+	c, _, err := dialer.Dial(bs.hooks.WSURL(), nil)
+	return c, err
+}
+
+// connection logic with retry (using restartWaitTime and incrementing multiplier)
+func (bs *BaseCEXScraper) connectWithRetry(ctx context.Context) bool {
+	key := strings.ToUpper(bs.hooks.ExchangeKey())
+	numRetries := 1
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Warnf("%s - context canceled during connect, stop retry", key)
+			return false
+		default:
+		}
+
+		conn, err := bs.dialOnce(ctx)
+		if err == nil {
+			bs.wsClient = conn
+			log.Infof("%s - WebSocket connected.", key)
+			return true
+		}
+
+		log.Errorf("%s - WebSocket connection failed (try %d): %v", key, numRetries, err)
+		sleepSec := numRetries * bs.restartWaitTime
+		time.Sleep(time.Duration(sleepSec) * time.Second)
+		numRetries++
+	}
 }
 
 // export trades channel

@@ -166,8 +166,7 @@ func parseKrakenTradeMessage(message krakenWSResponseData) (price float64, volum
 func NewKrakenScraper(
 	ctx context.Context,
 	pairs []models.ExchangePair,
-	failoverChannel chan string,
 	wg *sync.WaitGroup,
 ) Scraper {
-	return NewBaseCEXScraper(ctx, pairs, failoverChannel, wg, krakenHooks{})
+	return NewBaseCEXScraper(ctx, pairs, wg, krakenHooks{})
 }

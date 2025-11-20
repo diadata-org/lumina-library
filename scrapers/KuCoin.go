@@ -259,8 +259,7 @@ func getPublicKuCoinToken(url string) (token string, pingInterval int64, err err
 func NewKuCoinScraper(
 	ctx context.Context,
 	pairs []models.ExchangePair,
-	failoverChannel chan string,
 	wg *sync.WaitGroup,
 ) Scraper {
-	return NewBaseCEXScraper(ctx, pairs, failoverChannel, wg, kucoinHooks{})
+	return NewBaseCEXScraper(ctx, pairs, wg, kucoinHooks{})
 }

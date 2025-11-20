@@ -124,6 +124,6 @@ func (coinbaseHooks) LastTradeTimeKeyFromForeign(foreign string) string {
 	return foreign // "BTC-USDT"
 }
 
-func NewCoinBaseScraper(ctx context.Context, pairs []models.ExchangePair, failoverChannel chan string, wg *sync.WaitGroup) Scraper {
-	return NewBaseCEXScraper(ctx, pairs, failoverChannel, wg, coinbaseHooks{})
+func NewCoinBaseScraper(ctx context.Context, pairs []models.ExchangePair, wg *sync.WaitGroup) Scraper {
+	return NewBaseCEXScraper(ctx, pairs, wg, coinbaseHooks{})
 }
