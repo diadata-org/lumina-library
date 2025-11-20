@@ -51,6 +51,7 @@ func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, failoverCh
 	pingPeriod, err := strconv.Atoi(utils.Getenv("MEXC_PING_PERIOD_SECONDS", "15"))
 	if err != nil {
 		log.Errorf("parse MEXC_PING_PERIOD_SECONDS: %v. Set to default 15", err)
+		pingPeriod = 15
 	}
 
 	scraper := MEXCScraper{
@@ -115,7 +116,6 @@ func (scraper *MEXCScraper) pingServer() {
 		for i, c := range scraper.connections {
 			if err := c.wsConn.WriteJSON(pingMsg); err != nil {
 				log.Errorf("MEXC - ping error for connection %v: %v", i, err)
-				scraper.mu.Unlock()
 				continue
 			}
 			log.Infof("MEXC - Sent Ping to connection %v.", i)
