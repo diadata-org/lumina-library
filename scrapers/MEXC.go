@@ -31,6 +31,7 @@ type MEXCScraper struct {
 	lastTradeTimeMap   map[string]time.Time
 	maxErrCount        int
 	restartWaitTime    int
+	pingPeriod         int
 	genesis            time.Time
 	maxSubscriptions   int
 	pairConnIndex      map[string]int
@@ -47,6 +48,12 @@ func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, failoverCh
 	defer wg.Done()
 	log.Info("MEXC - Started scraper.")
 
+	pingPeriod, err := strconv.Atoi(utils.Getenv("MEXC_PING_PERIOD_SECONDS", "15"))
+	if err != nil {
+		log.Errorf("parse MEXC_PING_PERIOD_SECONDS: %v. Set to default 15", err)
+		pingPeriod = 15
+	}
+
 	scraper := MEXCScraper{
 		tradesChannel:      make(chan models.Trade),
 		subscribeChannel:   make(chan models.ExchangePair),
@@ -56,6 +63,7 @@ func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, failoverCh
 		lastTradeTimeMap:   make(map[string]time.Time),
 		maxErrCount:        20,
 		restartWaitTime:    5,
+		pingPeriod:         pingPeriod,
 		genesis:            time.Now(),
 		maxSubscriptions:   maxSubscriptionPerConn,
 		connections:        make([]WSConnection, 0),
@@ -69,30 +77,7 @@ func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, failoverCh
 		return &scraper
 	}
 
-	go func() {
-		pingMsg := map[string]string{"method": "PING"}
-		ticker := time.NewTicker(15 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			log.Infof("MEXC - Sent Ping...")
-			scraper.mu.Lock()
-			conns := make([]*ws.Conn, 0, len(scraper.connections))
-			for _, c := range scraper.connections {
-				if c.wsConn != nil {
-					conns = append(conns, c.wsConn)
-				}
-			}
-			scraper.mu.Unlock()
-
-			for _, c := range conns {
-				scraper.mu.Lock()
-				if err := c.WriteJSON(pingMsg); err != nil {
-					log.Error("ping error: ", err)
-				}
-				scraper.mu.Unlock()
-			}
-		}
-	}()
+	go scraper.pingServer()
 
 	// Subscribe to pairs and initialize MEXCLastTradeTimeMap.
 	for _, pair := range pairs {
@@ -119,6 +104,26 @@ func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, failoverCh
 	}
 
 	return &scraper
+}
+
+func (scraper *MEXCScraper) pingServer() {
+
+	pingMsg := map[string]string{"method": "PING"}
+	ticker := time.NewTicker(time.Duration(scraper.pingPeriod) * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		scraper.mu.Lock()
+		for i, c := range scraper.connections {
+			if err := c.wsConn.WriteJSON(pingMsg); err != nil {
+				log.Errorf("MEXC - ping error for connection %v: %v", i, err)
+				continue
+			}
+			log.Infof("MEXC - Sent Ping to connection %v.", i)
+		}
+		scraper.mu.Unlock()
+		log.Infof("MEXC - Sent Pings")
+	}
+
 }
 
 func (s *MEXCScraper) newConn() (*WSConnection, error) {
