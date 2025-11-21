@@ -2,347 +2,324 @@ package scrapers
 
 import (
 	"context"
-	"errors"
-	"strconv"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/diadata-org/lumina-library/models"
+	models "github.com/diadata-org/lumina-library/models"
+	ws "github.com/gorilla/websocket"
 )
 
-func TestParseKrakenTradeMessage(t *testing.T) {
-	cases := []struct {
-		name    string
-		input   krakenWSResponseData
-		want    float64
-		wantVol float64
-		wantTs  string // string for time parsing
-		wantID  string
-		wantErr bool
-	}{
-		{
-			name: "valid buy trade",
-			input: krakenWSResponseData{
-				Symbol:    "BTC/USD",
+// --------- Fake wsConn implementation for Kraken tests ---------
+
+// fakeWSConnKraken is a fake implementation of wsConn.
+// It records WriteJSON calls so we can assert on subscription messages.
+type fakeWSConnKraken struct {
+	writeJSONCount int
+	lastWritten    interface{}
+}
+
+func (f *fakeWSConnKraken) ReadMessage() (int, []byte, error) {
+	// Not needed for these unit tests.
+	return 0, nil, nil
+}
+
+func (f *fakeWSConnKraken) WriteMessage(messageType int, data []byte) error {
+	// Not needed for these unit tests.
+	return nil
+}
+
+func (f *fakeWSConnKraken) ReadJSON(v interface{}) error {
+	// Not needed for these unit tests.
+	return nil
+}
+
+func (f *fakeWSConnKraken) WriteJSON(v interface{}) error {
+	f.writeJSONCount++
+	f.lastWritten = v
+	return nil
+}
+
+func (f *fakeWSConnKraken) Close() error {
+	return nil
+}
+
+// --------- Helpers ---------
+
+// ensureKrakenExchangeMap makes sure the global Exchanges map has
+// an entry for KRAKEN_EXCHANGE so that Trade.Exchange can be set.
+func ensureKrakenExchangeMap() {
+	if Exchanges == nil {
+		Exchanges = make(map[string]models.Exchange)
+	}
+	if _, ok := Exchanges[KRAKEN_EXCHANGE]; !ok {
+		Exchanges[KRAKEN_EXCHANGE] = models.Exchange{}
+	}
+}
+
+// --------- Key mapping tests ---------
+
+func TestKrakenHooks_TickerAndLastTradeKeys(t *testing.T) {
+	h := krakenHooks{}
+
+	// TickerKeyFromForeign should remove '-' (e.g. BTC-USDT -> BTCUSDT)
+	if got := h.TickerKeyFromForeign("BTC-USDT"); got != "BTCUSDT" {
+		t.Fatalf("TickerKeyFromForeign: expected BTCUSDT, got %s", got)
+	}
+
+	// LastTradeTimeKeyFromForeign should keep the original foreign name
+	if got := h.LastTradeTimeKeyFromForeign("ETH-USDT"); got != "ETH-USDT" {
+		t.Fatalf("LastTradeTimeKeyFromForeign: expected ETH-USDT, got %s", got)
+	}
+}
+
+// --------- Subscribe / Unsubscribe tests ---------
+
+func TestKrakenHooks_SubscribeAndUnsubscribe(t *testing.T) {
+	fc := &fakeWSConnKraken{}
+	bs := &BaseCEXScraper{
+		wsClient: fc,
+	}
+	h := krakenHooks{}
+	var lock sync.RWMutex
+
+	pair := models.ExchangePair{ForeignName: "BTC-USDT"}
+
+	// subscribe = true -> Method = "subscribe", Channel = "trade", Symbol = ["BTC/USDT"]
+	if err := h.Subscribe(bs, pair, true, &lock); err != nil {
+		t.Fatalf("Subscribe(true) returned error: %v", err)
+	}
+	if fc.writeJSONCount != 1 {
+		t.Fatalf("expected 1 WriteJSON call for subscribe, got %d", fc.writeJSONCount)
+	}
+	msg, ok := fc.lastWritten.(*krakenWSSubscribeMessage)
+	if !ok {
+		t.Fatalf("expected lastWritten to be *krakenWSSubscribeMessage, got %T", fc.lastWritten)
+	}
+	if msg.Method != "subscribe" {
+		t.Fatalf("expected Method=subscribe, got %s", msg.Method)
+	}
+	if msg.Params.Channel != "trade" {
+		t.Fatalf("expected Channel=trade, got %s", msg.Params.Channel)
+	}
+	if len(msg.Params.Symbol) != 1 || msg.Params.Symbol[0] != "BTC/USDT" {
+		t.Fatalf("expected Symbol=[BTC/USDT], got %+v", msg.Params.Symbol)
+	}
+
+	// subscribe = false -> Method = "unsubscribe"
+	if err := h.Subscribe(bs, pair, false, &lock); err != nil {
+		t.Fatalf("Subscribe(false) returned error: %v", err)
+	}
+	if fc.writeJSONCount != 2 {
+		t.Fatalf("expected 2 WriteJSON calls in total, got %d", fc.writeJSONCount)
+	}
+	msg, ok = fc.lastWritten.(*krakenWSSubscribeMessage)
+	if !ok {
+		t.Fatalf("expected lastWritten to be *krakenWSSubscribeMessage, got %T", fc.lastWritten)
+	}
+	if msg.Method != "unsubscribe" {
+		t.Fatalf("expected Method=unsubscribe, got %s", msg.Method)
+	}
+	if msg.Params.Channel != "trade" {
+		t.Fatalf("expected Channel=trade, got %s", msg.Params.Channel)
+	}
+	if len(msg.Params.Symbol) != 1 || msg.Params.Symbol[0] != "BTC/USDT" {
+		t.Fatalf("expected Symbol=[BTC/USDT], got %+v", msg.Params.Symbol)
+	}
+}
+
+// --------- parseKrakenTradeMessage tests ---------
+
+func TestParseKrakenTradeMessage_BasicBuy(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	msg := krakenWSResponseData{
+		Symbol:    "BTC/USDT",
+		Side:      "buy",
+		Price:     25000.5,
+		Size:      1.23,
+		OrderType: "market",
+		TradeID:   123,
+		Time:      now.Format("2006-01-02T15:04:05.000000Z"),
+	}
+
+	price, volume, ts, ftID, err := parseKrakenTradeMessage(msg)
+	if err != nil {
+		t.Fatalf("parseKrakenTradeMessage returned error: %v", err)
+	}
+	if price != 25000.5 {
+		t.Fatalf("expected price=25000.5, got %v", price)
+	}
+	if volume != 1.23 {
+		t.Fatalf("expected volume=1.23, got %v", volume)
+	}
+	if !ts.Equal(now) {
+		t.Fatalf("expected timestamp=%v, got %v", now, ts)
+	}
+	if ftID != "123" {
+		t.Fatalf("expected foreignTradeID=123, got %s", ftID)
+	}
+}
+
+func TestParseKrakenTradeMessage_SellNegativeVolume(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	msg := krakenWSResponseData{
+		Symbol:    "ETH/USDT",
+		Side:      "sell",
+		Price:     100.0,
+		Size:      5.0,
+		OrderType: "limit",
+		TradeID:   99,
+		Time:      now.Format("2006-01-02T15:04:05.000000Z"),
+	}
+
+	_, volume, _, _, err := parseKrakenTradeMessage(msg)
+	if err != nil {
+		t.Fatalf("parseKrakenTradeMessage returned error: %v", err)
+	}
+	if volume != -5.0 {
+		t.Fatalf("expected volume=-5.0 for sell trade, got %v", volume)
+	}
+}
+
+// --------- OnMessage tests ---------
+
+func TestKrakenHooks_OnMessage_ValidTrades(t *testing.T) {
+	ensureKrakenExchangeMap()
+
+	bs := &BaseCEXScraper{
+		tradesChannel:    make(chan models.Trade, 10),
+		tickerPairMap:    make(map[string]models.Pair),
+		lastTradeTimeMap: make(map[string]time.Time),
+	}
+	// tickerPairMap key is "BTCUSDT"
+	bs.tickerPairMap["BTCUSDT"] = models.Pair{
+		BaseToken:  models.Asset{Symbol: "USDT"},
+		QuoteToken: models.Asset{Symbol: "BTC"},
+	}
+
+	h := krakenHooks{}
+	var lock sync.RWMutex
+
+	now := time.Now().UTC().Truncate(time.Second)
+	msg := krakenWSResponse{
+		Channel: "trade",
+		Type:    "snapshot",
+		Data: []krakenWSResponseData{
+			{
+				Symbol:    "BTC/USDT",
 				Side:      "buy",
-				Price:     31500.5,
-				Size:      0.123,
+				Price:     25000.0,
+				Size:      0.5,
 				OrderType: "market",
-				TradeID:   456,
-				Time:      "2024-06-26T23:50:55.000000Z",
+				TradeID:   1,
+				Time:      now.Format("2006-01-02T15:04:05.000000Z"),
 			},
-			want:    31500.5,
-			wantVol: 0.123,
-			wantTs:  "2024-06-26T23:50:55.000000Z",
-			wantID:  strconv.Itoa(456),
-			wantErr: false,
-		},
-		{
-			name: "valid sell trade",
-			input: krakenWSResponseData{
-				Symbol:    "BTC/USD",
+			{
+				Symbol:    "BTC/USDT",
 				Side:      "sell",
-				Price:     31500.5,
-				Size:      0.123,
-				OrderType: "market",
-				TradeID:   456,
-				Time:      "2024-06-26T23:50:55.000000Z",
-			},
-			want:    31500.5,
-			wantVol: -0.123,
-			wantTs:  "2024-06-26T23:50:55.000000Z",
-			wantID:  strconv.Itoa(456),
-			wantErr: false,
-		},
-		{
-			name: "invalid timestamp",
-			input: krakenWSResponseData{
-				Symbol:    "ETH/USD",
-				Side:      "buy",
-				Price:     2500.0,
+				Price:     25010.0,
 				Size:      1.0,
 				OrderType: "limit",
-				TradeID:   789,
-				Time:      "bad-timestamp",
+				TradeID:   2,
+				Time:      now.Format("2006-01-02T15:04:05.000000Z"),
 			},
-			want:    2500.0,
-			wantVol: 1.0,
-			wantTs:  "",
-			wantID:  "",
-			wantErr: true,
 		},
 	}
 
-	layout := "2006-01-02T15:04:05.000000Z"
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			price, volume, timestamp, foreignTradeID, err := parseKrakenTradeMessage(tc.input)
-			if (err != nil) != tc.wantErr {
-				t.Errorf("parseKrakenTradeMessage() error = %v, wantErr %v", err, tc.wantErr)
-			}
-			if price != tc.want {
-				t.Errorf("price = %v, want %v", price, tc.want)
-			}
-			if volume != tc.wantVol {
-				t.Errorf("volume = %v, want %v", volume, tc.wantVol)
-			}
-			if tc.wantTs != "" {
-				wantTime, err2 := time.Parse(layout, tc.wantTs)
-				if err2 != nil {
-					t.Fatalf("bad wantTs in test: %v", err2)
-				}
-				if !timestamp.Equal(wantTime) {
-					t.Errorf("timestamp = %v, want %v", timestamp, wantTime)
-				}
-			} else if !timestamp.IsZero() {
-				t.Errorf("timestamp should be zero, got %v", timestamp)
-			}
-			if foreignTradeID != tc.wantID {
-				t.Errorf("foreignTradeID = %v, want %v", foreignTradeID, tc.wantID)
-			}
-		})
-	}
-}
-
-func TestKrakenTradesChannel(t *testing.T) {
-	s := &krakenScraper{tradesChannel: make(chan models.Trade)}
-	if s.TradesChannel() == nil {
-		t.Fatal("expected non-nil channel")
-	}
-}
-
-func TestKrakenSubscribe(t *testing.T) {
-	lock := &sync.RWMutex{}
-	mockWs := &mockWsConn{}
-	s := &krakenScraper{
-		wsClient: mockWs,
-	}
-	pair := models.ExchangePair{
-		UnderlyingPair: models.Pair{
-			QuoteToken: models.Asset{Symbol: "BTC"},
-			BaseToken:  models.Asset{Symbol: "USD"},
-		},
-	}
-	// Test subscribe
-	err := s.subscribe(pair, true, lock)
+	raw, err := json.Marshal(msg)
 	if err != nil {
-		t.Errorf("unexpected error: %v", err)
+		t.Fatalf("json.Marshal error: %v", err)
 	}
-	if len(mockWs.writeJSONCalls) != 1 {
-		t.Errorf("expected WriteJSON to be called once")
+
+	h.OnMessage(bs, ws.TextMessage, raw, &lock)
+
+	// Expect two trades in the channel.
+	trades := make([]models.Trade, 0, 2)
+loop:
+	for {
+		select {
+		case tr := <-bs.tradesChannel:
+			trades = append(trades, tr)
+			if len(trades) == 2 {
+				break loop
+			}
+		default:
+			break loop
+		}
 	}
-	// Test unsubscribe
-	err = s.subscribe(pair, false, lock)
+
+	if len(trades) != 2 {
+		t.Fatalf("expected 2 trades, got %d", len(trades))
+	}
+
+	// First trade: buy side, positive volume.
+	if trades[0].Price != 25000.0 || trades[0].Volume != 0.5 {
+		t.Fatalf("unexpected first trade: price=%v volume=%v", trades[0].Price, trades[0].Volume)
+	}
+	if trades[0].BaseToken.Symbol != "USDT" || trades[0].QuoteToken.Symbol != "BTC" {
+		t.Fatalf("unexpected tokens on first trade: base=%s quote=%s",
+			trades[0].BaseToken.Symbol, trades[0].QuoteToken.Symbol)
+	}
+
+	// Second trade: sell side, negative volume.
+	if trades[1].Price != 25010.0 || trades[1].Volume != -1.0 {
+		t.Fatalf("unexpected second trade: price=%v volume=%v", trades[1].Price, trades[1].Volume)
+	}
+
+	// lastTradeTimeMap key: Quote-Base format, e.g. "BTC-USDT"
+	lock.RLock()
+	_, ok := bs.lastTradeTimeMap["BTC-USDT"]
+	lock.RUnlock()
+	if !ok {
+		t.Fatalf("expected lastTradeTimeMap[BTC-USDT] to be set")
+	}
+}
+
+func TestKrakenHooks_OnMessage_IgnoresNonTradeChannelOrNonText(t *testing.T) {
+	bs := &BaseCEXScraper{
+		tradesChannel:    make(chan models.Trade, 1),
+		tickerPairMap:    make(map[string]models.Pair),
+		lastTradeTimeMap: make(map[string]time.Time),
+	}
+	h := krakenHooks{}
+	var lock sync.RWMutex
+
+	// Non-text message type should be ignored.
+	h.OnMessage(bs, ws.BinaryMessage, []byte(`{}`), &lock)
+	select {
+	case <-bs.tradesChannel:
+		t.Fatalf("expected no trade for non-text message")
+	default:
+	}
+
+	// Different channel should be ignored.
+	msg := krakenWSResponse{
+		Channel: "book", // not "trade"
+		Type:    "snapshot",
+		Data:    nil,
+	}
+	raw, err := json.Marshal(msg)
 	if err != nil {
-		t.Errorf("unexpected error: %v", err)
+		t.Fatalf("json.Marshal error: %v", err)
 	}
-	if len(mockWs.writeJSONCalls) != 2 {
-		t.Errorf("expected WriteJSON to be called twice")
-	}
-}
-
-func TestKrakenResubscribe(t *testing.T) {
-	ch := make(chan models.ExchangePair, 1)
-	ch <- models.ExchangePair{
-		ForeignName: "BTC-USD",
-		UnderlyingPair: models.Pair{
-			QuoteToken: models.Asset{Symbol: "BTC"},
-			BaseToken:  models.Asset{Symbol: "USD"},
-		},
-	}
-	lock := &sync.RWMutex{}
-	mockWs := &mockWsConn{}
-	s := &krakenScraper{
-		wsClient:         mockWs,
-		subscribeChannel: ch,
-	}
-	// You can simulate error on mockWs.WriteJSON if needed
-	ctx, cancel := context.WithCancel(context.Background())
-	go s.resubscribe(ctx, lock)
-	time.Sleep(10 * time.Millisecond)
-	cancel()
-}
-
-func TestKrakenClose(t *testing.T) {
-	mockWs := &mockWsConn{}
-	cancel := func() {}
-	s := &krakenScraper{wsClient: mockWs}
-	err := s.Close(cancel)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if !mockWs.closeCalled {
-		t.Errorf("expected Close to be called")
-	}
-}
-
-func TestKrakenFetchTrades(t *testing.T) {
-	mockWs := &mockWsConn{}
-	tradesCh := make(chan models.Trade, 1)
-	pairMap := map[string]models.Pair{
-		"BTCUSD": {
-			QuoteToken: models.Asset{Symbol: "BTC"},
-			BaseToken:  models.Asset{Symbol: "USD"},
-		},
-	}
-
-	// Simulate a trade message as received from Kraken.
-	mockWs.readJSONQueue = []interface{}{
-		krakenWSResponse{
-			Channel: "trade",
-			Data: []krakenWSResponseData{
-				{
-					Symbol:    "BTC/USD",
-					Side:      "buy",
-					Price:     55555.55,
-					Size:      1.23,
-					TradeID:   987654,
-					Time:      time.Now().UTC().Format("2006-01-02T15:04:05.000000Z"),
-					OrderType: "market",
-				},
-			},
-		},
-	}
-
-	scraper := &krakenScraper{
-		wsClient:         mockWs,
-		tradesChannel:    tradesCh,
-		tickerPairMap:    pairMap,
-		lastTradeTimeMap: map[string]time.Time{},
-	}
-
-	var lock sync.RWMutex
-
-	go scraper.fetchTrades(&lock)
-
+	h.OnMessage(bs, ws.TextMessage, raw, &lock)
 	select {
-	case trade := <-tradesCh:
-		if trade.Price != 55555.55 {
-			t.Errorf("expected price 55555.55, got %v", trade.Price)
-		}
-		if trade.Volume != 1.23 {
-			t.Errorf("expected volume 1.23, got %v", trade.Volume)
-		}
-		if trade.QuoteToken.Symbol != "BTC" || trade.BaseToken.Symbol != "USD" {
-			t.Errorf("unexpected tokens: %+v, %+v", trade.QuoteToken, trade.BaseToken)
-		}
-		if trade.ForeignTradeID != "987654" {
-			t.Errorf("unexpected ForeignTradeID: %v", trade.ForeignTradeID)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("did not receive trade")
-	}
-}
-
-func TestKrakenFetchTrades_ReadJSONError(t *testing.T) {
-	mockWs := &mockWsConn{
-		readJSONErrs: []error{
-			errors.New("test error"),
-		},
-	}
-	scraper := &krakenScraper{
-		wsClient:         mockWs,
-		tradesChannel:    make(chan models.Trade, 1),
-		tickerPairMap:    map[string]models.Pair{},
-		lastTradeTimeMap: map[string]time.Time{},
-		maxErrCount:      1,
-		restartWaitTime:  0,
-	}
-	var lock sync.RWMutex
-	go scraper.fetchTrades(&lock)
-	time.Sleep(10 * time.Millisecond)
-}
-
-func TestKrakenFetchTrades_NonTradeChannel(t *testing.T) {
-	mockWs := &mockWsConn{
-		readJSONQueue: []interface{}{
-			krakenWSResponse{
-				Channel: "book", // Not "trade"
-				Data:    []krakenWSResponseData{},
-			},
-		},
-		readJSONErrs: []error{nil},
-	}
-	scraper := &krakenScraper{
-		wsClient:         mockWs,
-		tradesChannel:    make(chan models.Trade, 1),
-		tickerPairMap:    map[string]models.Pair{},
-		lastTradeTimeMap: map[string]time.Time{},
-	}
-	var lock sync.RWMutex
-	go scraper.fetchTrades(&lock)
-	time.Sleep(10 * time.Millisecond)
-	// No trade should be sent
-	select {
-	case <-scraper.tradesChannel:
-		t.Fatal("should not receive trade for non-trade channel")
+	case <-bs.tradesChannel:
+		t.Fatalf("expected no trade for non-trade channel")
 	default:
-		// pass
 	}
 }
 
-func TestKrakenFetchTrades_EmptyData(t *testing.T) {
-	mockWs := &mockWsConn{
-		readJSONQueue: []interface{}{
-			krakenWSResponse{
-				Channel: "trade",
-				Data:    []krakenWSResponseData{},
-			},
-		},
-		readJSONErrs: []error{nil},
-	}
-	scraper := &krakenScraper{
-		wsClient:         mockWs,
-		tradesChannel:    make(chan models.Trade, 1),
-		tickerPairMap:    map[string]models.Pair{},
-		lastTradeTimeMap: map[string]time.Time{},
-	}
-	var lock sync.RWMutex
-	go scraper.fetchTrades(&lock)
-	time.Sleep(10 * time.Millisecond)
-	select {
-	case <-scraper.tradesChannel:
-		t.Fatal("should not receive trade for empty data")
-	default:
-		// pass
-	}
-}
+// --------- ReadLoop handled flag ---------
 
-func TestKrakenFetchTrades_ParseTradeError(t *testing.T) {
-	mockWs := &mockWsConn{
-		readJSONQueue: []interface{}{
-			krakenWSResponse{
-				Channel: "trade",
-				Data: []krakenWSResponseData{
-					{
-						Symbol:    "BTC/USD",
-						Side:      "buy",
-						Price:     -1,
-						Size:      -1,
-						OrderType: "market",
-						TradeID:   42,
-						Time:      "not-a-time",
-					},
-				},
-			},
-		},
-		readJSONErrs: []error{nil},
-	}
-	scraper := &krakenScraper{
-		wsClient:         mockWs,
-		tradesChannel:    make(chan models.Trade, 1),
-		tickerPairMap:    map[string]models.Pair{"BTCUSD": {QuoteToken: models.Asset{Symbol: "BTC"}, BaseToken: models.Asset{Symbol: "USD"}}},
-		lastTradeTimeMap: map[string]time.Time{},
-	}
+func TestKrakenHooks_ReadLoopHandledFalse(t *testing.T) {
+	h := krakenHooks{}
+	bs := &BaseCEXScraper{}
 	var lock sync.RWMutex
-	go scraper.fetchTrades(&lock)
-	time.Sleep(10 * time.Millisecond)
-	select {
-	case <-scraper.tradesChannel:
-		t.Fatal("should not receive trade for bad timestamp")
-	default:
-		// pass
+
+	handled := h.ReadLoop(context.Background(), bs, &lock)
+	if handled {
+		t.Fatalf("expected krakenHooks.ReadLoop to return false")
 	}
 }
