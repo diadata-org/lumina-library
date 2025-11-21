@@ -217,18 +217,18 @@ func ConstructExchangePair(exchange string, pair string, watchDogDelay int64, id
 }
 
 func GetConfig(directory string, exchange string) (data []byte, err error) {
-	// jsonFile, err := readFromRemote(directory, exchange)
-	// if err != nil {
-	// log.Errorf("Failed to read %s from remote config for %s: %v", directory, exchange, err)
-	jsonFile, err := getLocalConfig(directory, exchange)
+	jsonFile, err := readFromRemote(directory, exchange)
 	if err != nil {
-		log.Errorf("Failed to read %s from local config for %s: %v", directory, exchange, err)
-		return nil, err
+		log.Errorf("Failed to read %s from remote config for %s: %v", directory, exchange, err)
+		jsonFile, err = getLocalConfig(directory, exchange)
+		if err != nil {
+			log.Errorf("Failed to read %s from local config for %s: %v", directory, exchange, err)
+			return nil, err
+		}
+		log.Infof("Read %s from local config for %s", directory, exchange)
+	} else {
+		log.Infof("Read %s from remote config for %s", directory, exchange)
 	}
-	log.Infof("Read %s from local config for %s", directory, exchange)
-	// } else {
-	// 	log.Infof("Read %s from remote config for %s", directory, exchange)
-	// }
 	return jsonFile, nil
 }
 

@@ -39,7 +39,7 @@ type ScraperHooks interface {
 	LastTradeTimeKeyFromForeign(foreign string) string
 }
 
-// optional: some exchanges (like Binance) can implement this interface to customize Dial (like using proxy)
+// CustomDialer is an optional interface that exchanges (like Binance) can implement to customize Dial (e.g., using proxy)
 type CustomDialer interface {
 	Dial(ctx context.Context, url string) (wsConn, error)
 }
@@ -138,6 +138,11 @@ func (bs *BaseCEXScraper) dialOnce(ctx context.Context) (wsConn, error) {
 // connection logic with retry (using restartWaitTime and incrementing multiplier)
 func (bs *BaseCEXScraper) connectWithRetry(ctx context.Context) bool {
 	key := strings.ToUpper(bs.hooks.ExchangeKey())
+	maxRetries, err := strconv.Atoi(utils.Getenv("MAX_RETRIES", "10"))
+	if err != nil {
+		log.Errorf("%s - Failed to parse MAX_RETRIES: %v.", key, err)
+		maxRetries = 10
+	}
 	numRetries := 1
 
 	for {
@@ -157,6 +162,10 @@ func (bs *BaseCEXScraper) connectWithRetry(ctx context.Context) bool {
 
 		log.Errorf("%s - WebSocket connection failed (try %d): %v", key, numRetries, err)
 		sleepSec := numRetries * bs.restartWaitTime
+		if numRetries >= maxRetries {
+			log.Errorf("%s - Max retries reached, giving up.", key)
+			return false
+		}
 		time.Sleep(time.Duration(sleepSec) * time.Second)
 		numRetries++
 	}
@@ -189,6 +198,12 @@ func (bs *BaseCEXScraper) SafeWriteMessage(messageType int, data []byte) error {
 // ---------------- public loop ----------------
 
 func (bs *BaseCEXScraper) runReadLoop(ctx context.Context, lock *sync.RWMutex) {
+
+	if bs.wsClient == nil {
+		log.Warnf("%s - wsClient is nil, exiting read loop", strings.ToUpper(bs.hooks.ExchangeKey()))
+		return
+	}
+
 	// give to hooks to completely take over
 	if handled := bs.hooks.ReadLoop(ctx, bs, lock); handled {
 		return
