@@ -336,7 +336,7 @@ func (b *BaseDEXScraper) watchConfig(
 	ex := hooks.ExchangeName()
 
 	envKey := strings.ToUpper(ex) + "_WATCH_CONFIG_INTERVAL"
-	interval, err := strconv.Atoi(utils.Getenv(envKey, "30"))
+	interval, err := strconv.Atoi(utils.Getenv(envKey, "3600"))
 	if err != nil {
 		log.Errorf("%s - Failed to parse %s: %v.", ex, envKey, err)
 		return

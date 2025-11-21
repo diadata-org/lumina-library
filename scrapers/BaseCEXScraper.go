@@ -48,6 +48,7 @@ type BaseCEXScraper struct {
 	wsClient wsConn
 	hooks    ScraperHooks
 
+	cancel             context.CancelFunc
 	tradesChannel      chan models.Trade
 	subscribeChannel   chan models.ExchangePair
 	unsubscribeChannel chan models.ExchangePair
@@ -76,8 +77,11 @@ func NewBaseCEXScraper(
 	key := strings.ToUpper(hooks.ExchangeKey())
 	log.Infof("%s - Started scraper.", key)
 
+	ctx, cancel := context.WithCancel(ctx)
+
 	bs := &BaseCEXScraper{
 		hooks:              hooks,
+		cancel:             cancel,
 		tradesChannel:      make(chan models.Trade),
 		subscribeChannel:   make(chan models.ExchangePair),
 		unsubscribeChannel: make(chan models.ExchangePair),
@@ -93,6 +97,7 @@ func NewBaseCEXScraper(
 	if ok := bs.connectWithRetry(ctx); !ok {
 		log.Errorf("%s - initial WebSocket connection failed.", key)
 		// ctx is already canceled, return directly (wsClient is nil)
+		bs.cancel()
 		return bs
 	}
 
@@ -177,6 +182,12 @@ func (bs *BaseCEXScraper) TradesChannel() chan models.Trade { return bs.tradesCh
 func (bs *BaseCEXScraper) Close(cancel context.CancelFunc) error {
 	log.Warnf("%s - call scraper.Close().", strings.ToUpper(bs.hooks.ExchangeKey()))
 	cancel()
+	if cancel != nil {
+		cancel()
+	}
+	if bs.cancel != nil {
+		bs.cancel()
+	}
 	if bs.wsClient != nil {
 		return bs.wsClient.Close()
 	}
@@ -275,7 +286,7 @@ func (bs *BaseCEXScraper) runProcessUnsubscribe(ctx context.Context, lock *sync.
 
 func (bs *BaseCEXScraper) runWatchConfig(ctx context.Context, lock *sync.RWMutex) {
 	ex := bs.hooks.ExchangeKey()
-	go WatchConfigLoop(ctx, ex, 30, func(ctx context.Context, last, current map[string]int64) {
+	go WatchConfigLoop(ctx, ex, 3600, func(ctx context.Context, last, current map[string]int64) {
 		bs.applyConfigDiff(ctx, lock, last, current)
 	})
 }
@@ -283,7 +294,7 @@ func (bs *BaseCEXScraper) runWatchConfig(ctx context.Context, lock *sync.RWMutex
 func WatchConfigLoop(
 	ctx context.Context,
 	exKey string, // e.g. "MEXC" / hooks.ExchangeKey()
-	defaultIntervalSec int, // Base uses 300
+	defaultIntervalSec int, // Base uses 3600
 	apply func(ctx context.Context, last, current map[string]int64),
 ) {
 	envKey := strings.ToUpper(exKey) + "_WATCH_CONFIG_INTERVAL"
