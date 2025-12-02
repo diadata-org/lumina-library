@@ -129,7 +129,7 @@ func NewBaseDEXScraper(
 	// Start generic handlers
 	base.startResubHandler(ctx, hooks, tradesChannel, &lock)
 	base.startUnsubHandler(ctx, hooks, &lock)
-	go base.watchConfig(ctx, hooks, tradesChannel, &lock)
+	go base.watchConfig(ctx, hooks, tradesChannel, &lock, pools)
 
 	return base
 }
@@ -196,7 +196,9 @@ func (b *BaseDEXScraper) startResubHandler(
 				}
 				lock.Unlock()
 				// Restart stream.
-				hooks.StartStream(ctx, b, addr, trades, lock)
+				pctx, cancel := context.WithCancel(ctx)
+				b.streamCancel[addr] = cancel
+				hooks.StartStream(pctx, b, addr, trades, lock)
 
 			case <-ctx.Done():
 				log.Infof("%s - Stopping resubscription handler.", hooks.ExchangeName())
@@ -332,6 +334,7 @@ func (b *BaseDEXScraper) watchConfig(
 	hooks DEXHooks,
 	trades chan models.Trade,
 	lock *sync.RWMutex,
+	initialPools []models.Pool,
 ) {
 	ex := hooks.ExchangeName()
 
@@ -344,20 +347,7 @@ func (b *BaseDEXScraper) watchConfig(
 	tk := time.NewTicker(time.Duration(interval) * time.Second)
 	defer tk.Stop()
 
-	// Initial pools from config file.
-	cur, err := models.PoolsFromConfigFile(ex)
-	if err != nil {
-		log.Errorf("%s - load initial pools: %v", ex, err)
-		cur = nil
-	}
-	last := mapPoolsByAddrLower(cur)
-
-	// Start all initial addresses.
-	for _, p := range last {
-		if err := b.startPool(ctx, hooks, p, trades, lock); err != nil {
-			log.Errorf("%s - startPool %s: %v", ex, p.Address, err)
-		}
-	}
+	last := mapPoolsByAddrLower(initialPools)
 
 	for {
 		select {

@@ -2,26 +2,18 @@ package scrapers
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/big"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	PancakeswapV3Pair "github.com/diadata-org/lumina-library/contracts/pancakeswapv3"
 	UniswapV3Pair "github.com/diadata-org/lumina-library/contracts/uniswapv3/uniswapV3Pair"
 	"github.com/diadata-org/lumina-library/models"
-	"github.com/diadata-org/lumina-library/utils"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/event"
-)
-
-var (
-	restDialUniV3 = ""
-	wsDialUniV3   = ""
 )
 
 type UniV3Pair struct {
@@ -41,16 +33,14 @@ type UniswapV3Swap struct {
 }
 
 type UniswapV3Scraper struct {
-	exchange           models.Exchange
-	poolMap            map[common.Address]UniV3Pair
-	wsClient           *ethclient.Client
-	restClient         *ethclient.Client
-	subscribeChannel   chan common.Address
-	unsubscribeChannel chan common.Address
-	swapStreamCancel   map[common.Address]context.CancelFunc
-	watchdogCancel     map[string]context.CancelFunc
-	lastTradeTimeMap   map[common.Address]time.Time
-	waitTime           int
+	base    *BaseDEXScraper
+	poolMap map[common.Address]UniV3Pair
+}
+
+// implements DEXHooks
+type uniswapV3Hooks struct {
+	s            *UniswapV3Scraper
+	exchangeName string
 }
 
 func NewUniswapV3Scraper(
@@ -60,482 +50,347 @@ func NewUniswapV3Scraper(
 	pools []models.Pool,
 	tradesChannel chan models.Trade,
 	wg *sync.WaitGroup,
-) {
+) *UniswapV3Scraper {
+	s := &UniswapV3Scraper{
+		poolMap: make(map[common.Address]UniV3Pair),
+	}
+	hooks := &uniswapV3Hooks{
+		s:            s,
+		exchangeName: exchangeName,
+	}
 
-	var err error
-	var scraper UniswapV3Scraper
+	// BaseDEXScraper handles:
+	//  - initialize exchange / WS client
+	//  - subscribe/unsubscribe/watchdog logic
+	//  - dynamically add/remove pools from config file
+	s.base = NewBaseDEXScraper(ctx, exchangeName, blockchain, hooks, pools, tradesChannel, wg)
+
 	log.Infof("Started %s scraper.", exchangeName)
-
-	scraper.exchange.Name = exchangeName
-	scraper.exchange.Blockchain = blockchain
-	scraper.subscribeChannel = make(chan common.Address)
-	scraper.unsubscribeChannel = make(chan common.Address)
-	scraper.watchdogCancel = make(map[string]context.CancelFunc)
-	scraper.swapStreamCancel = make(map[common.Address]context.CancelFunc)
-	scraper.lastTradeTimeMap = make(map[common.Address]time.Time)
-	scraper.waitTime, err = strconv.Atoi(utils.Getenv(strings.ToUpper(exchangeName)+"_WAIT_TIME", "500"))
-	if err != nil {
-		log.Error("parse waitTime: ", err)
-	}
-
-	scraper.restClient, err = ethclient.Dial(utils.Getenv(strings.ToUpper(exchangeName)+"_URI_REST", restDialUniV3))
-	if err != nil {
-		log.Error("UniswapV3 - init rest client: ", err)
-	}
-	scraper.wsClient, err = ethclient.Dial(utils.Getenv(strings.ToUpper(exchangeName)+"_URI_WS", wsDialUniV3))
-	if err != nil {
-		log.Error("UniswapV3 - init ws client: ", err)
-	}
-
-	scraper.makePoolMap(pools)
-
-	var lock sync.RWMutex
-	scraper.startResubHandler(ctx, tradesChannel, &lock)
-	scraper.startUnsubHandler(ctx, &lock)
-	go scraper.watchConfig(ctx, exchangeName, tradesChannel, &lock)
+	return s
 }
 
-func mapPoolsByAddress(pools []models.Pool) map[string]models.Pool {
-	poolMap := make(map[string]models.Pool)
-	for _, pool := range pools {
-		poolMap[strings.ToLower(pool.Address)] = pool
-	}
-	return poolMap
+// 1) ExchangeName
+
+func (h *uniswapV3Hooks) ExchangeName() string {
+	return h.exchangeName
 }
 
-func (s *UniswapV3Scraper) startResubHandler(ctx context.Context, trades chan models.Trade, lock *sync.RWMutex) {
-	go func() {
-		for {
-			select {
-			case addr := <-s.subscribeChannel:
-				log.Infof("Resubscribing to pool: %s", addr.Hex())
-				lock.Lock()
-				s.lastTradeTimeMap[addr] = time.Now()
-				if cancel, ok := s.swapStreamCancel[addr]; ok && cancel != nil {
-					cancel()
-					delete(s.swapStreamCancel, addr)
-				}
+// 2) EnsurePair: create / update poolMap, return addr + watchdogDelay
 
-				pctx, cancel := context.WithCancel(ctx)
-				s.swapStreamCancel[addr] = cancel
-				lock.Unlock()
-				go s.watchSwaps(pctx, addr, trades, lock)
+func (h *uniswapV3Hooks) EnsurePair(
+	ctx context.Context,
+	base *BaseDEXScraper,
+	pool models.Pool,
+	lock *sync.RWMutex,
+) (addr common.Address, watchdogDelay int64, err error) {
+	s := h.s
+	addr = common.HexToAddress(pool.Address)
 
-			case <-ctx.Done():
-				log.Info("Stopping resubscription handler.")
-				return
-			}
-		}
-	}()
-}
+	lock.Lock()
+	pair, ok := s.poolMap[addr]
+	lock.Unlock()
 
-func (scraper *UniswapV3Scraper) startUnsubHandler(ctx context.Context, lock *sync.RWMutex) {
-	go func() {
-		for {
-			select {
-			case addr := <-scraper.unsubscribeChannel:
-				log.Infof("Unsubscribing from pool: %s", addr.Hex())
-				scraper.stopPool(addr, lock)
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-}
-
-func (scraper *UniswapV3Scraper) watchConfig(ctx context.Context, exchangeName string, trades chan models.Trade, lock *sync.RWMutex) {
-	// Check for config changes every 60 minutes.
-	envKey := strings.ToUpper(exchangeName) + "_WATCH_CONFIG_INTERVAL"
-	interval, err := strconv.Atoi(utils.Getenv(envKey, "3600"))
-	if err != nil {
-		log.Errorf("UniswapV3 - Failed to parse %s: %v.", envKey, err)
-		return
-	}
-	t := time.NewTicker(time.Duration(interval) * time.Second)
-	defer t.Stop()
-
-	initial, err := models.PoolsFromConfigFile(exchangeName)
-	if err != nil {
-		log.Errorf("UniswapV3 - GetPoolsFromConfigFile: %v.", err)
-		initial = nil
-		return
-	}
-	last := mapPoolsByAddress(initial)
-
-	for _, pool := range last {
-		_ = scraper.startPool(ctx, pool, trades, lock)
-	}
-
-	for {
-		select {
-		case <-t.C:
-			currList, err := models.PoolsFromConfigFile(exchangeName)
-			if err != nil {
-				log.Errorf("UniswapV3 - GetPoolsFromConfigFile: %v.", err)
-				continue
-			}
-			curr := mapPoolsByAddress(currList)
-			scraper.applyConfigDiff(ctx, last, curr, trades, lock)
-			last = curr
-		case <-ctx.Done():
-			log.Info("UniswapV3 - Close watchConfig routine of scraper.")
-			return
-		}
-	}
-}
-
-func (scraper *UniswapV3Scraper) applyConfigDiff(ctx context.Context, last map[string]models.Pool, curr map[string]models.Pool, trades chan models.Trade, lock *sync.RWMutex) {
-	for k := range last {
-		if _, ok := curr[k]; !ok {
-			addr := common.HexToAddress(k)
-			log.Infof("UniswapV3 - Removed pool: %s.", addr.Hex())
-			scraper.unsubscribeChannel <- addr
-		}
-	}
-
-	for k, p := range curr {
-		addr := common.HexToAddress(k)
-
-		if old, ok := last[k]; !ok {
-			log.Infof("UniswapV3 - add pool %s (wd=%d, order=%d)", p.Address, p.WatchDogDelay, p.Order)
-			if err := scraper.startPool(ctx, p, trades, lock); err != nil {
-				log.Errorf("UniswapV3 - startPool %s: %v", p.Address, err)
-			}
-			continue
-		} else {
-			newDelay := p.WatchDogDelay
-			oldDelay := old.WatchDogDelay
-			if newDelay != oldDelay {
-				log.Infof("UniswapV3 - Changed pool %s (wd=%d -> %d)", p.Address, oldDelay, newDelay)
-				scraper.startWatchdogForPool(ctx, addr, newDelay, lock)
-			}
-
-			if pair, ok := scraper.poolMap[addr]; ok && pair.Order != p.Order {
-				log.Infof("UniswapV3 - Update order %s: %d -> %d", p.Address, pair.Order, p.Order)
-				pair.Order = p.Order
-				lock.Lock()
-				scraper.poolMap[addr] = pair
-				lock.Unlock()
-			}
-		}
-	}
-}
-
-func (scraper *UniswapV3Scraper) startPool(ctx context.Context, pool models.Pool, trades chan models.Trade, lock *sync.RWMutex) error {
-	addr := common.HexToAddress(pool.Address)
-	if _, ok := scraper.poolMap[addr]; !ok {
-		caller, err := UniswapV3Pair.NewUniswapV3PairCaller(addr, scraper.restClient)
+	if !ok {
+		caller, err := UniswapV3Pair.NewUniswapV3PairCaller(addr, base.RESTClient())
 		if err != nil {
-			return err
+			return addr, 0, err
 		}
-		token0, err := caller.Token0(&bind.CallOpts{})
+
+		token0Addr, err := caller.Token0(&bind.CallOpts{})
 		if err != nil {
-			return err
+			return addr, 0, err
 		}
-		token1, err := caller.Token1(&bind.CallOpts{})
+		token1Addr, err := caller.Token1(&bind.CallOpts{})
 		if err != nil {
-			return err
+			return addr, 0, err
 		}
-		t0, err := models.GetAsset(token0, scraper.exchange.Blockchain, scraper.restClient)
+
+		t0, err := models.GetAsset(token0Addr, base.exchange.Blockchain, base.RESTClient())
 		if err != nil {
-			return err
+			return addr, 0, err
 		}
-		t1, err := models.GetAsset(token1, scraper.exchange.Blockchain, scraper.restClient)
+		t1, err := models.GetAsset(token1Addr, base.exchange.Blockchain, base.RESTClient())
 		if err != nil {
-			return err
+			return addr, 0, err
 		}
-		lock.Lock()
-		scraper.poolMap[addr] = UniV3Pair{
+
+		pair = UniV3Pair{
 			Token0:  t0,
 			Token1:  t1,
 			Address: addr,
 			Order:   pool.Order,
 		}
+
+		lock.Lock()
+		s.poolMap[addr] = pair
 		lock.Unlock()
 	} else {
-		p := scraper.poolMap[addr]
-		p.Order = pool.Order
+		pair.Order = pool.Order
 		lock.Lock()
-		scraper.poolMap[addr] = p
+		s.poolMap[addr] = pair
 		lock.Unlock()
 	}
-	lock.Lock()
-	if _, ok := scraper.lastTradeTimeMap[addr]; !ok {
-		scraper.lastTradeTimeMap[addr] = time.Now()
-	}
-	lock.Unlock()
 
-	watchdogDelay := pool.WatchDogDelay
-	scraper.startWatchdogForPool(ctx, addr, watchdogDelay, lock)
-	if _, ok := scraper.swapStreamCancel[addr]; ok {
-		return nil
-	}
-
-	pctx, cancel := context.WithCancel(ctx)
-	scraper.swapStreamCancel[addr] = cancel
-	go scraper.watchSwaps(pctx, addr, trades, lock)
-	return nil
+	watchdogDelay = pool.WatchDogDelay
+	return addr, watchdogDelay, nil
 }
 
-func (scraper *UniswapV3Scraper) stopPool(addr common.Address, lock *sync.RWMutex) {
-	if cancel, ok := scraper.swapStreamCancel[addr]; ok && cancel != nil {
-		cancel()
-		delete(scraper.swapStreamCancel, addr)
-	}
-	key := addr.Hex()
-	if cancel, ok := scraper.watchdogCancel[key]; ok && cancel != nil {
-		cancel()
-		delete(scraper.watchdogCancel, key)
-	}
-	lock.Lock()
-	delete(scraper.lastTradeTimeMap, addr)
-	lock.Unlock()
-}
+// 3) StartStream: start the event subscription + processing logic for a single pool.
+func (h *uniswapV3Hooks) StartStream(
+	ctx context.Context,
+	base *BaseDEXScraper,
+	addr common.Address,
+	tradesChan chan models.Trade,
+	lock *sync.RWMutex,
+) {
+	s := h.s
 
-func (scraper *UniswapV3Scraper) startWatchdogForPool(ctx context.Context, addr common.Address, watchdogDelay int64, lock *sync.RWMutex) {
-	key := addr.Hex()
-	if cancel, ok := scraper.watchdogCancel[key]; ok && cancel != nil {
-		cancel()
-		delete(scraper.watchdogCancel, key)
+	// get pair from poolMap
+	lock.RLock()
+	pair, ok := s.poolMap[addr]
+	lock.RUnlock()
+	if !ok {
+		log.Warnf("%s - StartStream: pool %s not found in poolMap", h.ExchangeName(), addr.Hex())
+		return
 	}
-	wdCtx, cancel := context.WithCancel(ctx)
-	scraper.watchdogCancel[key] = cancel
-	watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
-	go func() {
-		defer watchdogTicker.Stop()
-		for {
-			select {
-			case <-wdCtx.Done():
-				return
-			case <-watchdogTicker.C:
-				lock.RLock()
-				lastTradeTime := scraper.lastTradeTimeMap[addr]
-				lock.RUnlock()
-				if time.Since(lastTradeTime) > time.Duration(watchdogDelay)*time.Second {
-					log.Warnf("UniswapV3 - watchdog failover for %s.", addr.Hex())
-					scraper.subscribeChannel <- addr
+
+	log.Infof("%s - subscribe to %s with pair %s",
+		h.ExchangeName(), addr.Hex(), pair.Token0.Symbol+"-"+pair.Token1.Symbol)
+
+	// -------- PancakeswapV3 --------
+	if base.exchange.Name == PANCAKESWAPV3_EXCHANGE {
+		sink, sub, err := s.GetPancakeSwapsChannel(base, addr)
+		if err != nil {
+			log.Errorf("PancakeswapV3 - error fetching swaps channel for %s: %v", addr.Hex(), err)
+			return
+		}
+
+		go func() {
+			for {
+				select {
+				case rawSwap, ok := <-sink:
+					if !ok {
+						log.Infof("PancakeswapV3 - swaps channel closed for %s", addr.Hex())
+						return
+					}
+
+					swap := s.normalizeUniV3Swap(*rawSwap)
+					price, volume := getSwapDataUniV3(swap)
+					if math.IsNaN(price) || math.IsInf(price, 0) || price == 0 {
+						log.Debugf("PancakeswapV3 - skip zero/+inf price, tx=%s", swap.ID)
+						continue
+					}
+
+					t := makeTrade(
+						pair,
+						price,
+						volume,
+						time.Unix(swap.Timestamp, 0),
+						addr,
+						swap.ID,
+						base.exchange.Name,
+						base.exchange.Blockchain,
+					)
+
+					base.UpdateLastTradeTime(addr, t.Time, lock)
+
+					switch pair.Order {
+					case 0:
+						tradesChan <- t
+					case 1:
+						t.SwapTrade()
+						tradesChan <- t
+					case 2:
+						logTrade(t)
+						tradesChan <- t
+						t.SwapTrade()
+						tradesChan <- t
+					}
+					logTrade(t)
+
+				case err := <-sub.Err():
+					log.Errorf("PancakeswapV3 - subscription error for pool %s: %v", addr.Hex(), err)
+					base.SubscribeChannel() <- addr
+					return
+
+				case <-ctx.Done():
+					log.Infof("PancakeswapV3 - shutting down stream for %s", addr.Hex())
 					return
 				}
+			}
+		}()
+
+		return
+	}
+
+	// -------- UniswapV3 --------
+	sink, sub, err := s.GetSwapsChannel(base, addr)
+	if err != nil {
+		log.Errorf("UniswapV3 - error fetching swaps channel for %s: %v", addr.Hex(), err)
+		return
+	}
+
+	go func() {
+		for {
+			select {
+			case rawSwap, ok := <-sink:
+				if !ok {
+					log.Infof("UniswapV3 - swaps channel closed for %s", addr.Hex())
+					return
+				}
+
+				swap := s.normalizeUniV3Swap(*rawSwap)
+				price, volume := getSwapDataUniV3(swap)
+				if math.IsNaN(price) || math.IsInf(price, 0) || price == 0 {
+					log.Debugf("UniswapV3 - skip zero/+inf price, tx=%s", swap.ID)
+					continue
+				}
+
+				t := makeTrade(
+					pair,
+					price,
+					volume,
+					time.Unix(swap.Timestamp, 0),
+					addr,
+					swap.ID,
+					base.exchange.Name,
+					base.exchange.Blockchain,
+				)
+
+				base.UpdateLastTradeTime(addr, t.Time, lock)
+
+				switch pair.Order {
+				case 0:
+					tradesChan <- t
+				case 1:
+					t.SwapTrade()
+					tradesChan <- t
+				case 2:
+					logTrade(t)
+					tradesChan <- t
+					t.SwapTrade()
+					tradesChan <- t
+				}
+				logTrade(t)
+
+			case err := <-sub.Err():
+				log.Errorf("UniswapV3 - subscription error for pool %s: %v", addr.Hex(), err)
+				base.SubscribeChannel() <- addr
+				return
+
+			case <-ctx.Done():
+				log.Infof("UniswapV3 - shutting down stream for %s", addr.Hex())
+				return
 			}
 		}
 	}()
 }
 
-// watchSwaps subscribes to a uniswap pool and forwards trades to the trades channel.
-func (scraper *UniswapV3Scraper) watchSwaps(ctx context.Context, poolAddress common.Address, tradesChannel chan models.Trade, lock *sync.RWMutex) {
-	// Relevant pair info is retrieved from @poolMap.
-	pair := scraper.poolMap[poolAddress]
-	log.Infof("UniswapV3 - subscribe to %s with pair %s", poolAddress.Hex(), pair.Token0.Symbol+"-"+pair.Token1.Symbol)
+// 4) OnPoolRemoved: called after stopPool to clean up V3's poolMap.
 
-	if scraper.exchange.Name != PANCAKESWAPV3_EXCHANGE {
-
-		sink, subscription, err := scraper.GetSwapsChannel(poolAddress)
-		if err != nil {
-			log.Error("UniswapV3 - error fetching swaps channel: ", err)
-		}
-
-		go func() {
-			for {
-				select {
-				case rawSwap, ok := <-sink:
-					if ok {
-						swap := scraper.normalizeUniV3Swap(*rawSwap)
-						if err != nil {
-							log.Error("UniswapV3 - error normalizing swap: ", err)
-						}
-						price, volume := getSwapDataUniV3(swap)
-						if math.IsNaN(price) || math.IsInf(price, 0) || price == 0 {
-							log.Debugf("UniswapV3 - skip zero/+inf price, tx=%s", swap.ID)
-							continue
-						}
-						t := makeTrade(pair, price, volume, time.Unix(swap.Timestamp, 0), poolAddress, swap.ID, scraper.exchange.Name, scraper.exchange.Blockchain)
-
-						// Update lastTradeTimeMap
-						lock.Lock()
-						scraper.lastTradeTimeMap[poolAddress] = t.Time
-						lock.Unlock()
-
-						if pair.Order == 0 {
-							tradesChannel <- t
-						} else if pair.Order == 1 {
-							t.SwapTrade()
-							tradesChannel <- t
-						} else if pair.Order == 2 {
-							logTrade(t)
-							tradesChannel <- t
-							t.SwapTrade()
-							tradesChannel <- t
-						}
-						logTrade(t)
-					}
-
-				case err := <-subscription.Err():
-					log.Errorf("Subscription error for pool %s: %v", poolAddress.Hex(), err)
-					scraper.subscribeChannel <- poolAddress
-					return
-
-				case <-ctx.Done():
-					log.Infof("Shutting down watchSwaps for %s", poolAddress.Hex())
-					subscription.Unsubscribe()
-					return
-				}
-
-			}
-		}()
-	} else {
-
-		sink, subscription, err := scraper.GetPancakeSwapsChannel(poolAddress)
-		if err != nil {
-			log.Error("PancakeswapV3 - error fetching swaps channel: ", err)
-		}
-
-		go func() {
-			for {
-				select {
-				case rawSwap, ok := <-sink:
-					if ok {
-						swap := scraper.normalizeUniV3Swap(*rawSwap)
-						if err != nil {
-							log.Error("PancakeswapV3 - error normalizing swap: ", err)
-						}
-						price, volume := getSwapDataUniV3(swap)
-						if math.IsNaN(price) || math.IsInf(price, 0) || price == 0 {
-							log.Debugf("PancakeswapV3 - skip zero/+inf price, tx=%s", swap.ID)
-							continue
-						}
-						t := makeTrade(pair, price, volume, time.Unix(swap.Timestamp, 0), poolAddress, swap.ID, scraper.exchange.Name, scraper.exchange.Blockchain)
-
-						// Update lastTradeTimeMap
-						lock.Lock()
-						scraper.lastTradeTimeMap[poolAddress] = t.Time
-						lock.Unlock()
-
-						if pair.Order == 0 {
-							tradesChannel <- t
-						} else if pair.Order == 1 {
-							t.SwapTrade()
-							tradesChannel <- t
-						} else if pair.Order == 2 {
-							logTrade(t)
-							tradesChannel <- t
-							t.SwapTrade()
-							tradesChannel <- t
-						}
-						logTrade(t)
-
-					}
-
-				case err := <-subscription.Err():
-					log.Errorf("Subscription error for pool %s: %v", poolAddress.Hex(), err)
-					scraper.subscribeChannel <- poolAddress
-					return
-
-				case <-ctx.Done():
-					log.Infof("Shutting down watchSwaps for %s", poolAddress.Hex())
-					return
-				}
-			}
-		}()
-	}
+func (h *uniswapV3Hooks) OnPoolRemoved(
+	base *BaseDEXScraper,
+	addr common.Address,
+	lock *sync.RWMutex,
+) {
+	lock.Lock()
+	delete(h.s.poolMap, addr)
+	lock.Unlock()
 }
 
-// GetSwapsChannel returns a channel for swaps of the pair with address @pairAddress.
-func (scraper *UniswapV3Scraper) GetSwapsChannel(pairAddress common.Address) (chan *UniswapV3Pair.UniswapV3PairSwap, event.Subscription, error) {
+// 5) OnOrderChanged: called when pool.Order changed in the config diff.
+
+func (h *uniswapV3Hooks) OnOrderChanged(
+	base *BaseDEXScraper,
+	addr common.Address,
+	oldPool models.Pool,
+	newPool models.Pool,
+	lock *sync.RWMutex,
+) {
+	lock.Lock()
+	defer lock.Unlock()
+
+	pair, ok := h.s.poolMap[addr]
+	if !ok {
+		return
+	}
+	pair.Order = newPool.Order
+	h.s.poolMap[addr] = pair
+}
+
+// Uniswap V3
+func (s *UniswapV3Scraper) GetSwapsChannel(
+	base *BaseDEXScraper,
+	pairAddress common.Address,
+) (chan *UniswapV3Pair.UniswapV3PairSwap, event.Subscription, error) {
+
+	wsClient := base.WSClient()
+	if wsClient == nil {
+		return nil, nil, fmt.Errorf("WS client is nil for pair %s", pairAddress.Hex())
+	}
+
 	sink := make(chan *UniswapV3Pair.UniswapV3PairSwap)
-	var pairFiltererContract *UniswapV3Pair.UniswapV3PairFilterer
 
-	pairFiltererContract, err := UniswapV3Pair.NewUniswapV3PairFilterer(pairAddress, scraper.wsClient)
+	pairFiltererContract, err := UniswapV3Pair.NewUniswapV3PairFilterer(pairAddress, wsClient)
 	if err != nil {
-		log.Fatal(err)
+		return nil, nil, err
 	}
 
-	sub, err := pairFiltererContract.WatchSwap(&bind.WatchOpts{}, sink, []common.Address{}, []common.Address{})
+	sub, err := pairFiltererContract.WatchSwap(
+		&bind.WatchOpts{},
+		sink,
+		[]common.Address{},
+		[]common.Address{},
+	)
 	if err != nil {
-		log.Error("error in get swaps channel: ", err)
-	} else {
-		log.Infof("Subscribed to swaps channel for %s", pairAddress.Hex())
+		log.Errorf("UniswapV3 - WatchSwap(%s) error: %v", pairAddress.Hex(), err)
+		return nil, nil, err
 	}
 
 	return sink, sub, nil
-
 }
 
-// GetPancakeSwapsChannel returns a channel for swaps on Pancakeswap DEX of the pair with address @pairAddress.
-func (scraper *UniswapV3Scraper) GetPancakeSwapsChannel(pairAddress common.Address) (chan *PancakeswapV3Pair.Pancakev3pairSwap, event.Subscription, error) {
+// Pancakeswap V3
+func (s *UniswapV3Scraper) GetPancakeSwapsChannel(
+	base *BaseDEXScraper,
+	pairAddress common.Address,
+) (chan *PancakeswapV3Pair.Pancakev3pairSwap, event.Subscription, error) {
+
+	wsClient := base.WSClient()
+	if wsClient == nil {
+		return nil, nil, fmt.Errorf("WS client is nil for pair %s", pairAddress.Hex())
+	}
+
 	sink := make(chan *PancakeswapV3Pair.Pancakev3pairSwap)
-	var pairFiltererContract *PancakeswapV3Pair.Pancakev3pairFilterer
 
-	pairFiltererContract, err := PancakeswapV3Pair.NewPancakev3pairFilterer(pairAddress, scraper.wsClient)
+	pairFiltererContract, err := PancakeswapV3Pair.NewPancakev3pairFilterer(pairAddress, wsClient)
 	if err != nil {
-		log.Fatal(err)
+		return nil, nil, err
 	}
 
-	sub, err := pairFiltererContract.WatchSwap(&bind.WatchOpts{}, sink, []common.Address{}, []common.Address{})
+	sub, err := pairFiltererContract.WatchSwap(
+		&bind.WatchOpts{},
+		sink,
+		[]common.Address{},
+		[]common.Address{},
+	)
 	if err != nil {
-		log.Error("error in get swaps channel: ", err)
+		log.Errorf("PancakeswapV3 - WatchSwap(%s) error: %v", pairAddress.Hex(), err)
+		return nil, nil, err
 	}
+
 	return sink, sub, nil
 }
 
-// makePoolMap fills a map that maps pool addresses on the full pool asset's information.
-func (scraper *UniswapV3Scraper) makePoolMap(pools []models.Pool) error {
-
-	scraper.poolMap = make(map[common.Address]UniV3Pair)
-	var assetMap = make(map[common.Address]models.Asset)
-
-	for _, pool := range pools {
-
-		univ3PairCaller, err := UniswapV3Pair.NewUniswapV3PairCaller(common.HexToAddress(pool.Address), scraper.restClient)
-		if err != nil {
-			return err
-		}
-
-		token0Address, err := univ3PairCaller.Token0(&bind.CallOpts{})
-		if err != nil {
-			return err
-		}
-		if _, ok := assetMap[token0Address]; !ok {
-			token0, err := models.GetAsset(token0Address, scraper.exchange.Blockchain, scraper.restClient)
-			if err != nil {
-				return err
-			}
-			assetMap[token0Address] = token0
-		}
-
-		token1Address, err := univ3PairCaller.Token1(&bind.CallOpts{})
-		if err != nil {
-			return err
-		}
-		if _, ok := assetMap[token1Address]; !ok {
-			token1, err := models.GetAsset(token1Address, scraper.exchange.Blockchain, scraper.restClient)
-			if err != nil {
-				return err
-			}
-			assetMap[token1Address] = token1
-		}
-
-		scraper.poolMap[common.HexToAddress(pool.Address)] = UniV3Pair{
-			Token0:  assetMap[token0Address],
-			Token1:  assetMap[token1Address],
-			Address: common.HexToAddress(pool.Address),
-			Order:   pool.Order,
-		}
-
-	}
-
-	return nil
-
-}
-
-// normalizeUniswapSwap takes a swap as returned by the swap contract's channel and converts it to a UniswapSwap type.
-func (scraper *UniswapV3Scraper) normalizeUniV3Swap(swapI interface{}) (normalizedSwap UniswapV3Swap) {
+// normalizeUniV3Swap takes a swap as returned by the swap contract's channel and converts it to a UniswapV3Swap type.
+func (s *UniswapV3Scraper) normalizeUniV3Swap(swapI interface{}) (normalizedSwap UniswapV3Swap) {
 	switch swap := swapI.(type) {
 	case UniswapV3Pair.UniswapV3PairSwap:
-		pair := scraper.poolMap[swap.Raw.Address]
+		pair := s.poolMap[swap.Raw.Address]
 		decimals0 := int(pair.Token0.Decimals)
 		decimals1 := int(pair.Token1.Decimals)
-		amount0, _ := new(big.Float).Quo(big.NewFloat(0).SetInt(swap.Amount0), new(big.Float).SetFloat64(math.Pow10(decimals0))).Float64()
-		amount1, _ := new(big.Float).Quo(big.NewFloat(0).SetInt(swap.Amount1), new(big.Float).SetFloat64(math.Pow10(decimals1))).Float64()
+		amount0, _ := new(big.Float).Quo(new(big.Float).SetInt(swap.Amount0), big.NewFloat(math.Pow10(decimals0))).Float64()
+		amount1, _ := new(big.Float).Quo(new(big.Float).SetInt(swap.Amount1), big.NewFloat(math.Pow10(decimals1))).Float64()
 		normalizedSwap = UniswapV3Swap{
 			ID:        swap.Raw.TxHash.Hex(),
 			Timestamp: time.Now().Unix(),
@@ -544,12 +399,11 @@ func (scraper *UniswapV3Scraper) normalizeUniV3Swap(swapI interface{}) (normaliz
 			Amount1:   amount1,
 		}
 	case PancakeswapV3Pair.Pancakev3pairSwap:
-		pair := scraper.poolMap[swap.Raw.Address]
+		pair := s.poolMap[swap.Raw.Address]
 		decimals0 := int(pair.Token0.Decimals)
 		decimals1 := int(pair.Token1.Decimals)
-		amount0, _ := new(big.Float).Quo(big.NewFloat(0).SetInt(swap.Amount0), new(big.Float).SetFloat64(math.Pow10(decimals0))).Float64()
-		amount1, _ := new(big.Float).Quo(big.NewFloat(0).SetInt(swap.Amount1), new(big.Float).SetFloat64(math.Pow10(decimals1))).Float64()
-
+		amount0, _ := new(big.Float).Quo(new(big.Float).SetInt(swap.Amount0), big.NewFloat(math.Pow10(decimals0))).Float64()
+		amount1, _ := new(big.Float).Quo(new(big.Float).SetInt(swap.Amount1), big.NewFloat(math.Pow10(decimals1))).Float64()
 		normalizedSwap = UniswapV3Swap{
 			ID:        swap.Raw.TxHash.Hex(),
 			Timestamp: time.Now().Unix(),
