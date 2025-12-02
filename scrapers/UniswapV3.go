@@ -64,7 +64,6 @@ func NewUniswapV3Scraper(
 	//  - subscribe/unsubscribe/watchdog logic
 	//  - dynamically add/remove pools from config file
 	s.base = NewBaseDEXScraper(ctx, exchangeName, blockchain, hooks, pools, tradesChannel, wg)
-
 	log.Infof("Started %s scraper.", exchangeName)
 	return s
 }
@@ -215,6 +214,7 @@ func (h *uniswapV3Hooks) StartStream(
 
 				case <-ctx.Done():
 					log.Infof("PancakeswapV3 - shutting down stream for %s", addr.Hex())
+					sub.Unsubscribe()
 					return
 				}
 			}
@@ -280,6 +280,7 @@ func (h *uniswapV3Hooks) StartStream(
 
 			case <-ctx.Done():
 				log.Infof("UniswapV3 - shutting down stream for %s", addr.Hex())
+				sub.Unsubscribe()
 				return
 			}
 		}
