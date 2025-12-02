@@ -112,8 +112,11 @@ func (scraper *CurveScraper) startResubHandler(ctx context.Context, trades chan 
 					cancel()
 					delete(scraper.swapStreamCancel, addr)
 				}
+
+				pctx, cancel := context.WithCancel(ctx)
+				scraper.swapStreamCancel[addr] = cancel
 				lock.Unlock()
-				go scraper.watchSwaps(ctx, addr, trades, lock)
+				go scraper.watchSwaps(pctx, addr, trades, lock)
 			case <-ctx.Done():
 				log.Info("Stopping resubscription handler.")
 				return
@@ -154,7 +157,7 @@ func (s *CurveScraper) startPool(ctx context.Context, pool models.Pool, trades c
 	// 3) restart watchdog (use the maximum WatchDogDelay when there are multiple orders)
 	delay := pool.WatchDogDelay
 
-	s.restartWatchdogForAddr(ctx, addr, delay, lock)
+	s.startWatchdogForAddr(ctx, addr, delay, lock)
 
 	// 4) start watchSwaps (if already running, don't repeat)
 	if _, ok := s.swapStreamCancel[addr]; ok {
@@ -182,7 +185,7 @@ func (s *CurveScraper) stopPool(addr common.Address, lock *sync.RWMutex) {
 	lock.Unlock()
 }
 
-func (s *CurveScraper) restartWatchdogForAddr(ctx context.Context, addr common.Address, delay int64, lock *sync.RWMutex) {
+func (s *CurveScraper) startWatchdogForAddr(ctx context.Context, addr common.Address, delay int64, lock *sync.RWMutex) {
 	key := addr.Hex()
 	if c, ok := s.watchdogCancel[key]; ok && c != nil {
 		c()
@@ -203,6 +206,7 @@ func (s *CurveScraper) restartWatchdogForAddr(ctx context.Context, addr common.A
 				if time.Since(last) >= time.Duration(delay)*time.Second {
 					// trigger resubscribe
 					s.subscribeChannel <- addr
+					return
 				}
 			case <-wdCtx.Done():
 				return
@@ -454,7 +458,7 @@ func (s *CurveScraper) applyConfigDiff(
 		if newD != oldD {
 			addr := common.HexToAddress(addrLower)
 			log.Infof("Curve - update watchdog %s: %d -> %d", addr.Hex(), oldD, newD)
-			s.restartWatchdogForAddr(ctx, addr, newD, lock)
+			s.startWatchdogForAddr(ctx, addr, newD, lock)
 		}
 	}
 }
@@ -768,6 +772,7 @@ func (scraper *CurveScraper) watchSwaps(ctx context.Context, address common.Addr
 				return
 			case <-ctx.Done():
 				log.Infof("Shutting down watchSwaps for %s", address.Hex())
+
 				return
 			}
 		}

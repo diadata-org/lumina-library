@@ -227,6 +227,7 @@ func (s *UniswapV2Scraper) watchSwaps(
 				return
 			case <-ctx.Done():
 				log.Infof("UniswapV2 - shutting down watchSwaps for %s", address.Hex())
+				sub.Unsubscribe()
 				return
 			}
 		}

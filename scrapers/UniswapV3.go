@@ -111,12 +111,16 @@ func (s *UniswapV3Scraper) startResubHandler(ctx context.Context, trades chan mo
 				log.Infof("Resubscribing to pool: %s", addr.Hex())
 				lock.Lock()
 				s.lastTradeTimeMap[addr] = time.Now()
-				lock.Unlock()
 				if cancel, ok := s.swapStreamCancel[addr]; ok && cancel != nil {
 					cancel()
 					delete(s.swapStreamCancel, addr)
 				}
-				go s.watchSwaps(ctx, addr, trades, lock)
+
+				pctx, cancel := context.WithCancel(ctx)
+				s.swapStreamCancel[addr] = cancel
+				lock.Unlock()
+				go s.watchSwaps(pctx, addr, trades, lock)
+
 			case <-ctx.Done():
 				log.Info("Stopping resubscription handler.")
 				return
@@ -203,7 +207,7 @@ func (scraper *UniswapV3Scraper) applyConfigDiff(ctx context.Context, last map[s
 			oldDelay := old.WatchDogDelay
 			if newDelay != oldDelay {
 				log.Infof("UniswapV3 - Changed pool %s (wd=%d -> %d)", p.Address, oldDelay, newDelay)
-				scraper.restartWatchdogForPool(ctx, addr, newDelay, lock)
+				scraper.startWatchdogForPool(ctx, addr, newDelay, lock)
 			}
 
 			if pair, ok := scraper.poolMap[addr]; ok && pair.Order != p.Order {
@@ -262,7 +266,7 @@ func (scraper *UniswapV3Scraper) startPool(ctx context.Context, pool models.Pool
 	lock.Unlock()
 
 	watchdogDelay := pool.WatchDogDelay
-	scraper.restartWatchdogForPool(ctx, addr, watchdogDelay, lock)
+	scraper.startWatchdogForPool(ctx, addr, watchdogDelay, lock)
 	if _, ok := scraper.swapStreamCancel[addr]; ok {
 		return nil
 	}
@@ -288,7 +292,7 @@ func (scraper *UniswapV3Scraper) stopPool(addr common.Address, lock *sync.RWMute
 	lock.Unlock()
 }
 
-func (scraper *UniswapV3Scraper) restartWatchdogForPool(ctx context.Context, addr common.Address, watchdogDelay int64, lock *sync.RWMutex) {
+func (scraper *UniswapV3Scraper) startWatchdogForPool(ctx context.Context, addr common.Address, watchdogDelay int64, lock *sync.RWMutex) {
 	key := addr.Hex()
 	if cancel, ok := scraper.watchdogCancel[key]; ok && cancel != nil {
 		cancel()
@@ -310,6 +314,7 @@ func (scraper *UniswapV3Scraper) restartWatchdogForPool(ctx context.Context, add
 				if time.Since(lastTradeTime) > time.Duration(watchdogDelay)*time.Second {
 					log.Warnf("UniswapV3 - watchdog failover for %s.", addr.Hex())
 					scraper.subscribeChannel <- addr
+					return
 				}
 			}
 		}
@@ -371,6 +376,7 @@ func (scraper *UniswapV3Scraper) watchSwaps(ctx context.Context, poolAddress com
 
 				case <-ctx.Done():
 					log.Infof("Shutting down watchSwaps for %s", poolAddress.Hex())
+					subscription.Unsubscribe()
 					return
 				}
 
