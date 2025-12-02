@@ -44,6 +44,42 @@ func watchdog(
 	}
 }
 
+// generic: start watchdog
+func StartWatchdogForPair(
+	ctx context.Context,
+	lock *sync.RWMutex,
+	pair models.ExchangePair,
+	watchdogCancel map[string]context.CancelFunc,
+	lastTradeTimeMap map[string]time.Time,
+	subscribeCh chan models.ExchangePair,
+) {
+	lock.Lock()
+	if cancel, exists := watchdogCancel[pair.ForeignName]; exists && cancel != nil {
+		lock.Unlock()
+		return
+	}
+
+	wdCtx, cancel := context.WithCancel(ctx)
+	watchdogCancel[pair.ForeignName] = cancel
+	lock.Unlock()
+
+	ticker := time.NewTicker(time.Duration(pair.WatchDogDelay) * time.Second)
+	go watchdog(wdCtx, pair, ticker, lastTradeTimeMap, pair.WatchDogDelay, subscribeCh, lock)
+}
+
+func StopWatchdogForPair(
+	lock *sync.RWMutex,
+	foreignName string,
+	watchdogCancel map[string]context.CancelFunc,
+) {
+	lock.Lock()
+	if cancel, ok := watchdogCancel[foreignName]; ok && cancel != nil {
+		cancel()
+		delete(watchdogCancel, foreignName)
+	}
+	lock.Unlock()
+}
+
 // watchdog checks for liveliness of a pair subscription.
 // More precisely, if there is no trades for a period longer than @watchdogDelayMap[pair.ForeignName],
 // the @runChannel receives the corresponding pair. The calling function can decide what to do, for
