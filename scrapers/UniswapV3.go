@@ -22,6 +22,8 @@ type UniV3Pair struct {
 	ForeignName string
 	Address     common.Address
 	Order       int
+	Divisor0    *big.Float
+	Divisor1    *big.Float
 }
 
 type UniswapV3Swap struct {
@@ -113,11 +115,16 @@ func (h *uniswapV3Hooks) EnsurePair(
 			return addr, 0, err
 		}
 
+		d0 := new(big.Float).SetFloat64(math.Pow10(int(t0.Decimals)))
+		d1 := new(big.Float).SetFloat64(math.Pow10(int(t1.Decimals)))
+
 		pair = UniV3Pair{
-			Token0:  t0,
-			Token1:  t1,
-			Address: addr,
-			Order:   pool.Order,
+			Token0:   t0,
+			Token1:   t1,
+			Address:  addr,
+			Order:    pool.Order,
+			Divisor0: d0,
+			Divisor1: d1,
 		}
 
 		lock.Lock()
@@ -388,10 +395,8 @@ func (s *UniswapV3Scraper) normalizeUniV3Swap(swapI interface{}) (normalizedSwap
 	switch swap := swapI.(type) {
 	case UniswapV3Pair.UniswapV3PairSwap:
 		pair := s.poolMap[swap.Raw.Address]
-		decimals0 := int(pair.Token0.Decimals)
-		decimals1 := int(pair.Token1.Decimals)
-		amount0, _ := new(big.Float).Quo(new(big.Float).SetInt(swap.Amount0), big.NewFloat(math.Pow10(decimals0))).Float64()
-		amount1, _ := new(big.Float).Quo(new(big.Float).SetInt(swap.Amount1), big.NewFloat(math.Pow10(decimals1))).Float64()
+		amount0, _ := new(big.Float).Quo(new(big.Float).SetInt(swap.Amount0), pair.Divisor0).Float64()
+		amount1, _ := new(big.Float).Quo(new(big.Float).SetInt(swap.Amount1), pair.Divisor1).Float64()
 		normalizedSwap = UniswapV3Swap{
 			ID:        swap.Raw.TxHash.Hex(),
 			Timestamp: time.Now().Unix(),
@@ -401,10 +406,8 @@ func (s *UniswapV3Scraper) normalizeUniV3Swap(swapI interface{}) (normalizedSwap
 		}
 	case PancakeswapV3Pair.Pancakev3pairSwap:
 		pair := s.poolMap[swap.Raw.Address]
-		decimals0 := int(pair.Token0.Decimals)
-		decimals1 := int(pair.Token1.Decimals)
-		amount0, _ := new(big.Float).Quo(new(big.Float).SetInt(swap.Amount0), big.NewFloat(math.Pow10(decimals0))).Float64()
-		amount1, _ := new(big.Float).Quo(new(big.Float).SetInt(swap.Amount1), big.NewFloat(math.Pow10(decimals1))).Float64()
+		amount0, _ := new(big.Float).Quo(new(big.Float).SetInt(swap.Amount0), pair.Divisor0).Float64()
+		amount1, _ := new(big.Float).Quo(new(big.Float).SetInt(swap.Amount1), pair.Divisor1).Float64()
 		normalizedSwap = UniswapV3Swap{
 			ID:        swap.Raw.TxHash.Hex(),
 			Timestamp: time.Now().Unix(),
@@ -419,6 +422,10 @@ func (s *UniswapV3Scraper) normalizeUniV3Swap(swapI interface{}) (normalizedSwap
 
 func getSwapDataUniV3(swap UniswapV3Swap) (price float64, volume float64) {
 	volume = swap.Amount0
+	if swap.Amount0 == 0 {
+		log.Warnf("Invalid swap data: Amount0=0 for tx %s", swap.ID)
+		return 0, 0
+	}
 	price = math.Abs(swap.Amount1 / swap.Amount0)
 	return
 }

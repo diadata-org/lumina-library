@@ -194,10 +194,11 @@ func (b *BaseDEXScraper) startResubHandler(
 					c()
 					delete(b.streamCancel, addr)
 				}
-				lock.Unlock()
 				// Restart stream.
 				pctx, cancel := context.WithCancel(ctx)
 				b.streamCancel[addr] = cancel
+				lock.Unlock()
+
 				hooks.StartStream(pctx, b, addr, trades, lock)
 
 			case <-ctx.Done():
@@ -258,11 +259,14 @@ func (b *BaseDEXScraper) startPool(
 	b.restartWatchdogForAddr(ctx, addr, delay, lock)
 
 	// Start listening (if already running, don't repeat).
+	lock.Lock()
 	if _, ok := b.streamCancel[addr]; ok {
+		lock.Unlock()
 		return nil
 	}
 	pctx, cancel := context.WithCancel(ctx)
 	b.streamCancel[addr] = cancel
+	lock.Unlock()
 	hooks.StartStream(pctx, b, addr, trades, lock)
 
 	return nil
