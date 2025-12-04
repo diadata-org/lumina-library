@@ -95,8 +95,12 @@ func (tb TradesBlock) GetLastTrade() (index int, lastTrade Trade) {
 	return
 }
 
-func (tb *TradesBlock) RemoveTradeByIndex(index int) {
+func (tb *TradesBlock) RemoveTradeByIndex(index int) error {
+	if index < 0 || index >= len(tb.Trades) {
+		return errors.New("index out of bounds")
+	}
 	tb.Trades = append(tb.Trades[:index], tb.Trades[index+1:]...)
+	return nil
 }
 
 // Transforms a @SimulatedTrade to a @Trade type so functions can be reused.
