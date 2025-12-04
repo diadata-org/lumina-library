@@ -61,7 +61,11 @@ func Processor(
 
 			switch filterType {
 			case string(FILTER_LAST_PRICE):
-				atomicFilterValue, _ = filters.LastPrice(tb.Trades, basePrice)
+				atomicFilterValue, _, err = filters.LastPrice(tb, basePrice)
+				if err != nil {
+					log.Warn("last price filter: ", err)
+					continue
+				}
 
 				log.Infof(
 					"Processor - Atomic filter value for market %s with %v trades: %v.",
