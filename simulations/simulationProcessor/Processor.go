@@ -54,7 +54,11 @@ func Processor(
 
 			switch filterType {
 			case "LastPrice":
-				atomicFilterValue, _ = filters.LastPrice(reducedTradesBlock.Trades, basePrice)
+				atomicFilterValue, _, err = filters.LastPrice(reducedTradesBlock, basePrice)
+				if err != nil {
+					log.Warn("last price filter: ", err)
+					continue
+				}
 
 			case "Average":
 				atomicFilterValue, _, err = simulationfilters.Average(tb.Trades, true, metacontractClient, metacontractAddress, metacontractPrecision)
