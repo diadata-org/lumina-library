@@ -147,7 +147,7 @@ func NewUniswapV2Scraper(
 	tradesChannel chan models.Trade,
 	wg *sync.WaitGroup,
 ) {
-	log.Infof("Started %s scraper (UniswapV2).", exchangeName)
+	log.Infof("Started %s scraper.", exchangeName)
 
 	s := &UniswapV2Scraper{
 		poolMap: make(map[common.Address]UniswapPair),
@@ -190,6 +190,13 @@ func (s *UniswapV2Scraper) watchSwaps(
 						continue
 					}
 					price, volume := getSwapDataV2(swap)
+					if math.IsNaN(price) || math.IsInf(price, 0) ||
+						math.IsNaN(volume) || math.IsInf(volume, 0) ||
+						price == 0 || volume == 0 {
+						log.Debugf("UniswapV2 - skip invalid price/volume, tx=%s", swap.ID)
+						continue
+					}
+
 					t := makeTradeUniswapV2(
 						pair,
 						price,
