@@ -22,12 +22,11 @@ import (
 const NativeETHSentinel = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
 
 type CurvePair struct {
-	OutAsset    models.Asset
-	InAsset     models.Asset
-	OutIndex    int
-	InIndex     int
-	ForeignName string
-	Address     common.Address
+	OutAsset models.Asset
+	InAsset  models.Asset
+	OutIndex int
+	InIndex  int
+	Address  common.Address
 }
 
 type CurveSwap struct {
@@ -429,6 +428,7 @@ func (s *CurveScraper) GetSwapsChannel(
 	}
 
 	var start *uint64
+	// Backfill 20 blocks (~5 minutes on Ethereum mainnet) to capture swaps that occurred during websocket reconnection
 	const blocksToBackfill = uint64(20)
 
 	restClient := base.RESTClient()
