@@ -12,8 +12,9 @@ import (
 )
 
 var (
-	log                  *logrus.Logger
-	tradeVolumeThreshold float64
+	log                    *logrus.Logger
+	tradeVolumeThreshold   float64
+	defaultVolumeThreshold = float64(0.0001)
 )
 
 func init() {
@@ -24,10 +25,12 @@ func init() {
 	}
 	log.SetLevel(loglevel)
 
-	tradeVolumeThreshold, err = strconv.ParseFloat(utils.Getenv("TRADE_VOLUME_THRESHOLD_LAST_TRADE_FILTER", "0.0001"), 64)
+	tradeVolumeThreshold, err = strconv.ParseFloat(
+		utils.Getenv("TRADE_VOLUME_THRESHOLD_LAST_TRADE_FILTER", strconv.FormatFloat(defaultVolumeThreshold, 'f', -1, 64)), 64,
+	)
 	if err != nil {
 		log.Errorf("parse TRADE_VOLUME_THRESHOLD_LAST_TRADE_FILTER %v. Set to default 0.0001", err)
-		tradeVolumeThreshold = float64(0.0001)
+		tradeVolumeThreshold = defaultVolumeThreshold
 	}
 }
 
