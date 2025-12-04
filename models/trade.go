@@ -85,13 +85,18 @@ func (tb TradesBlock) GetSourceType() (SourceType, error) {
 }
 
 // GetLastTrade returns the latest trade from the slice @trades.
-func GetLastTrade(trades []Trade) (lastTrade Trade) {
-	for _, trade := range trades {
+func (tb TradesBlock) GetLastTrade() (index int, lastTrade Trade) {
+	for i, trade := range tb.Trades {
 		if trade.Time.After(lastTrade.Time) {
 			lastTrade = trade
+			index = i
 		}
 	}
 	return
+}
+
+func (tb *TradesBlock) RemoveTradeByIndex(index int) {
+	tb.Trades = append(tb.Trades[:index], tb.Trades[index+1:]...)
 }
 
 // Transforms a @SimulatedTrade to a @Trade type so functions can be reused.

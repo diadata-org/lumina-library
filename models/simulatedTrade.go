@@ -30,7 +30,7 @@ type SimulatedTradesBlock struct {
 	ScraperID ScraperID
 }
 
-// GetLastTrade returns the latest trade from the slice @trades.
+// GetLastSimulatedTrade returns the latest trade from the slice @trades.
 func GetLastSimulatedTrade(trades []SimulatedTrade) (lastTrade SimulatedTrade) {
 	for _, trade := range trades {
 		if trade.Time.After(lastTrade.Time) {
