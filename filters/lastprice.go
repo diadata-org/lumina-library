@@ -2,6 +2,7 @@ package filters
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
@@ -42,10 +43,10 @@ func LastPrice(tradesblock models.TradesBlock, basePrice float64) (float64, time
 
 	for len(tradesblock.Trades) > 0 {
 
-		if basePrice*lastTrade.Price > tradeVolumeThreshold {
+		if math.Abs(basePrice*lastTrade.Price*lastTrade.Volume) > tradeVolumeThreshold {
 			return basePrice * lastTrade.Price, lastTrade.Time, nil
 		} else {
-			log.Warnf("discard low volume trade %s -- %s on %s: %v", lastTrade.QuoteToken.Symbol, lastTrade.BaseToken.Symbol, lastTrade.Exchange.Name, basePrice*lastTrade.Price)
+			log.Warnf("discard low volume trade %s -- %s on %s: %v", lastTrade.QuoteToken.Symbol, lastTrade.BaseToken.Symbol, lastTrade.Exchange.Name, basePrice*lastTrade.Price*lastTrade.Volume)
 			tradesblock.RemoveTradeByIndex(index)
 			if len(tradesblock.Trades) == 0 {
 				return 0, lastTrade.Time, fmt.Errorf("no trade above volume threshold available for %s -- %s on %s", lastTrade.QuoteToken.Symbol, lastTrade.BaseToken.Symbol, lastTrade.Exchange.Name)
