@@ -90,34 +90,47 @@ func readFromRemote(directory string, exchange string) ([]byte, error) {
 
 	req, _ := http.NewRequest("GET", url, nil)
 
+	// Optional authentication
+	githubToken := os.Getenv("GITHUB_TOKEN")
+	if githubToken != "" {
+		log.Info("set github token for API requests.")
+		req.Header.Set("Authorization", "token "+githubToken)
+	}
+
 	time.Sleep(350 * time.Millisecond)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return []byte{}, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
+	// --- Rate limit handling ---
 	ratelimitRemaining, err := strconv.Atoi(resp.Header.Get("X-RateLimit-Remaining"))
 	if err != nil {
-		log.Error("rateLimitRemaining for github api calls: ", err)
+		log.Error("rateLimitRemaining for github API calls: ", err)
 	}
+	log.Info("remaining github API calls: ", ratelimitRemaining)
 
+	// Only applies for anonymous calls or exhausted PAT limits
 	if ratelimitRemaining == 0 {
 		rateLimitReset, errParseInt := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64)
 		if errParseInt != nil {
-			log.Error("rateLimitReset for github api calls: ", errParseInt)
+			log.Error("rateLimitReset for github API calls: ", errParseInt)
 		}
+
 		timeWait := rateLimitReset - time.Now().Unix()
 		if timeWait < 0 {
 			timeWait = 0
 		}
-		log.Warnf("rate limit reached, wait for refresh in %v", time.Duration(timeWait)*time.Second)
+
+		log.Warnf("rate limit reached, waiting for refresh in %v", time.Duration(timeWait)*time.Second)
 		time.Sleep(time.Duration(timeWait+30) * time.Second)
+
 		resp.Body.Close()
-		resp, err := http.DefaultClient.Do(req)
+		resp, err = http.DefaultClient.Do(req)
 		if err != nil {
-			return []byte{}, err
+			return nil, err
 		}
 		defer resp.Body.Close()
 	}
@@ -125,15 +138,15 @@ func readFromRemote(directory string, exchange string) ([]byte, error) {
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
 		err = fmt.Errorf("GitHub API error: %s\n%s", resp.Status, string(body))
-		return []byte{}, err
+		return nil, err
 	}
 
 	var gh GitHubContent
-	if err = json.NewDecoder(resp.Body).Decode(&gh); err != nil {
-		return []byte{}, err
+	if err := json.NewDecoder(resp.Body).Decode(&gh); err != nil {
+		return nil, err
 	}
-	return base64.StdEncoding.DecodeString(gh.Content)
 
+	return base64.StdEncoding.DecodeString(gh.Content)
 }
 
 // According to pairs config file + symbol identifiers directory, construct []ExchangePair
