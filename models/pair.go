@@ -91,9 +91,9 @@ func readFromRemote(directory string, exchange string) ([]byte, error) {
 	req, _ := http.NewRequest("GET", url, nil)
 
 	// Optional authentication
-	githubToken := os.Getenv("GITHUB_TOKEN")
+	githubToken := utils.Getenv("GITHUB_TOKEN", "")
 	if githubToken != "" {
-		log.Info("set github token for API requests.")
+		log.Info("Set github token for API requests.")
 		req.Header.Set("Authorization", "token "+githubToken)
 	}
 
