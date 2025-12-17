@@ -2,7 +2,7 @@ package scrapers
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -31,200 +31,144 @@ type binanceWSResponse struct {
 	Buy            bool        `json:"m"`
 }
 
-type binanceScraper struct {
-	wsClient          *ws.Conn
-	tradesChannel     chan models.Trade
-	subscribeChannel  chan models.ExchangePair
-	tickerPairMap     map[string]models.Pair
-	lastTradeTimeMap  map[string]time.Time
-	maxErrCount       int
-	restartWaitTime   int
-	genesis           time.Time
+type binanceHooks struct {
 	apiConnectRetries int
 	proxyIndex        int
 }
 
 const (
 	BINANCE_API_MAX_RETRIES = 5
+	binanceApiWaitSeconds   = 5
 )
 
 var (
-	binanceWSBaseString   = "wss://stream.binance.com:9443/ws"
-	binanceApiWaitSeconds = 5
+	binanceWSBaseString  = "wss://stream.binance.com:9443/ws"
+	binanceWriteInterval = 500 * time.Millisecond
 )
 
-func NewBinanceScraper(ctx context.Context, pairs []models.ExchangePair, failoverChannel chan string, wg *sync.WaitGroup) Scraper {
-	defer wg.Done()
-	var lock sync.RWMutex
-	log.Infof("Binance - Started scraper at %v.", time.Now())
-
-	scraper := binanceScraper{
-		tradesChannel:    make(chan models.Trade),
-		subscribeChannel: make(chan models.ExchangePair),
-		tickerPairMap:    models.MakeTickerPairMap(pairs),
-		lastTradeTimeMap: make(map[string]time.Time),
-		maxErrCount:      20,
-		restartWaitTime:  5,
-		genesis:          time.Now(),
-		proxyIndex:       0,
-	}
-
-	err := errors.New("cannot connect to API")
-	var errCount int
-	for err != nil {
-
-		if errCount > 2*scraper.apiConnectRetries {
-			failoverChannel <- BINANCE_EXCHANGE
-			return &scraper
-		}
-
-		err = scraper.connectToAPI(pairs)
-		if err != nil {
-			errCount++
-			scraper.apiConnectRetries++
-			time.Sleep(time.Duration(binanceApiWaitSeconds) * time.Second)
-		}
-	}
-
-	go scraper.fetchTrades(&lock)
-
-	// Check last trade time for each subscribed pair and resubscribe if no activity for more than @binanceWatchdogDelay[pair].
-	for _, pair := range pairs {
-		envVar := strings.ToUpper(BINANCE_EXCHANGE) + "_WATCHDOG_" + strings.Split(strings.ToUpper(pair.ForeignName), "-")[0] + "_" + strings.Split(strings.ToUpper(pair.ForeignName), "-")[1]
-		watchdogDelay, err := strconv.ParseInt(utils.Getenv(envVar, "300"), 10, 64)
-		if err != nil {
-			log.Errorf("Binance - Parse binanceWatchdogDelayMap: %v.", err)
-		}
-		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
-		go watchdog(ctx, pair, watchdogTicker, scraper.lastTradeTimeMap, watchdogDelay, scraper.subscribeChannel, &lock)
-		go scraper.resubscribe(ctx, &lock)
-	}
-
-	return &scraper
-
+func (h *binanceHooks) ExchangeKey() string {
+	return BINANCE_EXCHANGE
 }
 
-func (scraper *binanceScraper) Close(cancel context.CancelFunc) error {
-	log.Warn("Binance - call scraper.Close().")
-	cancel()
-	if scraper.wsClient == nil {
-		return nil
-	}
-	return scraper.wsClient.Close()
+func (h *binanceHooks) WSURL() string {
+	return binanceWSBaseString
 }
 
-func (scraper *binanceScraper) TradesChannel() chan models.Trade {
-	return scraper.tradesChannel
-}
-
-func (scraper *binanceScraper) fetchTrades(lock *sync.RWMutex) {
-	var errCount int
+func (h *binanceHooks) Dial(ctx context.Context, urlStr string) (wsConn, error) {
+	var lastErr error
 
 	for {
+		// if over certain retry times, switch to alternative proxy
+		if h.apiConnectRetries > BINANCE_API_MAX_RETRIES {
+			log.Errorf("Binance - too many timeouts for proxy %v. Switch to alternative proxy.", h.proxyIndex)
+			h.apiConnectRetries = 0
+			h.proxyIndex = (h.proxyIndex + 1) % 2
+		}
 
-		var message binanceWSResponse
-		err := scraper.wsClient.ReadJSON(&message)
+		username := utils.Getenv("BINANCE_PROXY"+strconv.Itoa(h.proxyIndex)+"_USERNAME", "")
+		password := utils.Getenv("BINANCE_PROXY"+strconv.Itoa(h.proxyIndex)+"_PASSWORD", "")
+		host := utils.Getenv("BINANCE_PROXY"+strconv.Itoa(h.proxyIndex)+"_HOST", "")
+
+		var d ws.Dialer
+		if host != "" {
+			user := url.UserPassword(username, password)
+			d = ws.Dialer{
+				Proxy: http.ProxyURL(&url.URL{
+					Scheme: "http",
+					User:   user,
+					Host:   host,
+					Path:   "/",
+				}),
+			}
+		}
+
+		conn, _, err := d.Dial(urlStr, nil)
 		if err != nil {
-			if handleErrorReadJSON(err, &errCount, scraper.maxErrCount, BINANCE_EXCHANGE, scraper.restartWaitTime) {
-				return
+			h.apiConnectRetries++
+			lastErr = err
+			log.Errorf("Binance - Connect to API via proxy %d failed: %v", h.proxyIndex, err)
+
+			// wait for a while and retry, or context is cancelled
+			select {
+			case <-ctx.Done():
+				return nil, lastErr
+			case <-time.After(time.Duration(binanceApiWaitSeconds) * time.Second):
+				continue
 			}
-			continue
 		}
 
-		if message.Type == nil {
-			continue
-		}
-
-		trade := binanceParseWSResponse(message)
-		trade.QuoteToken = scraper.tickerPairMap[message.ForeignName].QuoteToken
-		trade.BaseToken = scraper.tickerPairMap[message.ForeignName].BaseToken
-
-		log.Tracef("Binance - got trade %s -- %v -- %v -- %v.", trade.QuoteToken.Symbol+"-"+trade.BaseToken.Symbol, trade.Price, trade.Volume, trade.ForeignTradeID)
-		lock.Lock()
-		scraper.lastTradeTimeMap[trade.QuoteToken.Symbol+"-"+trade.BaseToken.Symbol] = trade.Time
-		lock.Unlock()
-
-		scraper.tradesChannel <- trade
-	}
-
-}
-
-func (scraper *binanceScraper) resubscribe(ctx context.Context, lock *sync.RWMutex) {
-	for {
-		select {
-		case pair := <-scraper.subscribeChannel:
-			log.Debugf("Binance - scraper with genesis %v: Resubscribe pair %s.", scraper.genesis, pair.ForeignName)
-			err := scraper.subscribe(pair, false, lock)
-			if err != nil {
-				log.Errorf("Binance - scraper with genesis %v: Unsubscribe pair %s: %v.", scraper.genesis, pair.ForeignName, err)
-			}
-			time.Sleep(2 * time.Second)
-			err = scraper.subscribe(pair, true, lock)
-			if err != nil {
-				log.Errorf("Binance - Resubscribe pair %s: %v.", pair.ForeignName, err)
-			}
-		case <-ctx.Done():
-			log.Debugf("Binance - Close resubscribe routine of scraper with genesis: %v.", scraper.genesis)
-			return
-		}
+		// success
+		h.apiConnectRetries = 0
+		return conn, nil
 	}
 }
 
-func (scraper *binanceScraper) subscribe(pair models.ExchangePair, subscribe bool, lock *sync.RWMutex) error {
-	defer lock.Unlock()
-	subscribeType := "UNSUBSCRIBE"
+// Binance does not need extra ping
+func (h *binanceHooks) OnOpen(ctx context.Context, bs *BaseCEXScraper) {}
+
+// subscribe / unsubscribe
+func (h *binanceHooks) Subscribe(bs *BaseCEXScraper, pair models.ExchangePair, subscribe bool, lock *sync.RWMutex) error {
+	method := "UNSUBSCRIBE"
 	if subscribe {
-		subscribeType = "SUBSCRIBE"
+		method = "SUBSCRIBE"
 	}
-	pairTicker := strings.ToLower(strings.Split(pair.ForeignName, "-")[0] + strings.Split(pair.ForeignName, "-")[1])
-	subscribeMessage := &binanceWSSubscribeMessage{
-		Method: subscribeType,
+
+	pairTicker := strings.ToLower(strings.ReplaceAll(pair.ForeignName, "-", "")) // "BTC-USDT" -> "BTCUSDT"
+
+	msg := &binanceWSSubscribeMessage{
+		Method: method,
 		Params: []string{pairTicker + "@trade"},
 		ID:     1,
 	}
-	lock.Lock()
-	return scraper.wsClient.WriteJSON(subscribeMessage)
+
+	// simple rate limiting: avoid writing too fast
+	time.Sleep(binanceWriteInterval)
+
+	return bs.SafeWriteJSON(msg)
 }
 
-func (scraper *binanceScraper) connectToAPI(pairs []models.ExchangePair) error {
+func (h *binanceHooks) ReadLoop(ctx context.Context, bs *BaseCEXScraper, lock *sync.RWMutex) (handled bool) {
+	return false
+}
 
-	// Switch to alternative Proxy whenever too many retries on the first.
-	if scraper.apiConnectRetries > BINANCE_API_MAX_RETRIES {
-		log.Errorf("too many timeouts for Binance api connection with proxy %v. Switch to alternative proxy.", scraper.proxyIndex)
-		scraper.apiConnectRetries = 0
-		scraper.proxyIndex = (scraper.proxyIndex + 1) % 2
+func (h *binanceHooks) OnMessage(bs *BaseCEXScraper, mt int, data []byte, lock *sync.RWMutex) {
+	if mt != ws.TextMessage {
+		return
 	}
 
-	username := utils.Getenv("BINANCE_PROXY"+strconv.Itoa(scraper.proxyIndex)+"_USERNAME", "")
-	password := utils.Getenv("BINANCE_PROXY"+strconv.Itoa(scraper.proxyIndex)+"_PASSWORD", "")
-	user := url.UserPassword(username, password)
-	host := utils.Getenv("BINANCE_PROXY"+strconv.Itoa(scraper.proxyIndex)+"_HOST", "")
-	var d ws.Dialer
-	if host != "" {
-		d = ws.Dialer{
-			Proxy: http.ProxyURL(&url.URL{
-				Scheme: "http", // or "https" depending on your proxy
-				User:   user,
-				Host:   host,
-				Path:   "/",
-			}),
-		}
+	var msg binanceWSResponse
+	if err := json.Unmarshal(data, &msg); err != nil {
+		return
 	}
 
-	wsAssetsString := ""
-	for _, pair := range pairs {
-		wsAssetsString += "/" + strings.ToLower(strings.Split(pair.ForeignName, "-")[0]) + strings.ToLower(strings.Split(pair.ForeignName, "-")[1]) + "@trade"
+	if msg.Type == nil {
+		return
 	}
 
-	// Connect to Binance API.
-	conn, _, err := d.Dial(binanceWSBaseString+wsAssetsString, nil)
-	if err != nil {
-		log.Errorf("Binance - Connect to API: %s.", err.Error())
-		return err
-	}
-	scraper.wsClient = conn
-	return nil
+	trade := binanceParseWSResponse(msg)
 
+	// tickerPairMap key: use Binance symbol (e.g. "BTCUSDT")
+	lock.RLock()
+	pair, ok := bs.tickerPairMap[msg.ForeignName]
+	lock.RUnlock()
+	if !ok {
+		log.Tracef("Binance - tickerPairMap not found for %s.", msg.ForeignName)
+		return
+	}
+
+	trade.QuoteToken = pair.QuoteToken
+	trade.BaseToken = pair.BaseToken
+
+	log.Tracef("Binance - got trade %s -- %v -- %v -- %v.",
+		trade.QuoteToken.Symbol+"-"+trade.BaseToken.Symbol,
+		trade.Price, trade.Volume, trade.ForeignTradeID,
+	)
+
+	// lastTradeTimeMap key: use symbol directly, same as TickerKeyFromForeign
+	lastKey := h.LastTradeTimeKeyFromForeign(msg.ForeignName)
+	bs.setLastTradeTime(lock, lastKey, trade.Time)
+
+	bs.tradesChannel <- trade
 }
 
 func binanceParseWSResponse(message binanceWSResponse) (trade models.Trade) {
@@ -240,8 +184,30 @@ func binanceParseWSResponse(message binanceWSResponse) (trade models.Trade) {
 		log.Errorf("Binance - Parse volume: %v.", err)
 	}
 	if !message.Buy {
-		trade.Volume -= 1
+		trade.Volume *= -1
 	}
 	trade.ForeignTradeID = strconv.Itoa(int(message.ForeignTradeID))
 	return
+}
+
+// tickerPairMap key: BTC-USDT -> BTCUSDT
+func (h *binanceHooks) TickerKeyFromForeign(foreign string) string {
+	return strings.ReplaceAll(foreign, "-", "")
+}
+
+// lastTradeTimeMap key: BTC-USDT -> BTCUSDT
+func (h *binanceHooks) LastTradeTimeKeyFromForeign(foreign string) string {
+	return strings.ReplaceAll(foreign, "-", "")
+}
+
+func NewBinanceScraper(
+	ctx context.Context,
+	pairs []models.ExchangePair,
+	wg *sync.WaitGroup,
+) Scraper {
+	hooks := &binanceHooks{
+		apiConnectRetries: 0,
+		proxyIndex:        0,
+	}
+	return NewBaseCEXScraper(ctx, pairs, wg, hooks)
 }

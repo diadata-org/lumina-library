@@ -74,7 +74,7 @@ func Collector(
 				}
 
 				tradesblockChannel <- tradesblockMap
-				log.Infof("Collector - number of tradesblocks: %v.", len(tradesblockMap))
+				log.Infof("Collector - number of tradesblocks at %v: %v.", time.Now(), len(tradesblockMap))
 
 				// Make a new tradesblockMap for the next trigger period.
 				tradesblockMap = make(map[string]models.TradesBlock)
@@ -82,7 +82,13 @@ func Collector(
 			case exchange := <-failoverChannel:
 				log.Debugf("Collector - Restart scraper for %s.", exchange)
 				wg.Add(1)
-				go RunScraper(context.Background(), exchange, exchangepairMap[exchange], []models.Pool{}, tradesChannelIn, failoverChannel, wg)
+				cexLists := []string{exchange}
+				exchangePairs, epErr := models.ExchangePairsFromConfigFiles(cexLists)
+				if epErr != nil {
+					log.Fatal("Read exchange pairs from latest config: ", epErr)
+				}
+				newExchangepairMap := models.MakeExchangepairMap(exchangePairs)
+				go RunScraper(context.Background(), exchange, newExchangepairMap[exchange], []models.Pool{}, tradesChannelIn, failoverChannel, wg)
 			}
 		}
 	}()

@@ -2,13 +2,13 @@ package scrapers
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	models "github.com/diadata-org/lumina-library/models"
-	"github.com/diadata-org/lumina-library/utils"
 	ws "github.com/gorilla/websocket"
 )
 
@@ -46,195 +46,156 @@ type cryptodotcomWSResponseData struct {
 }
 
 type cryptodotcomScraper struct {
-	wsClient            *ws.Conn
-	tradesChannel       chan models.Trade
-	subscribeChannel    chan models.ExchangePair
-	tickerPairMap       map[string]models.Pair
-	lastTradeTimeMap    map[string]time.Time
-	maxErrCount         int
-	restartWaitTime     int
-	genesis             time.Time
-	tradeTimeoutSeconds int
+	wsClient           wsConn
+	tradesChannel      chan models.Trade
+	subscribeChannel   chan models.ExchangePair
+	unsubscribeChannel chan models.ExchangePair
+	watchdogCancel     map[string]context.CancelFunc
+	tickerPairMap      map[string]models.Pair
+	lastTradeTimeMap   map[string]time.Time
+	maxErrCount        int
+	restartWaitTime    int
+	genesis            time.Time
 }
 
 var (
-	cryptodotcomWSBaseString = "wss://stream.crypto.com/v2/market"
+	cryptodotcomWSBaseString        = "wss://stream.crypto.com/v2/market"
+	cryptodotcomTradeTimeoutSeconds = 120
 )
 
-func NewCryptodotcomScraper(ctx context.Context, pairs []models.ExchangePair, failoverChannel chan string, wg *sync.WaitGroup) Scraper {
-	defer wg.Done()
-	var lock sync.RWMutex
-	log.Info("Crypto.com - Started scraper.")
+type cryptodotcomHooks struct{}
 
-	scraper := cryptodotcomScraper{
-		tradesChannel:       make(chan models.Trade),
-		subscribeChannel:    make(chan models.ExchangePair),
-		tickerPairMap:       models.MakeTickerPairMap(pairs),
-		lastTradeTimeMap:    make(map[string]time.Time),
-		maxErrCount:         20,
-		restartWaitTime:     5,
-		genesis:             time.Now(),
-		tradeTimeoutSeconds: 120,
-	}
-
-	// Dial websocket API.
-	var wsDialer ws.Dialer
-	wsClient, _, err := wsDialer.Dial(cryptodotcomWSBaseString, nil)
-	if err != nil {
-		log.Errorf("Crypto.com - Dial ws base string: %v.", err)
-		failoverChannel <- string(CRYPTODOTCOM_EXCHANGE)
-		return &scraper
-	}
-	scraper.wsClient = wsClient
-
-	// Subscribe to pairs and initialize cryptodotcomLastTradeTimeMap.
-	for _, pair := range pairs {
-		if err := scraper.subscribe(pair, true, &lock); err != nil {
-			log.Errorf("Crypto.com - Subscribe to pair %s: %v.", pair.ForeignName, err)
-		} else {
-			log.Debugf("Crypto.com - Subscribed to pair %s.", pair.ForeignName)
-			scraper.lastTradeTimeMap[pair.ForeignName] = time.Now()
-		}
-	}
-
-	go scraper.fetchTrades(&lock)
-
-	// Check last trade time for each subscribed pair and resubscribe if no activity for more than @cryptodotcomWatchdogDelayMap.
-	for _, pair := range pairs {
-		envVar := "CRYPTODOTCOM_WATCHDOG_" + strings.Split(strings.ToUpper(pair.ForeignName), "-")[0] + "_" + strings.Split(strings.ToUpper(pair.ForeignName), "-")[1]
-		watchdogDelay, err := strconv.ParseInt(utils.Getenv(envVar, "300"), 10, 64)
-		if err != nil {
-			log.Errorf("Crypto.com - Parse cryptodotcomWatchdogDelay: %v.", err)
-		}
-		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
-		go watchdog(ctx, pair, watchdogTicker, scraper.lastTradeTimeMap, watchdogDelay, scraper.subscribeChannel, &lock)
-		go scraper.resubscribe(ctx, &lock)
-	}
-
-	return &scraper
+func (cryptodotcomHooks) ExchangeKey() string {
+	return CRYPTODOTCOM_EXCHANGE
 }
 
-func (scraper *cryptodotcomScraper) Close(cancel context.CancelFunc) error {
-	log.Warn("Crypto.com - call scraper.Close().")
-	cancel()
-	if scraper.wsClient == nil {
+func (cryptodotcomHooks) WSURL() string {
+	return cryptodotcomWSBaseString
+}
+
+func (cryptodotcomHooks) OnOpen(ctx context.Context, bs *BaseCEXScraper) {
+	// The code to handle heartbeat must be placed on the path after "receiving messages" (i.e. OnMessage), not in OnOpen.
+	// Crypto.com's heartbeat is "server sends first, we respond".
+	// There are two characteristics:
+	// 1. must get the id from the server before responding, and the id is different each time;
+	// 2. only when you "receive the heartbeat message", you know whether to respond and which id to respond with.
+}
+
+// subscribe/unsubscribe
+func (cryptodotcomHooks) Subscribe(bs *BaseCEXScraper, pair models.ExchangePair, subscribe bool, lock *sync.RWMutex) error {
+	baseQuote := strings.Split(pair.ForeignName, "-")
+	if len(baseQuote) != 2 {
+		log.Errorf("Crypto.com - invalid ForeignName: %s", pair.ForeignName)
 		return nil
 	}
-	return scraper.wsClient.Close()
-}
+	channel := "trade." + baseQuote[0] + "_" + baseQuote[1] // e.g. BTC-USDT -> trade.BTC_USDT
 
-func (scraper *cryptodotcomScraper) TradesChannel() chan models.Trade {
-	return scraper.tradesChannel
-}
-
-func (scraper *cryptodotcomScraper) fetchTrades(lock *sync.RWMutex) {
-	// Read trades stream.
-	var errCount int
-
-	for {
-
-		var message cryptodotcomWSResponse
-		err := scraper.wsClient.ReadJSON(&message)
-		if err != nil {
-			if handleErrorReadJSON(err, &errCount, scraper.maxErrCount, CRYPTODOTCOM_EXCHANGE, scraper.restartWaitTime) {
-				return
-			}
-			continue
-		}
-		if message.Method == "public/heartbeat" {
-			scraper.sendHeartbeat(message.ID, lock)
-			continue
-		}
-
-		scraper.handleWSResponse(message, lock)
-
+	method := "unsubscribe"
+	if subscribe {
+		method = "subscribe"
 	}
 
+	msg := cryptodotcomWSSubscribeMessage{
+		ID:     1,
+		Method: method,
+		Params: cryptodotcomChannels{
+			Channels: []string{channel},
+		},
+	}
+
+	return bs.SafeWriteJSON(msg)
 }
 
-func (scraper *cryptodotcomScraper) handleWSResponse(message cryptodotcomWSResponse, lock *sync.RWMutex) {
-	trades, err := cryptodotcomParseTradeMessage(message)
-	if err != nil {
-		log.Errorf("Crypto.com - parseCryptodotcomTradeMessage: %s.", err.Error())
-		// continue
+func (cryptodotcomHooks) ReadLoop(ctx context.Context, bs *BaseCEXScraper, lock *sync.RWMutex) (handled bool) {
+	return false
+}
+
+// handle each ws text message
+func (cryptodotcomHooks) OnMessage(bs *BaseCEXScraper, mt int, data []byte, lock *sync.RWMutex) {
+	if mt != ws.TextMessage {
 		return
 	}
 
-	// Identify ticker symbols with underlying assets.
-	for _, trade := range trades {
+	var msg cryptodotcomWSResponse
+	if err := json.Unmarshal(data, &msg); err != nil {
+		return
+	}
 
-		// The websocket API returns very old trades when first subscribing. Hence, discard if too old.
-		if trade.Time.Before(time.Now().Add(-time.Duration(scraper.tradeTimeoutSeconds) * time.Second)) {
+	// heartbeat: public/heartbeat -> public/respond-heartbeat
+	if msg.Method == "public/heartbeat" {
+		sendCryptodotcomHeartbeat(bs, msg.ID)
+		return
+	}
+
+	// other trade messages
+	trades, err := cryptodotcomParseTradeMessage(msg)
+	if err != nil {
+		log.Errorf("Crypto.com - parseCryptodotcomTradeMessage: %s", err.Error())
+		return
+	}
+	if len(trades) == 0 || len(msg.Result.Data) == 0 {
+		return
+	}
+
+	// BTC_USDT
+	pairParts := strings.Split(msg.Result.Data[0].ForeignName, "_")
+	if len(pairParts) < 2 {
+		return
+	}
+	tickerKey := pairParts[0] + pairParts[1] // "BTCUSDT"
+
+	for _, trade := range trades {
+		// discard too old trade
+		if trade.Time.Before(time.Now().Add(-time.Duration(cryptodotcomTradeTimeoutSeconds) * time.Second)) {
 			continue
 		}
 
-		pair := strings.Split(message.Result.Data[0].ForeignName, "_")
-		if len(pair) > 1 {
-			trade.QuoteToken = scraper.tickerPairMap[pair[0]+pair[1]].QuoteToken
-			trade.BaseToken = scraper.tickerPairMap[pair[0]+pair[1]].BaseToken
+		// map to token information
+		lock.RLock()
+		pair, ok := bs.tickerPairMap[tickerKey]
+		lock.RUnlock()
+		if !ok {
+			continue
 		}
 
-		log.Tracef("Crypto.com - got trade: %v -- %s -- %v -- %v -- %s.", trade.Time, trade.QuoteToken.Symbol+"-"+trade.BaseToken.Symbol, trade.Price, trade.Volume, trade.ForeignTradeID)
-		lock.Lock()
-		scraper.lastTradeTimeMap[pair[0]+"-"+pair[1]] = trade.Time
-		lock.Unlock()
+		trade.QuoteToken = pair.QuoteToken
+		trade.BaseToken = pair.BaseToken
 
-		scraper.tradesChannel <- trade
-	}
+		log.Tracef(
+			"Crypto.com - got trade: %v -- %s -- %v -- %v -- %s.",
+			trade.Time,
+			trade.QuoteToken.Symbol+"-"+trade.BaseToken.Symbol,
+			trade.Price,
+			trade.Volume,
+			trade.ForeignTradeID,
+		)
 
-}
+		// lastTradeTimeMap key use "QUOTE-BASE" format (e.g. BTC-USDT)
+		lastKey := pairParts[0] + "-" + pairParts[1]
+		bs.setLastTradeTime(lock, lastKey, trade.Time)
 
-func (scraper *cryptodotcomScraper) resubscribe(ctx context.Context, lock *sync.RWMutex) {
-	for {
-		select {
-		case pair := <-scraper.subscribeChannel:
-			err := scraper.subscribe(pair, false, lock)
-			if err != nil {
-				log.Errorf("Crypto.com - Unsubscribe pair %s: %v.", pair.ForeignName, err)
-			} else {
-				log.Debugf("Crypto.com - Unsubscribed pair %s.", pair.ForeignName)
-			}
-			time.Sleep(2 * time.Second)
-			err = scraper.subscribe(pair, true, lock)
-			if err != nil {
-				log.Errorf("Crypto.com - Resubscribe pair %s: %v.", pair.ForeignName, err)
-			} else {
-				log.Debugf("Crypto.com - Subscribed to pair %s.", pair.ForeignName)
-			}
-		case <-ctx.Done():
-			log.Debugf("Crypto.com - Close resubscribe routine of scraper with genesis: %v.", scraper.genesis)
-			return
-		}
+		bs.tradesChannel <- trade
 	}
 }
 
-func (scraper *cryptodotcomScraper) subscribe(pair models.ExchangePair, subscribe bool, lock *sync.RWMutex) error {
-	defer lock.Unlock()
-	channel := []string{"trade." + strings.Split(pair.ForeignName, "-")[0] + "_" + strings.Split(pair.ForeignName, "-")[1]}
-	subscribeType := "unsubscribe"
-	if subscribe {
-		subscribeType = "subscribe"
-	}
-
-	a := cryptodotcomWSSubscribeMessage{
-		ID:     1,
-		Method: subscribeType,
-		Params: cryptodotcomChannels{
-			Channels: channel,
-		},
-	}
-	lock.Lock()
-	return scraper.wsClient.WriteJSON(a)
+// tickerPairMap key: remove '-' (e.g. BTC-USDT -> BTCUSDT)
+func (cryptodotcomHooks) TickerKeyFromForeign(foreign string) string {
+	return strings.ReplaceAll(foreign, "-", "")
 }
 
-func (scraper *cryptodotcomScraper) sendHeartbeat(id int, lock *sync.RWMutex) error {
-	defer lock.Unlock()
-	a := cryptodotcomWSSubscribeMessage{
+// lastTradeTimeMap key: use the original "BASE-QUOTE" format (e.g. BTC-USDT)
+func (cryptodotcomHooks) LastTradeTimeKeyFromForeign(foreign string) string {
+	return foreign
+}
+
+func sendCryptodotcomHeartbeat(bs *BaseCEXScraper, id int) {
+	msg := cryptodotcomWSSubscribeMessage{
 		ID:     id,
 		Method: "public/respond-heartbeat",
 	}
-	lock.Lock()
-	return scraper.wsClient.WriteJSON(a)
+	if err := bs.SafeWriteJSON(msg); err != nil {
+		log.Errorf("Crypto.com - send heartbeat error: %v", err)
+	}
 }
 
 func cryptodotcomParseTradeMessage(message cryptodotcomWSResponse) (trades []models.Trade, err error) {
@@ -253,7 +214,7 @@ func cryptodotcomParseTradeMessage(message cryptodotcomWSResponse) (trades []mod
 			return
 		}
 		if data.Side == "SELL" {
-			volume -= 1
+			volume *= -1
 		}
 		timestamp := time.Unix(0, data.Timestamp*1e6)
 		foreignTradeID := data.TradeID
@@ -269,4 +230,12 @@ func cryptodotcomParseTradeMessage(message cryptodotcomWSResponse) (trades []mod
 	}
 
 	return trades, nil
+}
+
+func NewCryptodotcomScraper(
+	ctx context.Context,
+	pairs []models.ExchangePair,
+	wg *sync.WaitGroup,
+) Scraper {
+	return NewBaseCEXScraper(ctx, pairs, wg, cryptodotcomHooks{})
 }

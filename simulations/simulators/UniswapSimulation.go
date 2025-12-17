@@ -315,9 +315,9 @@ func (scraper *SimulationScraper) initAssetsAndMaps() error {
 // updatePriceMap fetches the current price of each of the involved assets from DIA lumina meta contract.
 func (scraper *SimulationScraper) updatePriceMap(lock *sync.RWMutex) {
 	for asset := range scraper.priceMap {
-		quotation, err := asset.GetOnchainPrice(common.HexToAddress(DIA_Meta_Contract_Address), DIA_Meta_Contract_Precision, scraper.luminaClient)
+		quotation, err := asset.GetPrice(common.HexToAddress(DIA_Meta_Contract_Address), DIA_Meta_Contract_Precision, scraper.luminaClient)
 		if err != nil {
-			log.Errorf("GetOnchainPrice for %s -- %s: %v", asset.Symbol, asset.Address, err)
+			log.Errorf("GetPrice for %s -- %s: %v", asset.Symbol, asset.Address, err)
 			continue
 		} else {
 			log.Infof("USD price for (base-)token %s: %v", asset.Symbol, quotation.Price)

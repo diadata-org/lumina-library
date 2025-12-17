@@ -8,6 +8,7 @@ import (
 	"github.com/diadata-org/lumina-library/metafilters"
 	models "github.com/diadata-org/lumina-library/models"
 	"github.com/diadata-org/lumina-library/scrapers"
+	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 // Processor handles blocks from @tradesblockChannel.
@@ -21,6 +22,9 @@ func Processor(
 	filtersChannel chan []models.FilterPointPair,
 	triggerChannel chan time.Time,
 	failoverChannel chan string,
+	metacontractClient *ethclient.Client,
+	metacontractAddress string,
+	metacontractPrecision int,
 	wg *sync.WaitGroup,
 ) {
 
@@ -42,7 +46,7 @@ func Processor(
 		for _, tb := range tradesblocks {
 
 			// Get price of base asset from cache if possible.
-			// basePrice, err := models.GetPriceBaseAsset(tb, priceCacheMap)
+			// basePrice, err := models.GetPriceBaseAsset(tb, priceCacheMap, metacontractClient, metacontractAddress, metacontractPrecision)
 			// if err != nil {
 			// 	log.Errorf("Processor - GetPriceBaseAsset: %v", err)
 			// 	continue
@@ -59,7 +63,11 @@ func Processor(
 
 			switch filterType {
 			case string(FILTER_LAST_PRICE):
-				atomicFilterValue, _ = filters.LastPrice(tb.Trades, basePrice)
+				atomicFilterValue, _, err = filters.LastPrice(tb, basePrice)
+				if err != nil {
+					log.Warn("last price filter: ", err)
+					continue
+				}
 
 				log.Infof(
 					"Processor - Atomic filter value for market %s with %v trades: %v.",

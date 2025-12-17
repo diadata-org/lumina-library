@@ -18,6 +18,18 @@ type Trade struct {
 	EstimatedUSDPrice float64
 }
 
+// SwapTrade swaps base and quote token of a trade and inverts the price accordingly
+func (t *Trade) SwapTrade() error {
+	if t.Price == 0 {
+		return errors.New("zero price. cannot swap trade")
+	}
+	t.BaseToken, t.QuoteToken = t.QuoteToken, t.BaseToken
+	t.Volume = -t.Price * t.Volume
+	t.Price = 1 / t.Price
+
+	return nil
+}
+
 // Struct for decentralized scraper pools.
 // TO DO: Revisit fields.
 type TradesBlock struct {
@@ -73,13 +85,22 @@ func (tb TradesBlock) GetSourceType() (SourceType, error) {
 }
 
 // GetLastTrade returns the latest trade from the slice @trades.
-func GetLastTrade(trades []Trade) (lastTrade Trade) {
-	for _, trade := range trades {
+func (tb TradesBlock) GetLastTrade() (index int, lastTrade Trade) {
+	for i, trade := range tb.Trades {
 		if trade.Time.After(lastTrade.Time) {
 			lastTrade = trade
+			index = i
 		}
 	}
 	return
+}
+
+func (tb *TradesBlock) RemoveTradeByIndex(index int) error {
+	if index < 0 || index >= len(tb.Trades) {
+		return errors.New("index out of bounds")
+	}
+	tb.Trades = append(tb.Trades[:index], tb.Trades[index+1:]...)
+	return nil
 }
 
 // Transforms a @SimulatedTrade to a @Trade type so functions can be reused.

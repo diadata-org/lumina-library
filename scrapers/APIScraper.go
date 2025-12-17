@@ -32,7 +32,7 @@ func RunScraper(
 	case BINANCE_EXCHANGE:
 
 		ctx, cancel := context.WithCancel(context.Background())
-		scraper := NewBinanceScraper(ctx, pairs, failoverChannel, wg)
+		scraper := NewBinanceScraper(ctx, pairs, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("BINANCE_WATCHDOG", "300"))
 		if err != nil {
@@ -63,7 +63,7 @@ func RunScraper(
 
 	case COINBASE_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
-		scraper := NewCoinBaseScraper(ctx, pairs, failoverChannel, wg)
+		scraper := NewCoinBaseScraper(ctx, pairs, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("COINBASE_WATCHDOG", "300"))
 		if err != nil {
@@ -91,9 +91,40 @@ func RunScraper(
 				}
 			}
 		}
+	case BYBIT_EXCHANGE:
+		ctx, cancel := context.WithCancel(context.Background())
+		scraper := NewByBitScraper(ctx, pairs, wg)
+
+		watchdogDelay, err := strconv.Atoi(utils.Getenv("BYBIT_WATCHDOG", "300"))
+		if err != nil {
+			log.Errorf("parse BYBIT_WATCHDOG: %v.", err)
+		}
+		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
+		lastTradeTime := time.Now()
+
+		for {
+			select {
+			case trade := <-scraper.TradesChannel():
+				lastTradeTime = time.Now()
+				tradesChannel <- trade
+
+			case <-watchdogTicker.C:
+				duration := time.Since(lastTradeTime)
+				if duration > time.Duration(watchdogDelay)*time.Second {
+					err := scraper.Close(cancel)
+					if err != nil {
+						log.Errorf("ByBit - Close(): %v.", err)
+					}
+					log.Warnf("Closed ByBit scraper as duration since last trade is %v.", duration)
+					failoverChannel <- BYBIT_EXCHANGE
+					return
+				}
+			}
+		}
+
 	case CRYPTODOTCOM_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
-		scraper := NewCryptodotcomScraper(ctx, pairs, failoverChannel, wg)
+		scraper := NewCryptodotcomScraper(ctx, pairs, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("CRYPTODOTCOM_WATCHDOG", "300"))
 		if err != nil {
@@ -123,7 +154,7 @@ func RunScraper(
 		}
 	case GATEIO_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
-		scraper := NewGateIOScraper(ctx, pairs, failoverChannel, wg)
+		scraper := NewGateIOScraper(ctx, pairs, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("GATEIO_WATCHDOG", "300"))
 		if err != nil {
@@ -153,7 +184,7 @@ func RunScraper(
 		}
 	case KRAKEN_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
-		scraper := NewKrakenScraper(ctx, pairs, failoverChannel, wg)
+		scraper := NewKrakenScraper(ctx, pairs, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("KRAKEN_WATCHDOG", "300"))
 		if err != nil {
@@ -183,7 +214,7 @@ func RunScraper(
 		}
 	case KUCOIN_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
-		scraper := NewKuCoinScraper(ctx, pairs, failoverChannel, wg)
+		scraper := NewKuCoinScraper(ctx, pairs, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("KUCOIN_WATCHDOG", "300"))
 		if err != nil {
@@ -211,10 +242,77 @@ func RunScraper(
 				}
 			}
 		}
+	case MEXC_EXCHANGE:
+		ctx, cancel := context.WithCancel(context.Background())
+		scraper := NewMEXCScraper(ctx, pairs, wg)
+		watchdogDelay, err := strconv.Atoi(utils.Getenv("MEXC_WATCHDOG", "300"))
+		if err != nil {
+			log.Errorf("parse MEXC_WATCHDOG: %v.", err)
+		}
+		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
+		lastTradeTime := time.Now()
+
+		for {
+			select {
+			case trade := <-scraper.TradesChannel():
+				lastTradeTime = time.Now()
+				tradesChannel <- trade
+
+			case <-watchdogTicker.C:
+				duration := time.Since(lastTradeTime)
+				if duration > time.Duration(watchdogDelay)*time.Second {
+					err := scraper.Close(cancel)
+					if err != nil {
+						log.Errorf("MEXC - Close(): %v.", err)
+					}
+					log.Warnf("Closed MEXC scraper as duration since last trade is %v.", duration)
+					failoverChannel <- MEXC_EXCHANGE
+					return
+				}
+			}
+		}
+
+	case OKEX_EXCHANGE:
+		ctx, cancel := context.WithCancel(context.Background())
+		scraper := NewOKExScraper(ctx, pairs, wg)
+
+		watchdogDelay, err := strconv.Atoi(utils.Getenv("OKEX_WATCHDOG", "300"))
+		if err != nil {
+			log.Errorf("parse OKEX_WATCHDOG: %v.", err)
+		}
+		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
+		lastTradeTime := time.Now()
+
+		for {
+			select {
+			case trade := <-scraper.TradesChannel():
+				lastTradeTime = time.Now()
+				tradesChannel <- trade
+
+			case <-watchdogTicker.C:
+				duration := time.Since(lastTradeTime)
+				if duration > time.Duration(watchdogDelay)*time.Second {
+					err := scraper.Close(cancel)
+					if err != nil {
+						log.Errorf("OKEx - Close(): %v.", err)
+					}
+					log.Warnf("Closed OKEx scraper as duration since last trade is %v.", duration)
+					failoverChannel <- OKEX_EXCHANGE
+					return
+				}
+			}
+		}
 
 	case UNISWAPV2_EXCHANGE:
-		NewUniswapV2Scraper(pools, tradesChannel, wg)
-
+		NewUniswapV2Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, wg)
+	case UNISWAPV2_BASE_EXCHANGE:
+		NewUniswapV2Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, wg)
+	case UNISWAPV3_EXCHANGE:
+		NewUniswapV3Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, wg)
+	case PANCAKESWAPV3_EXCHANGE:
+		NewUniswapV3Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, wg)
+	case CURVE_EXCHANGE:
+		NewCurveScraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, wg)
 	}
 }
 

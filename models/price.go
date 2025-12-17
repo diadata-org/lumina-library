@@ -4,7 +4,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/diadata-org/lumina-library/utils"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 // AssetQuotation is the most recent price point information on an asset.
@@ -17,7 +18,13 @@ type AssetQuotation struct {
 
 // GetPriceBaseAsset returns the price of the base asset in an atomic tradesblock.
 // It updates @priceCacheMap if necessary.
-func GetPriceBaseAsset(tb TradesBlock, priceCacheMap map[string]float64) (basePrice float64, err error) {
+func GetPriceBaseAsset(
+	tb TradesBlock,
+	priceCacheMap map[string]float64,
+	client *ethclient.Client,
+	metacontractAddress string,
+	metacontractPrecision int,
+) (basePrice float64, err error) {
 	var ok bool
 
 	if len(tb.Trades) > 0 {
@@ -30,18 +37,18 @@ func GetPriceBaseAsset(tb TradesBlock, priceCacheMap map[string]float64) (basePr
 
 		basePrice, ok = priceCacheMap[basetoken.AssetIdentifier()]
 		if !ok {
-			// TO DO: Should we get price from metacontract by using GetOnchainPrice?
-			var price float64
-			price, err = utils.GetPriceFromDiaAPI(basetoken.Address, basetoken.Blockchain)
+			// Get price from metacontract with fallback diadata API.
+			var assetQuotation AssetQuotation
+			assetQuotation, err = basetoken.GetPrice(common.HexToAddress(metacontractAddress), metacontractPrecision, client)
 			if err != nil {
 				return
 			}
-			basePrice = price
+			basePrice = assetQuotation.Price
 			priceCacheMap[basetoken.AssetIdentifier()] = basePrice
 		}
 
 		if ok {
-			log.Infof("took price from cache: %s", basetoken.AssetIdentifier())
+			log.Debugf("took price from cache: %s", basetoken.AssetIdentifier())
 		}
 
 		return

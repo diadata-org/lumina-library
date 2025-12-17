@@ -21,9 +21,13 @@ func RunSimulator(
 	wg *sync.WaitGroup,
 ) {
 	switch exchange {
-	// case UNISWAP_SIMULATION:
-	// 	NewUniswapSimulator(exchangePairs, tradesChannel)
 	case UNISWAP_SIMULATION_TEST:
 		NewUniswapSimulatorVersion2(exchangePairs, tradesChannel)
+	case UNISWAP_SIMULATION:
+		NewUniswapSimulator(exchangePairs, tradesChannel)
+	case UNISWAPV4_SIMULATION:
+		NewUniswapV4Simulator(exchangePairs, tradesChannel)
+	case CURVE_SIMULATION:
+		NewCurveSimulator(exchangePairs, tradesChannel)
 	}
 }

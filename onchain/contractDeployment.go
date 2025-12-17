@@ -16,9 +16,11 @@ func DeployOrBindContract(
 	connBackup *ethclient.Client,
 	auth *bind.TransactOpts,
 	contract **diaOracleV2MultiupdateService.DiaOracleV2MultiupdateService,
-	contractBackup **diaOracleV2MultiupdateService.DiaOracleV2MultiupdateService) error {
+	contractBackup **diaOracleV2MultiupdateService.DiaOracleV2MultiupdateService,
+) error {
 	var err error
 	if deployedContract != "" {
+
 		// bind primary and backup
 		*contract, err = diaOracleV2MultiupdateService.NewDiaOracleV2MultiupdateService(common.HexToAddress(deployedContract), conn)
 		if err != nil {
@@ -28,6 +30,7 @@ func DeployOrBindContract(
 		if err != nil {
 			return err
 		}
+
 	} else {
 		// deploy contract
 		var addr common.Address

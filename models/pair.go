@@ -1,12 +1,30 @@
 package models
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/user"
+	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/diadata-org/lumina-library/utils"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/tkanos/gonfig"
 )
+
+// Separator for a pair ticker's assets, i.e. BTC-USDT.
+const PAIR_TICKER_SEPARATOR = "-"
+
+type GitHubContent struct {
+	Content  string `json:"content"`
+	Encoding string `json:"encoding"`
+}
 
 // ExchangePair is the container for a pair as used by exchanges.
 // Across exchanges, these pairs cannot be uniquely mapped on asset pairs.
@@ -15,12 +33,22 @@ type ExchangePair struct {
 	ForeignName    string `json:"ForeignName"`
 	Exchange       string `json:"Exchange"`
 	UnderlyingPair Pair   `json:"UnderlyingPair"`
+	WatchDogDelay  int64  `json:"WatchDogDelay"`
 }
 
 // Pair is a pair of dia assets.
 type Pair struct {
 	QuoteToken Asset `json:"QuoteToken"`
 	BaseToken  Asset `json:"BaseToken"`
+}
+
+type PairConfig struct {
+	Pair          string `json:"pair"`
+	WatchDogDelay int64  `json:"watchDogDelay"`
+}
+
+type ExchangeConfig struct {
+	ExchangePairs []PairConfig `json:"exchangePairs"`
 }
 
 func (p *Pair) ExchangePairIdentifier(exchange string) string {
@@ -31,44 +59,208 @@ func (p *Pair) Identifier() string {
 	return p.QuoteToken.Blockchain + "-" + p.QuoteToken.Address + "-" + p.BaseToken.Blockchain + "-" + p.BaseToken.Address
 }
 
-// ExchangePairsFromEnv parses the string @exchangePairsEnv consisting of pairs on exchanges
-// and returns full asset information for the corresponding exchangepairs.
-// It assumes mappings can be found in the files exchange.json at @configPath where
-// @exchange is the corresponding exchange name.
-func ExchangePairsFromEnv(
-	exchangePairsEnv string,
-	envSeparator string,
-	exchangePairSeparator string,
-	pairTickerSeparator string,
-	configPath string,
-) (exchangePairs []ExchangePair) {
+func getPath2Config(directory string) (string, error) {
+	usr, err := user.Current()
+	if err != nil {
+		return "", fmt.Errorf("error getting user: %v", err)
+	}
+	dir := usr.HomeDir
+	configPath := "/config/" + directory + "/"
+	if dir == "/root" || dir == "/home" {
+		return configPath, nil
+	}
+	return os.Getenv("GOPATH") + "/src/github.com/diadata-org/decentral-feeder" + configPath, nil
+}
 
-	// epMap maps an exchange on a slice of the underlying pair symbol tickers.
-	epMap := make(map[string][]string)
-	for _, ep := range strings.Split(exchangePairsEnv, envSeparator) {
-		exchange := strings.TrimSpace(strings.Split(ep, exchangePairSeparator)[0])
-		pairSymbol := strings.TrimSpace(strings.Split(ep, exchangePairSeparator)[1])
-		epMap[exchange] = append(epMap[exchange], pairSymbol)
+func getLocalConfig(directory string, exchange string) (data []byte, err error) {
+	configPath, err := getPath2Config(directory)
+	if err != nil {
+		return nil, err
+	}
+	path := configPath + exchange + ".json"
+	jsonFile, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return jsonFile, nil
+}
+
+func readFromRemote(directory string, exchange string) ([]byte, error) {
+	url := "https://api.github.com/repos/diadata-org/decentral-feeder/contents/config/" + directory + "/" + exchange + ".json"
+
+	req, _ := http.NewRequest("GET", url, nil)
+
+	// Optional authentication
+	githubToken := utils.Getenv("GITHUB_TOKEN", "")
+	if githubToken != "" {
+		log.Info("Set github token for API requests.")
+		req.Header.Set("Authorization", "token "+githubToken)
 	}
 
-	// Assign assets to pair symbols.
-	for exchange := range epMap {
-		symbolIdentificationMap, err := GetSymbolIdentificationMap(exchange, configPath)
-		if err != nil {
-			log.Fatal("GetSymbolIdentificationMap: ", err)
+	time.Sleep(350 * time.Millisecond)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	// --- Rate limit handling ---
+	ratelimitRemaining, err := strconv.Atoi(resp.Header.Get("X-RateLimit-Remaining"))
+	if err != nil {
+		log.Error("rateLimitRemaining for github API calls: ", err)
+	}
+	log.Info("remaining github API calls: ", ratelimitRemaining)
+
+	// Only applies for anonymous calls or exhausted PAT limits
+	if ratelimitRemaining == 0 {
+		rateLimitReset, errParseInt := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64)
+		if errParseInt != nil {
+			log.Error("rateLimitReset for github API calls: ", errParseInt)
 		}
-		for _, pairSymbol := range epMap[exchange] {
-			symbols := strings.Split(pairSymbol, pairTickerSeparator)
-			var ep ExchangePair
-			ep.Exchange = exchange
-			ep.ForeignName = pairSymbol
-			ep.Symbol = symbols[0]
-			ep.UnderlyingPair.QuoteToken = symbolIdentificationMap[ExchangeSymbolIdentifier(symbols[0], exchange)]
-			ep.UnderlyingPair.BaseToken = symbolIdentificationMap[ExchangeSymbolIdentifier(symbols[1], exchange)]
+
+		timeWait := rateLimitReset - time.Now().Unix()
+		if timeWait < 0 {
+			timeWait = 0
+		}
+
+		log.Warnf("rate limit reached, waiting for refresh in %v", time.Duration(timeWait)*time.Second)
+		time.Sleep(time.Duration(timeWait+30) * time.Second)
+
+		resp.Body.Close()
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+	}
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		err = fmt.Errorf("GitHub API error: %s\n%s", resp.Status, string(body))
+		return nil, err
+	}
+
+	var gh GitHubContent
+	if err := json.NewDecoder(resp.Body).Decode(&gh); err != nil {
+		return nil, err
+	}
+
+	return base64.StdEncoding.DecodeString(gh.Content)
+}
+
+// According to pairs config file + symbol identifiers directory, construct []ExchangePair
+// - exchangeList:        List of exchange names (e.g. ["GateIO", "Binance"])
+// - return:              List of ExchangePairs with WatchDogDelay
+// - return err:          Error if any
+func ExchangePairsFromConfigFiles(exchangeList []string) (allExchangePairs []ExchangePair, err error) {
+
+	if len(exchangeList) == 0 {
+		return
+	}
+	if len(exchangeList) == 1 && len(strings.TrimSpace(exchangeList[0])) == 0 {
+		return
+	}
+
+	for _, exchange := range exchangeList {
+		// 1) Read exchange pairs config (e.g. GateIO.json -> map["ETH-USDT"]watchdogDelay)
+		exPairMap, err := GetExchangePairMap(exchange)
+		if err != nil {
+			return nil, fmt.Errorf("GetExchangeConfig(%s): %w", exchange, err)
+		}
+
+		// 2) Read symbol identifiers mapping (directory + exchange.json)
+		idMap, err := GetSymbolIdentificationMap(exchange)
+		if err != nil {
+			return nil, fmt.Errorf("GetSymbolIdentificationMap(%s): %w", exchange, err)
+		}
+
+		// 3) To ensure stable output, sort pairs by name (exPairMap's key is "QUOTE-BASE")
+		pairs := make([]string, 0, len(exPairMap))
+		for pair := range exPairMap {
+			pairs = append(pairs, strings.TrimSpace(pair))
+		}
+		sort.Strings(pairs)
+
+		// 4) Construct ExchangePair one by one
+		exchangePairs := []ExchangePair{}
+		for _, pair := range pairs {
+			ep, err := ConstructExchangePair(exchange, pair, exPairMap[pair], idMap)
+			if err != nil {
+				return nil, fmt.Errorf("ConstructExchangePair(%s, %s, %v): %w", exchange, pair, exPairMap[pair], err)
+			}
 			exchangePairs = append(exchangePairs, ep)
 		}
+		allExchangePairs = append(allExchangePairs, exchangePairs...)
 	}
-	return
+
+	return allExchangePairs, nil
+}
+
+func ConstructExchangePair(exchange string, pair string, watchDogDelay int64, idMap map[string]Asset) (ExchangePair, error) {
+	symbols := strings.Split(pair, PAIR_TICKER_SEPARATOR)
+	if len(symbols) != 2 {
+		return ExchangePair{}, fmt.Errorf("bad pair format: %q (separator=%q)", pair, PAIR_TICKER_SEPARATOR)
+	}
+	quote := strings.ToUpper(strings.TrimSpace(symbols[0]))
+	base := strings.ToUpper(strings.TrimSpace(symbols[1]))
+
+	quoteKey := ExchangeSymbolIdentifier(quote, exchange)
+	baseKey := ExchangeSymbolIdentifier(base, exchange)
+
+	qAsset, okQ := idMap[quoteKey]
+	bAsset, okB := idMap[baseKey]
+
+	if !okQ {
+		return ExchangePair{}, fmt.Errorf("missing symbolId metadata for quote: %v", quoteKey)
+	}
+	if !okB {
+		return ExchangePair{}, fmt.Errorf("missing symbolId metadata for base: %v", baseKey)
+	}
+
+	var ep ExchangePair
+	ep.Exchange = exchange
+	ep.ForeignName = pair
+	ep.Symbol = quote                     // Keep consistent with existing function: Symbol use quote
+	ep.UnderlyingPair.QuoteToken = qAsset // If missing, it will be zero value Asset
+	ep.UnderlyingPair.BaseToken = bAsset
+	ep.WatchDogDelay = watchDogDelay
+
+	return ep, nil
+}
+
+func GetConfig(directory string, exchange string) (data []byte, err error) {
+	jsonFile, err := readFromRemote(directory, exchange)
+	if err != nil {
+		log.Errorf("Failed to read %s from remote config for %s: %v", directory, exchange, err)
+		jsonFile, err = getLocalConfig(directory, exchange)
+		if err != nil {
+			log.Errorf("Failed to read %s from local config for %s: %v", directory, exchange, err)
+			return nil, err
+		}
+		log.Infof("Read %s from local config for %s", directory, exchange)
+	} else {
+		log.Infof("Read %s from remote config for %s", directory, exchange)
+	}
+	return jsonFile, nil
+}
+
+func GetExchangePairMap(exchange string) (map[string]int64, error) {
+	jsonFile, err := GetConfig("exchangePairs", exchange)
+	if err != nil {
+		return nil, err
+	}
+
+	var cfg ExchangeConfig
+	if err := json.Unmarshal(jsonFile, &cfg); err != nil {
+		return nil, err
+	}
+
+	out := make(map[string]int64, len(cfg.ExchangePairs))
+	for _, pair := range cfg.ExchangePairs {
+		out[pair.Pair] = pair.WatchDogDelay
+	}
+	return out, nil
 }
 
 // MakeExchangepairMap returns a map in which exchangepairs are grouped by exchange string key.
@@ -78,6 +270,16 @@ func MakeExchangepairMap(exchangePairs []ExchangePair) map[string][]ExchangePair
 		exchangepairMap[ep.Exchange] = append(exchangepairMap[ep.Exchange], ep)
 	}
 	return exchangepairMap
+}
+
+// MakeExchangePairString returns a string of exchangepairs separated by comma.
+// e.g. "GateIO:ETH-USDT,Binance:BTC-USDT,Binance:BTC-USDC"
+func MakeExchangePairString(exchangePairs []ExchangePair) string {
+	exchangePairString := ""
+	for _, ep := range exchangePairs {
+		exchangePairString += ep.Exchange + ":" + ep.ForeignName + ","
+	}
+	return exchangePairString
 }
 
 // MakeTickerPairMap returns a map that maps a pair ticker onto the underlying pair with full asset information.

@@ -31,6 +31,7 @@ type SimulationScraperVersion2 struct {
 	// such that a corresponding pool exists and fulfills liquidity requirements.
 	feesMap           map[models.ExchangePair][]UniV3PoolFee
 	thresholdSlippage float64
+	poolCache         *PoolCallCache
 }
 
 type SwapEventsVersion2 struct {
@@ -48,16 +49,15 @@ type SimulationResponseVersion2 struct {
 	TokenOut    string       `json:"tokenOutStr"`
 }
 
-type UniV3PoolFeeVersion2 struct {
-	fee      *big.Int
-	address  common.Address
-	amountIn float64
+type PoolData struct {
+	Caller *univ3pool.Univ3poolCaller
+	Token0 common.Address
 }
 
-const (
-	// Maximal spacing in UniV3 pools with fees of 1%.
-	max_spacingVersion2 = int32(200)
-)
+type PoolCallCache struct {
+	mu    sync.RWMutex
+	cache map[common.Address]*PoolData
+}
 
 var (
 	restDialVersion2       = ""
@@ -75,11 +75,8 @@ var (
 	liquidity_Threshold_USDVersion2     = float64(50000)
 	liquidity_Threshold_NativeVersion2  = float64(2)
 	threshold_Price_DeviationVersion2   = float64(0.05)
-	// Minimal count of active ticks within tick range.
-	admissible_CountVersion2 = 10
-	// tick range around the current tick that is taken into account for tick check.
-	// minWordPosition = int16(-3466)
-	// maxWordPosition = int16(3465)
+	admissible_CountVersion2            = 10
+	liquidity_Threshold                 = big.NewInt(30000000000000000)
 )
 
 func init() {
@@ -138,11 +135,13 @@ func NewUniswapSimulatorVersion2(exchangepairs []models.ExchangePair, tradesChan
 		log.Fatal("initAssetsAndMaps: ", err)
 	}
 
-	scraper.thresholdSlippage, err = strconv.ParseFloat(utils.Getenv("UNISWAPV3_THRESHOLD_SLIPPAGE", "5e-14"), 64)
+	scraper.thresholdSlippage, err = strconv.ParseFloat(utils.Getenv("UNISWAPV3_THRESHOLD_SLIPPAGE", "0.1"), 64)
 	if err != nil {
 		log.Error("Parse THRESHOLD_SLIPPAGE: ", err)
-		scraper.thresholdSlippage = 0.001
+		scraper.thresholdSlippage = 5e-17
 	}
+
+	scraper.poolCache = NewPoolCallCache()
 
 	var lock sync.RWMutex
 	scraper.updatePriceMapVersion2(&lock)
@@ -176,8 +175,55 @@ func NewUniswapSimulatorVersion2(exchangepairs []models.ExchangePair, tradesChan
 
 }
 
-func (scraper *SimulationScraperVersion2) simulateTradesVersion2(tradesChannel chan models.SimulatedTrade) {
+func NewPoolCallCache() *PoolCallCache {
+	return &PoolCallCache{
+		cache: make(map[common.Address]*PoolData),
+	}
+}
 
+func (p *PoolCallCache) Get(poolAddr common.Address, client *ethclient.Client) (*PoolData, error) {
+	p.mu.RLock()
+	if data, ok := p.cache[poolAddr]; ok {
+		p.mu.RUnlock()
+		return data, nil
+	}
+	p.mu.RUnlock()
+
+	caller, err := univ3pool.NewUniv3poolCaller(poolAddr, client)
+	if err != nil {
+		return nil, err
+	}
+	token0, err := caller.Token0(&bind.CallOpts{})
+	if err != nil {
+		return nil, err
+	}
+
+	data := &PoolData{
+		Caller: caller,
+		Token0: token0,
+	}
+	p.mu.Lock()
+	p.cache[poolAddr] = data
+	p.mu.Unlock()
+
+	return data, nil
+}
+
+func (s *SimulationScraperVersion2) getAmountIn(ep models.ExchangePair, amountInBase float64) (*big.Int, *big.Float) {
+	decimals := big.NewInt(int64(ep.UnderlyingPair.QuoteToken.Decimals)) // e.g. 18
+	exponent := new(big.Int).Exp(big.NewInt(10), decimals, nil)          // e.g. 10^18
+	exponentFloat := new(big.Float).SetInt(exponent)
+
+	amountIn := new(big.Float).Mul(big.NewFloat(amountInBase), exponentFloat) // e.g. 10^20
+	amountInInt := new(big.Int)
+	amountIn.Int(amountInInt)
+
+	amountInAfterDecimalAdjust := new(big.Float).Quo(amountIn, exponentFloat) // e.g. 10^2
+
+	return amountInInt, amountInAfterDecimalAdjust
+}
+
+func (scraper *SimulationScraperVersion2) simulateTradesVersion2(tradesChannel chan models.SimulatedTrade) {
 	var wg sync.WaitGroup
 
 	for exchangePair, fees := range scraper.feesMap {
@@ -187,23 +233,6 @@ func (scraper *SimulationScraperVersion2) simulateTradesVersion2(tradesChannel c
 
 			go func(ep models.ExchangePair, fee *big.Int, w *sync.WaitGroup) {
 				defer w.Done()
-				amountIn := strconv.FormatFloat(poolFee.amountIn, 'f', -1, 64)
-				log.Infof("amountIn: %s", amountIn)
-
-				amountOutString, err := scraper.simulator.Execute(
-					ep.UnderlyingPair.QuoteToken,
-					ep.UnderlyingPair.BaseToken,
-					amountIn,
-					fee,
-				)
-				if err != nil {
-					log.Errorf("error getting price of %s - %s ", ep.UnderlyingPair.QuoteToken.Symbol, ep.UnderlyingPair.BaseToken.Symbol)
-					return
-				}
-
-				amountOut, _ := strconv.ParseFloat(amountOutString, 64)
-				log.Infof("amountOut: %v", amountOut)
-
 				var address common.Address
 				poolFees := scraper.feesMap[ep]
 				for _, pf := range poolFees {
@@ -212,47 +241,95 @@ func (scraper *SimulationScraperVersion2) simulateTradesVersion2(tradesChannel c
 					}
 				}
 
-				caller, err := univ3pool.NewUniv3poolCaller(address, scraper.restClient)
+				poolData, err := scraper.poolCache.Get(address, scraper.restClient)
 				if err != nil {
-					log.Errorf("Failed to create pool caller interface: %v", err)
+					log.Errorf("Failed to load pool data: %v", err)
+					return
+				}
+				caller := poolData.Caller
+				poolToken0 := poolData.Token0
+
+				token0 := ep.UnderlyingPair.BaseToken
+				token1 := ep.UnderlyingPair.QuoteToken
+				power := ep.UnderlyingPair.QuoteToken.Decimals
+				if ep.UnderlyingPair.QuoteToken.Address == poolToken0.Hex() {
+					token0 = ep.UnderlyingPair.QuoteToken
+					token1 = ep.UnderlyingPair.BaseToken
+					power = ep.UnderlyingPair.BaseToken.Decimals
+				}
+				log.Infof("fee: %v, token0: %s, token1: %s, power: %d", fee, token0.Symbol, token1.Symbol, power)
+
+				amountIn, amountInAfterDecimalAdjust := scraper.getAmountIn(ep, poolFee.amountIn)
+				log.Infof("amountInAfterDecimalAdjust: %v", amountInAfterDecimalAdjust)
+
+				amountOutInt, err := scraper.simulator.ExecuteVersion2(
+					token0,
+					token1,
+					amountIn,
+					fee,
+				)
+				if err != nil {
+					log.Errorf("error getting price of %s - %s ", ep.UnderlyingPair.QuoteToken.Symbol, ep.UnderlyingPair.BaseToken.Symbol)
 					return
 				}
 
 				// Retrieve post-trade price and liquidity
 				slot0, err := caller.Slot0(&bind.CallOpts{})
-				if err != nil {
+				if err != nil || slot0.SqrtPriceX96.Cmp(big.NewInt(0)) == 0 {
 					log.Errorf("Failed to get slot0: %v", err)
 					return
 				}
+
 				liquidityBig, err := caller.Liquidity(&bind.CallOpts{})
-				if err != nil {
-					log.Errorf("Failed to get liquidity: %v", err)
+				if err != nil || liquidityBig.Cmp(big.NewInt(0)) == 0 || liquidityBig.Cmp(liquidity_Threshold) < 0 {
+					log.Errorf("Failed to get sufficient liquidity: %v", err)
 					return
 				}
-				// Determine amount0/amount1 signs based on trade direction
-				// Assuming simulated trade is Token0 -> Token1
-				// When a user sells Token0, the pool receives Token0 → amount0 should be positive.
-				// amount0In := big.NewInt(int64(poolFee.amountIn * math.Pow10(int(ep.UnderlyingPair.BaseToken.Decimals))))
-				amount0 := big.NewFloat(poolFee.amountIn) // Pool receives positive amount0
-				// amount1Out := big.NewInt(int64(amountOut * math.Pow10(int(ep.UnderlyingPair.QuoteToken.Decimals))))
-				// amount1 := new(big.Int).Neg(amount1Out) //The pool pays out Token1 → amount1 should be negative.
-				amount1 := new(big.Float).Neg(big.NewFloat(amountOut))
+				log.Infof("liquidityBig: %v", liquidityBig)
 
-				slippage := computeSlippageVersion2(
+				amount0 := new(big.Int).Neg(amountIn)
+				amount1 := amountOutInt
+				if ep.UnderlyingPair.QuoteToken.Address == poolToken0.Hex() {
+					amount0 = amountIn
+					amount1 = new(big.Int).Neg(amountOutInt)
+				}
+
+				log.Infof("amount0: %v, amount1: %v\n", amount0, amount1)
+
+				slippage := computeSlippageV3(
 					slot0.SqrtPriceX96,
 					amount0,
 					amount1,
 					liquidityBig,
 				)
 
-				log.Infof("slippage: %v", slippage)
+				log.Infof("slippage in pool %v: %v", address, slippage)
+
+				amountOutFloat := new(big.Float).SetInt(amountOutInt)
+				divisor := new(big.Float).SetInt(
+					new(big.Int).Exp(
+						big.NewInt(10),
+						big.NewInt(int64(power)),
+						nil,
+					),
+				)
+				amountOutFloat.Quo(amountOutFloat, divisor)
+
+				priceBig := new(big.Float).Quo(amountInAfterDecimalAdjust, amountOutFloat)
+
+				if ep.UnderlyingPair.QuoteToken.Address == poolToken0.Hex() {
+					priceBig = new(big.Float).Quo(amountOutFloat, amountInAfterDecimalAdjust)
+				}
+
+				price, _ := priceBig.Float64()
+				volume, _ := amountOutFloat.Float64()
 
 				if slippage > scraper.thresholdSlippage {
 					log.Warnf("slippage above threshold: %v > %v", slippage, scraper.thresholdSlippage)
 				} else {
 					t := models.SimulatedTrade{
-						Price:       poolFee.amountIn / amountOut,
-						Volume:      amountOut,
+						Price:       price,
+						Volume:      volume,
 						QuoteToken:  ep.UnderlyingPair.QuoteToken,
 						BaseToken:   ep.UnderlyingPair.BaseToken,
 						PoolAddress: address.Hex(),
@@ -268,44 +345,34 @@ func (scraper *SimulationScraperVersion2) simulateTradesVersion2(tradesChannel c
 		}
 	}
 	wg.Wait()
-
 }
 
-func getSimulationSwapDataVersion2(events []SwapEvents, tokenInDecimal, tokenOutDecimal uint8) (float64, float64) {
-	if len(events) == 0 {
-		return 0, 0
+func computeSlippageV3(sqrtPriceX96 *big.Int, amount0 *big.Int, amount1 *big.Int, liquidity *big.Int) (slippage float64) {
+
+	log.Infof("sqrtPrice -- amount0 -- amount1 -- liquidity: %s -- %s -- %s -- %s", sqrtPriceX96.String(), amount0.String(), amount1.String(), liquidity.String())
+
+	// Convert sqrtPriceX96 to actual price using formula: sqrt(price) = (sqrtPriceX96 / 2^96)
+	price := new(big.Float).Quo(
+		new(big.Float).SetInt(sqrtPriceX96),
+		new(big.Float).SetFloat64(math.Pow(2, 96)),
+	)
+
+	// Calculate slippage based on trade direction
+	if amount0.Sign() < 0 { // Token0 -> Token1
+		amount0Abs := new(big.Float).Abs(new(big.Float).SetInt(amount0))
+		numerator := new(big.Float).Mul(amount0Abs, price)
+		denominator := new(big.Float).SetInt(liquidity)
+		slippage, _ := new(big.Float).Quo(numerator, denominator).Float64()
+
+		return slippage
+	} else if amount1.Sign() < 0 { // Token1 -> Token0
+		amount1Abs := new(big.Float).Abs(new(big.Float).SetInt(amount1))
+		numerator := amount1Abs
+		denominator := new(big.Float).Mul(new(big.Float).SetInt(liquidity), price)
+		slippage, _ := new(big.Float).Quo(numerator, denominator).Float64()
+		return slippage
 	}
-
-	decimalsout := int(tokenOutDecimal)
-	decimalsin := int(tokenInDecimal)
-
-	firstEvent := events[0]
-
-	lastEvent := events[len(events)-1]
-
-	var totalInput float64
-
-	if firstEvent.Amount0In != int64(0) {
-		totalInput, _ = new(big.Float).Quo(big.NewFloat(0).SetInt(big.NewInt(firstEvent.Amount0In)), new(big.Float).SetFloat64(math.Pow10(decimalsin))).Float64()
-	} else {
-		totalInput, _ = new(big.Float).Quo(big.NewFloat(0).SetInt(big.NewInt(firstEvent.Amount1In)), new(big.Float).SetFloat64(math.Pow10(decimalsin))).Float64()
-	}
-
-	var totalOutput float64
-	if lastEvent.Amount1Out != int64(0) {
-		totalOutput, _ = new(big.Float).Quo(big.NewFloat(0).SetInt(big.NewInt(lastEvent.Amount1Out)), new(big.Float).SetFloat64(math.Pow10(decimalsout))).Float64()
-	} else {
-		totalOutput, _ = new(big.Float).Quo(big.NewFloat(0).SetInt(big.NewInt(lastEvent.Amount0Out)), new(big.Float).SetFloat64(math.Pow10(decimalsout))).Float64()
-
-	}
-
-	if totalInput == 0 {
-		return 0, 0
-	}
-
-	price := float64(totalInput) / float64(totalOutput)
-
-	return price, 1000
+	return 0
 }
 
 // initAssets fetches complete asset data from on-chain for all assets in exchangepairs.
@@ -356,9 +423,9 @@ func (scraper *SimulationScraperVersion2) initAssetsAndMapsVersion2() error {
 // updatePriceMap fetches the current price of each of the involved assets from DIA lumina meta contract.
 func (scraper *SimulationScraperVersion2) updatePriceMapVersion2(lock *sync.RWMutex) {
 	for asset := range scraper.priceMap {
-		quotation, err := asset.GetOnchainPrice(common.HexToAddress(DIA_Meta_Contract_AddressVersion2), DIA_Meta_Contract_PrecisionVersion2, scraper.luminaClient)
-		if err != nil {
-			log.Errorf("GetOnchainPrice for %s -- %s: %v", asset.Symbol, asset.Address, err)
+		quotation, err := asset.GetPrice(common.HexToAddress(DIA_Meta_Contract_AddressVersion2), DIA_Meta_Contract_PrecisionVersion2, scraper.luminaClient)
+		if err != nil && quotation.Price == 1 {
+			log.Errorf("Failed to GetOnchainPrice for %s -- %s: %v ; continue with default price of 1", asset.Symbol, asset.Address, err)
 			continue
 		} else {
 			log.Infof("USD price for (base-)token %s: %v", asset.Symbol, quotation.Price)
@@ -367,33 +434,6 @@ func (scraper *SimulationScraperVersion2) updatePriceMapVersion2(lock *sync.RWMu
 		scraper.priceMap[asset] = quotation
 		lock.Unlock()
 	}
-}
-
-// computeSlippage calculates slippage for simulated trades in Uniswap V3
-func computeSlippageVersion2(sqrtPriceX96 *big.Int, amount0 *big.Float, amount1 *big.Float, liquidity *big.Int) float64 {
-	// Convert sqrtPriceX96 to actual price using formula: price = (sqrtPriceX96 / 2^96)^2
-	log.Infof("sqrtPrice -- amount0 -- amount1 -- liquidity: %s -- %s -- %s -- %s", sqrtPriceX96.String(), amount0.String(), amount1.String(), liquidity.String())
-	price := new(big.Float).Quo(
-		new(big.Float).SetInt(sqrtPriceX96),
-		new(big.Float).SetFloat64(math.Pow(2, 96)),
-	)
-	price = new(big.Float).Mul(price, price) // Square the value
-
-	// Calculate slippage based on trade direction
-	if amount0.Sign() < 0 { // Token0 -> Token1
-		amount0Abs := new(big.Float).Abs(amount0)
-		numerator := new(big.Float).Mul(amount0Abs, price)
-		denominator := new(big.Float).SetInt(liquidity)
-		slippage, _ := new(big.Float).Quo(numerator, denominator).Float64()
-		return slippage
-	} else if amount1.Sign() < 0 { // Token1 -> Token0
-		amount1Abs := new(big.Float).Abs(amount1)
-		numerator := amount1Abs
-		denominator := new(big.Float).Mul(new(big.Float).SetInt(liquidity), price)
-		slippage, _ := new(big.Float).Quo(numerator, denominator).Float64()
-		return slippage
-	}
-	return 0
 }
 
 // updateFeesMap updates values in scraper.feesMap.
@@ -412,7 +452,6 @@ func (scraper *SimulationScraperVersion2) updateFeesMapVersion2(lock *sync.RWMut
 		baseToken := ep.UnderlyingPair.BaseToken
 
 		var indexFeeMap = make(map[int]*big.Int)
-		// var prices0, prices1 []float64
 		var poolMap = make(map[int]common.Address)
 
 		for i, fee := range allFeesVersion2 {
@@ -428,11 +467,7 @@ func (scraper *SimulationScraperVersion2) updateFeesMapVersion2(lock *sync.RWMut
 				log.Infof("Start checking admissibility for pool %s-%s with fee %v%% and address %s ", ep.UnderlyingPair.QuoteToken.Symbol, ep.UnderlyingPair.BaseToken.Symbol, float64(fee.Int64())/float64(10000), poolAddress.Hex())
 			}
 
-			// Check if pool is admissible, i.e.
-			// 1. check balance(s).
-			// 2. check distribution of active ticks.
-			// 3. check prices in current tick across pools/fees.
-
+			// Check if pool is admissible, i.e. check balance(s)
 			balanceOk := scraper.checkBalancesVersion2(quoteToken, baseToken, poolAddress)
 			if utils.ContainsAddress(whitelistedPools, poolAddress) {
 				balanceOk = true
@@ -448,53 +483,19 @@ func (scraper *SimulationScraperVersion2) updateFeesMapVersion2(lock *sync.RWMut
 				continue
 			}
 
-			// ticksOk, currentTick := scraper.checkTicks(poolAddress, word_Range, considered_tick_range, admissible_Count)
-			// if utils.ContainsAddress(whitelistedPools, poolAddress) {
-			// 	ticksOk = true
-			// }
-			// if !ticksOk {
-			// 	log.Warnf("ticks not ok for %s with fee %s", poolAddress.Hex(), fee.String())
-			// 	// Remove from scraper.feesMap[ep] if existent.
-			// 	if containsAddress(poolAddress, scraper.feesMap[ep]) {
-			// 		log.Warn("poor tick distribution - remove pool from set of admissible pools: ", poolAddress)
-			// 		cleanedFees := removeFeeByAddress(poolAddress, scraper.feesMap[ep])
-			// 		scraper.feesMap[ep] = cleanedFees
-			// 	}
-			// 	continue
-			// }
-
 			indexFeeMap[i] = fee
 			poolMap[i] = poolAddress
-
-			// logging ------------
-			// priceMin, _ := computeTickPrices(currentTick-considered_tick_range, int8(quoteToken.Decimals), int8(baseToken.Decimals))
-			// priceMax, _ := computeTickPrices(currentTick+considered_tick_range, int8(quoteToken.Decimals), int8(baseToken.Decimals))
-			// log.Infof("corresponding price range in tick range: %s -- %s", priceMin.String(), priceMax.String())
-			// log.Infof("pool admitted %s for balances and ticks.", poolAddress.Hex())
-			// // --------------------
-
-			// p0, p1, err := scraper.getActivePrices(poolAddress, int8(quoteToken.Decimals), int8(baseToken.Decimals))
-			// if err != nil {
-			// 	log.Errorf("getActivePrices on %s: %v", poolAddress.Hex(), err)
-			// }
-			// prices0 = append(prices0, p0)
-			// prices1 = append(prices1, p1)
-			// log.Debugf("prices in current tick price0 -- price1: %v -- %v", prices0, prices1)
 		}
 
-		// Outlier detection on prices.
-		// TO DO: Should we also check for prices1?
-		// scraper.checkPrices(prices0, ep, indexFeeMap, poolMap)
 		for index, fee := range indexFeeMap {
-			scraper.feesMap[ep] = append(scraper.feesMap[ep], UniV3PoolFee{fee: fee, address: poolMap[index]})
+			if !containsFeeVersion2(fee, scraper.feesMap[ep]) {
+				scraper.feesMap[ep] = append(scraper.feesMap[ep], UniV3PoolFee{fee: fee, address: poolMap[index]})
+			}
 		}
 
 		// Compute amountIn in such that it corresponds to @amountIn_USD amount in USD.
 		baseTokenPrice := scraper.priceMap[ep.UnderlyingPair.BaseToken].Price
-		if baseTokenPrice == 0 {
-			log.Warnf("Could not determine price of base token %s. Continue with native volume of 1.", ep.UnderlyingPair.BaseToken.Symbol)
-			baseTokenPrice = 100
-		}
+
 		for i := range scraper.feesMap[ep] {
 			lock.Lock()
 			// TODO: need to switch amountIn_USD to Big Float
@@ -508,7 +509,6 @@ func (scraper *SimulationScraperVersion2) updateFeesMapVersion2(lock *sync.RWMut
 		}
 
 	}
-
 }
 
 // --------------------------------------------------------------------------------------------------------------
@@ -544,197 +544,6 @@ func (scraper *SimulationScraperVersion2) checkBalancesVersion2(quoteToken model
 	return true
 }
 
-// checkTicks counts active ticks within given @wordRange.
-// @admissibleSteps is the number of steps within which range ticks are taken into account.
-// @admissibleCount is the number of active ticks which have to lie within the given range.
-func (scraper *SimulationScraperVersion2) checkTicksVersion2(poolAddress common.Address, wordRange int32, admissibleRange int32, admissibleCount int) (ok bool, currentTick int32) {
-	ticks, err := scraper.getCurrentTicksVersion2(poolAddress, wordRange)
-	if err != nil {
-		log.Error("getCurrentTicks: ", err)
-	} else {
-		log.Debug("ticks: ", ticks)
-	}
-
-	var caller *univ3pool.Univ3poolCaller
-	caller, err = univ3pool.NewUniv3poolCaller(poolAddress, scraper.restClient)
-	if err != nil {
-		return
-	}
-	slot0, err := caller.Slot0(&bind.CallOpts{})
-	if err != nil {
-		return
-	}
-
-	currentTick = int32(slot0.Tick.Int64())
-	minTick := currentTick - admissibleRange
-	maxTick := currentTick + admissibleRange
-	ok = scraper.checkTickCountVersion2(ticks, minTick, maxTick, admissibleCount)
-	return
-}
-
-// func (scraper *SimulationScraper) checkTicks(poolAddress common.Address, wordRange int32, admissibleRange int32, admissibleCount int) (ok bool, currentTick int32) {
-// 	// Get the current valid ticks range
-// 	ticks, err := scraper.getCurrentTicks(poolAddress, wordRange)
-// 	if err != nil {
-// 		log.Error("getCurrentTicks: ", err)
-// 		return false, 0
-// 	}
-// 	log.Debug("active ticks: ", ticks)
-
-// 	// Initialize the pool calling interface
-// 	caller, err := univ3pool.NewUniv3poolCaller(poolAddress, scraper.restClient)
-// 	if err != nil {
-// 		log.Error("Pool caller initialization failed: ", err)
-// 		return false, 0
-// 	}
-
-// 	// Get the current slot0 status (including current tick and price)
-// 	slot0, err := caller.Slot0(&bind.CallOpts{})
-// 	if err != nil {
-// 		log.Error("Failed to obtain slot0 status: ", err)
-// 		return false, 0
-// 	}
-// 	currentTick = int32(slot0.Tick.Int64())
-
-// 	// Get pool parameters
-// 	tickSpacing, err := caller.TickSpacing(&bind.CallOpts{}) // Dynamically obtain tick spacing
-// 	if err != nil {
-// 		log.Error("Failed to get tickSpacing: ", err)
-// 		return false, 0
-// 	}
-// 	minSafeDistance := int32(tickSpacing.Int64()) * 2 // The safety distance is 2 times the tick spacing
-
-// 	// Get the actual liquidity boundary of the pool
-// 	poolMinTick := uniswap_utils.MinTick
-
-// 	poolMaxTick := uniswap_utils.MaxTick
-
-// 	// Boundary safety check (to prevent liquidity cliff)
-// 	if (currentTick-int32(poolMinTick)) < minSafeDistance ||
-// 		(int32(poolMaxTick)-currentTick) < minSafeDistance {
-// 		log.Warnf("Liquidity boundary warning | Pool address: %s | Current tick: %d | Pool boundary: [%d,%d] | Safety distance: %d",
-// 			poolAddress.Hex(), currentTick,
-// 			poolMinTick, poolMaxTick,
-// 			minSafeDistance)
-// 		return false, currentTick
-// 	}
-
-// 	// Checking the number of active ticks (detecting liquidity fragmentation)
-// 	activeTickMin := currentTick - admissibleRange
-// 	activeTickMax := currentTick + admissibleRange
-// 	ok = scraper.checkTickCount(ticks, activeTickMin, activeTickMax, admissibleCount)
-
-// 	log.Infof("Pool detection results | Address: %s | Current tick: %d | Number of active ticks: %d/%d | Safety distance: %d",
-// 		poolAddress.Hex(), currentTick,
-// 		len(ticks), admissibleCount, minSafeDistance)
-// 	return ok, currentTick
-// }
-
-func (scraper *SimulationScraperVersion2) checkPricesVersion2(prices []float64, ep models.ExchangePair, indexMap map[int]*big.Int, poolMap map[int]common.Address) {
-	log.Infof("checking price outliers for %v pools %s-%s ", len(prices), ep.UnderlyingPair.QuoteToken.Symbol, ep.UnderlyingPair.BaseToken.Symbol)
-	// TO DO: Only append if not existent yet.
-	if len(prices) == 1 {
-		for index, fee := range indexMap {
-			if !containsFeeVersion2(fee, scraper.feesMap[ep]) {
-				scraper.feesMap[ep] = append(scraper.feesMap[ep], UniV3PoolFee{fee: fee, address: poolMap[index]})
-			}
-		}
-	}
-	if len(prices) == 2 {
-		// If deviation too large store both and print warning.
-		dist := utils.AvgDistances(prices)
-		if dist[0] > threshold_Price_DeviationVersion2 {
-			log.Warnf("prices in pools %s and %s differ by more than %v: %v -- %v ",
-				"poolAddress",
-				"poolAddress",
-				threshold_Price_DeviationVersion2,
-				prices[0],
-				prices[1],
-			)
-		} else {
-			for index, fee := range indexMap {
-				if !containsFeeVersion2(fee, scraper.feesMap[ep]) {
-					scraper.feesMap[ep] = append(scraper.feesMap[ep], UniV3PoolFee{fee: fee, address: poolMap[index]})
-				}
-			}
-		}
-	}
-	if len(prices) > 2 {
-		_, indices := utils.RemoveOutliers(prices, threshold_Price_DeviationVersion2)
-		for _, ind := range indices {
-			if !containsFeeVersion2(indexMap[ind], scraper.feesMap[ep]) {
-				scraper.feesMap[ep] = append(scraper.feesMap[ep], UniV3PoolFee{fee: indexMap[ind], address: poolMap[ind]})
-			}
-		}
-	}
-}
-
-// --------------------------------------------------------------------------------------------------------------
-
-// checkTicks returns true, if @tickCount is greater or equal to @tickThreshold. tickCount is measured
-// by counting, how many active ticks lie within @minTick and @maxTick.
-// steps measured with respect to @tickSpacing.
-func (scraper *SimulationScraperVersion2) checkTickCountVersion2(ticks []int32, minTick int32, maxTick int32, admissibleCount int) (ok bool) {
-	var tickCount int
-	for _, tick := range ticks {
-		if minTick <= tick && tick <= maxTick {
-			tickCount++
-		}
-	}
-
-	log.Infof("%v active ticks out of total %v", tickCount, len(ticks))
-	if tickCount > admissibleCount {
-		ok = true
-	}
-	return
-}
-
-// getActivePrices returns prices of pool tokens in the currently active tick. Prices denomination is of course native.
-func (scraper *SimulationScraperVersion2) getActivePricesVersion2(poolAddress common.Address, decimals0 int8, decimals1 int8) (price0 float64, price1 float64, err error) {
-	var caller *univ3pool.Univ3poolCaller
-	caller, err = univ3pool.NewUniv3poolCaller(poolAddress, scraper.restClient)
-	if err != nil {
-		return
-	}
-	slot0, err := caller.Slot0(&bind.CallOpts{})
-	if err != nil {
-		return
-	}
-	currentTick := slot0.Tick
-
-	price0Big, price1Big := computeTickPricesVersion2(int32(currentTick.Int64()), decimals0, decimals1)
-	price0, _ = price0Big.Float64()
-	price1, _ = price1Big.Float64()
-	return
-}
-
-// getCurrentTicks returns active ticks within a range of @wordRange around slot0.
-func (scraper *SimulationScraperVersion2) getCurrentTicksVersion2(poolAddress common.Address, wordRange int32) (ticks []int32, err error) {
-
-	var caller *univ3pool.Univ3poolCaller
-	caller, err = univ3pool.NewUniv3poolCaller(poolAddress, scraper.restClient)
-	if err != nil {
-		return
-	}
-	slot0, err := caller.Slot0(&bind.CallOpts{})
-	if err != nil {
-		return
-	}
-	tickSpacing, err := caller.TickSpacing(&bind.CallOpts{})
-	if err != nil {
-		return
-	}
-	log.Debug("ticks spacing: ", tickSpacing.String())
-
-	currentWordPosition := getWordPosition(int32(slot0.Tick.Int64()), int32(tickSpacing.Int64()))
-	ticks, err = scraper.getActiveTicksInRangeVersion2(poolAddress, currentWordPosition-wordRange, currentWordPosition+wordRange)
-	if err != nil {
-		log.Fatal("getAllActiveTicks: ", err)
-	}
-
-	return
-}
-
 // getPool returns the unique pool containing both assets from @exchangepair with given @fee if it exists.
 func (scraper *SimulationScraperVersion2) getPoolVersion2(exchangepair models.ExchangePair, fee *big.Int) (poolAddress common.Address, err error) {
 	var caller *univ3factory.Univ3factoryCaller
@@ -752,67 +561,6 @@ func (scraper *SimulationScraperVersion2) getPoolVersion2(exchangepair models.Ex
 	return
 }
 
-// --------------------------------------------------------------------------------------------------------------
-
-// getWordPosition calculates the correct word position in tickBitmap taking tickSpacing into account.
-func getWordPositionVersion2(tickIndex int32, tickSpacing int32) int32 {
-	// Normalize tickIndex by tickSpacing before computing word position
-	scaledTickIndex := tickIndex / tickSpacing
-	if scaledTickIndex < 0 {
-		return (scaledTickIndex / 256) - 1 // Handle negative tick indices correctly
-	}
-	return scaledTickIndex / 256
-}
-
-// getActiveTicksInRange retrieves all active ticks using the tickBitmap structure
-func (scraper *SimulationScraperVersion2) getActiveTicksInRangeVersion2(poolAddress common.Address, wordPositionLeft int32, wordPositionRight int32) (ticks []int32, err error) {
-
-	caller, err := univ3pool.NewUniv3poolCaller(poolAddress, scraper.restClient)
-	if err != nil {
-		return
-	}
-	tickSpacing, err := caller.TickSpacing(&bind.CallOpts{})
-	if err != nil {
-		return
-	}
-	log.Debug("tickSpacing: ", tickSpacing)
-	log.Debug("poolAddress for following ticks: ", poolAddress.Hex())
-
-	for wordPosition := wordPositionLeft; wordPosition <= wordPositionRight; wordPosition++ {
-
-		var tickBitmap *big.Int
-		tickBitmap, err = caller.TickBitmap(&bind.CallOpts{}, int16(wordPosition))
-		if err != nil {
-			return
-		}
-
-		// Convert bitmap to active tick indices
-		activeTicks := extractActiveTicksFromBitmap(wordPosition, int32(tickSpacing.Int64()), tickBitmap)
-		log.Debugf("activeTicks at wordPosition %v: %v", wordPosition, activeTicks)
-		ticks = append(ticks, activeTicks...)
-
-	}
-	return
-}
-
-// extractActiveTicksFromBitmap extracts active ticks from a Uniswap tickBitmap word
-func extractActiveTicksFromBitmapVersion2(wordPosition int32, tickSpacing int32, tickBitmap *big.Int) []int32 {
-	var activeTicks []int32
-
-	for i := 0; i < 256; i++ {
-		// Check if the bit at position `i` is set in the bitmap
-		if tickBitmap.Bit(i) == 1 {
-			// Compute the tick index correctly, considering tickSpacing
-			scaledTickIndex := (wordPosition * 256) + int32(i)
-			tickIndex := scaledTickIndex * tickSpacing // Scale back to actual tick index
-
-			activeTicks = append(activeTicks, tickIndex)
-		}
-	}
-
-	return activeTicks
-}
-
 func containsFeeVersion2(fee *big.Int, fees []UniV3PoolFee) bool {
 	for _, f := range fees {
 		if fee.Cmp(f.fee) == 0 {
@@ -820,58 +568,4 @@ func containsFeeVersion2(fee *big.Int, fees []UniV3PoolFee) bool {
 		}
 	}
 	return false
-}
-
-func containsAddressVersion2(address common.Address, fees []UniV3PoolFee) bool {
-	for _, f := range fees {
-		if address == f.address {
-			return true
-		}
-	}
-	return false
-}
-
-func removeFeeByAddressVersion2(address common.Address, fees []UniV3PoolFee) []UniV3PoolFee {
-	for i, f := range fees {
-		if address == f.address {
-			return append(fees[:i], fees[i+1:]...)
-		}
-	}
-	return fees
-}
-
-// ------------------------------------------------------------------------------------------------------------------------
-
-// computePrices calculates prices of token0 and token1 with respect to vice versa.
-func computeTickPricesVersion2(tick int32, decimals0 int8, decimals1 int8) (*big.Float, *big.Float) {
-	base := big.NewFloat(1.0001)
-	numerator := powBigFloat(base, big.NewFloat(float64(tick)))
-	denominator := powBigFloat(big.NewFloat(10), big.NewFloat(float64(decimals1-decimals0)))
-	return big.NewFloat(0).Quo(numerator, denominator), big.NewFloat(0).Quo(denominator, numerator)
-}
-
-// powBigFloat calculates x^y using ln(x) * y and exp(result)
-func powBigFloatVersion2(x, y *big.Float) *big.Float {
-	// Ensure high precision
-	precision := uint(100)
-	x.SetPrec(precision)
-	y.SetPrec(precision)
-
-	// Convert x to float64 for math.Log
-	xFloat64, _ := x.Float64()
-	if xFloat64 <= 0 {
-		panic("x must be greater than 0 for real-valued exponentiation")
-	}
-
-	// Compute ln(x) * y
-	lnX := math.Log(xFloat64)  // Compute ln(x) as float64
-	yFloat64, _ := y.Float64() // Convert y to float64
-	result := big.NewFloat(0).SetPrec(precision)
-	result.SetFloat64(lnX * yFloat64) // Multiply ln(x) * y
-
-	// Compute exp(result)
-	expFloat, _ := result.Float64()
-	expResult := big.NewFloat(math.Exp(expFloat))
-
-	return expResult
 }

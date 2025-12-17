@@ -37,7 +37,9 @@ func init() {
 func OracleUpdateExecutorSimulation(
 	auth *bind.TransactOpts,
 	contract *diaOracleV2MultiupdateService.DiaOracleV2MultiupdateService,
+	contractBackup *diaOracleV2MultiupdateService.DiaOracleV2MultiupdateService,
 	conn *ethclient.Client,
+	connBackup *ethclient.Client,
 	chainId int64,
 	filtersChannel <-chan []models.FilterPointPair,
 ) {
@@ -61,22 +63,23 @@ func OracleUpdateExecutorSimulation(
 		}
 		err := updateOracleMultiValues(conn, contract, auth, chainId, keys, values, timestamp)
 		if err != nil {
-			log.Warnf("updater - Failed to update Oracle: %v.", err)
-			return
+			log.Warnf("updater - Failed to update Oracle: %v. Retry with backup node.", err)
+			err := updateOracleMultiValues(connBackup, contractBackup, auth, chainId, keys, values, timestamp)
+			if err != nil {
+				log.Errorf("backup updater - Failed to update Oracle: %v.", err)
+				return
+			}
 		}
 	}
-
 }
 
 func OracleUpdateExecutor(
-	// publishedPrices map[string]float64,
-	// newPrices map[string]float64,
-	// deviationPermille int,
 	auth *bind.TransactOpts,
 	contract *diaOracleV2MultiupdateService.DiaOracleV2MultiupdateService,
+	contractBackup *diaOracleV2MultiupdateService.DiaOracleV2MultiupdateService,
 	conn *ethclient.Client,
+	connBackup *ethclient.Client,
 	chainId int64,
-	// compatibilityMode bool,
 	filtersChannel <-chan []models.FilterPointPair,
 ) {
 	for filterPoints := range filtersChannel {
@@ -101,8 +104,12 @@ func OracleUpdateExecutor(
 		go func() {
 			err := updateOracleMultiValues(conn, contract, auth, chainId, keys, values, timestamp)
 			if err != nil {
-				log.Warnf("updater - Failed to update Oracle: %v.", err)
-				return
+				log.Warnf("updater - Failed to update Oracle: %v. Retry with backup node.", err)
+				err := updateOracleMultiValues(connBackup, contractBackup, auth, chainId, keys, values, timestamp)
+				if err != nil {
+					log.Errorf("backup updater - Failed to update Oracle: %v.", err)
+					return
+				}
 			}
 		}()
 	}
@@ -171,9 +178,7 @@ func updateOracleMultiValues(
 		Signer:   auth.Signer,
 		GasPrice: gasPrice,
 	}, keys, cValues)
-	// check if tx is sendable then fgo backup
 	if err != nil {
-		// backup in here
 		return err
 	}
 	log.Warnf("--------------------------- time elapsed for SetMultipleValues: %v", time.Since(t0))

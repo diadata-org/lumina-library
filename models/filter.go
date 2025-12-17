@@ -1,6 +1,7 @@
 package models
 
 import (
+	"math"
 	"time"
 )
 
@@ -65,5 +66,54 @@ func RemoveOldFilters(filterPoints []FilterPointPair, toleranceSeconds int64, ti
 			removedFilters++
 		}
 	}
+	return
+}
+
+func RemoveLargeDeviationPrices(filterPoints []FilterPointPair) (newFilterPoints []FilterPointPair) {
+	groups := make(map[string][]FilterPointPair)
+
+	for _, fp := range filterPoints {
+		symbol := fp.Pair.QuoteToken.Symbol
+		groups[symbol] = append(groups[symbol], fp)
+	}
+
+	for _, group := range groups {
+		count := len(group)
+
+		if count%2 != 0 {
+			newFilterPoints = append(newFilterPoints, group...)
+			continue
+		}
+		valid := true
+		for i := 0; i < len(group); i++ {
+			for j := i + 1; j < len(group); j++ {
+				a, b := group[i].Value, group[j].Value
+				base := math.Min(a, b)
+				if base == 0 {
+					valid = false
+					break // Break: Invalid base price
+				}
+				diff := math.Abs(a-b) / base
+				if diff > 0.01 {
+					valid = false
+					log.Warnf("Price difference %.2f%% (%.4f vs %.4f) exceeds 1%% threshold for QuoteToken %s",
+						diff*100,                        // Convert to percentage (0.01 -> 1.00%)
+						a,                               // First value (float64)
+						b,                               // Second value (float64)
+						group[i].Pair.QuoteToken.Symbol, // Token symbol (string)
+					)
+					break
+				}
+			}
+			if !valid {
+				log.Warnf("Price validation failed for QuoteToken %s\n", group[i].Pair.QuoteToken.Symbol)
+				break
+			}
+		}
+		if valid {
+			newFilterPoints = append(newFilterPoints, group...)
+		}
+	}
+	log.Infof("Length of old filterPoints: %v, Length of new filterPoints: %v\n", len(filterPoints), len(newFilterPoints))
 	return
 }

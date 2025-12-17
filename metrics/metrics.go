@@ -1,8 +1,13 @@
 package metrics
 
 import (
+	"crypto/ecdsa"
 	"net/http"
+	"os"
+	"strings"
+	"time"
 
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
@@ -122,5 +127,90 @@ func StartPrometheusServer(m *Metrics, port string) {
 	http.Handle("/metrics", promhttp.Handler())
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Printf("Failed to start metrics server: %v", err)
+	}
+}
+
+func StartMetrics(
+	conn *ethclient.Client,
+	privateKey *ecdsa.PrivateKey,
+	deployedContract string,
+	pushgatewayURL string,
+	authUser string,
+	authPassword string,
+	enablePrometheusServer string,
+	nodeOperatorName string,
+	metricsPort string,
+	imageVersion string,
+	chainID int64,
+	exchangePairsEnv string) {
+	// get hostname of the container so that we can display it in monitoring dashboards
+	hostname, err := os.Hostname()
+	if err != nil {
+		log.Fatalf("Failed to get hostname: %v", err)
+	}
+
+	// Check if metrics pushing to Pushgateway is enabled
+	pushgatewayEnabled := pushgatewayURL != "" && authUser != "" && authPassword != ""
+
+	// Check if Prometheus HTTP server is enabled
+	prometheusServerEnabled := strings.ToLower(enablePrometheusServer) == "true"
+
+	// Create the job name for metrics (used for both modes)
+	jobName := MakeJobName(hostname, nodeOperatorName)
+
+	if imageVersion == "" {
+		imageVersion = "unknown" // fallback if not set
+		log.Info("No image version found, using 'unknown'")
+	}
+	log.Infof("Image version: %s", imageVersion)
+
+	// Set default pushgateway URL if enabled
+	if pushgatewayEnabled {
+		if pushgatewayURL == "" {
+			pushgatewayURL = "https://pushgateway-auth.diadata.org"
+		}
+		log.Info("Metrics pushing enabled. Pushing to: ", pushgatewayURL)
+	} else {
+		log.Info("Metrics pushing to Pushgateway disabled")
+	}
+
+	// Create metrics object
+	m := NewMetrics(
+		prometheus.NewRegistry(),
+		pushgatewayURL,
+		jobName,
+		authUser,
+		authPassword,
+		chainID,
+		imageVersion,
+	)
+
+	// Start Prometheus HTTP server if enabled
+	if prometheusServerEnabled {
+		go StartPrometheusServer(m, metricsPort)
+		log.Info("Prometheus HTTP server enabled on port:", metricsPort)
+	} else {
+		log.Info("Prometheus HTTP server disabled")
+	}
+
+	// Record start time for uptime calculation
+	startTime := time.Now()
+
+	// Move metrics setup here, right before the blocking call
+	// Only setup metrics collection if metrics are enabled and metrics object exists
+	if pushgatewayEnabled && m != nil {
+		// Set the static contract label for Prometheus monitoring
+		m.Contract.WithLabelValues(deployedContract).Set(1)
+
+		exchangePairsList := strings.Split(exchangePairsEnv, ",")
+		for _, pair := range exchangePairsList {
+			pair = strings.TrimSpace(pair) // Clean whitespace
+			if pair != "" {
+				m.ExchangePairs.WithLabelValues(pair).Set(1)
+			}
+		}
+
+		// Push metrics to Pushgateway if enabled
+		go PushMetricsToPushgateway(m, startTime, conn, privateKey, deployedContract)
 	}
 }

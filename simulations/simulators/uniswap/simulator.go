@@ -33,6 +33,41 @@ func New(client *ethclient.Client, log *logrus.Logger) *Simulator {
 	return &c
 }
 
+func (c *Simulator) ExecuteVersion2(t0 models.Asset, t1 models.Asset, amountIn *big.Int, fees *big.Int) (*big.Int, error) {
+
+	token0 := coreEntities.NewToken(1, common.HexToAddress(t0.Address), uint(t0.Decimals), t0.Name, t0.Name)
+
+	token1 := coreEntities.NewToken(1, common.HexToAddress(t1.Address), uint(t1.Decimals), t1.Name, t1.Name)
+
+	return c.quoteTokensVersion2(amountIn, token0, token1, fees)
+
+}
+
+func (c *Simulator) quoteTokensVersion2(amountIn *big.Int, token0 *coreEntities.Token, token1 *coreEntities.Token, fees *big.Int) (*big.Int, error) {
+	quoterContract, err := contract.NewUniswapv3Quoter(common.HexToAddress(helper.ContractV3Quoter), c.Eth)
+	if err != nil {
+		c.log.Errorln("failed to create quoter contract")
+		return big.NewInt(0), err
+	}
+
+	sqrtPriceLimitX96 := big.NewInt(0)
+
+	var out []interface{}
+
+	rawCaller := &contract.Uniswapv3QuoterRaw{Contract: quoterContract}
+
+	err = rawCaller.Call(&bind.CallOpts{}, &out, "quoteExactInputSingle", token0.Address, token1.Address,
+		fees, amountIn, sqrtPriceLimitX96)
+	if err != nil {
+		c.log.Errorf("Failed to call quoteExactInputSingle for fee %s in pool %s-%s: %v", fees.String(), token0.Symbol(), token1.Symbol(), err)
+		return big.NewInt(0), err
+	}
+
+	c.log.Debugf("Quote: input: %v, output: %s", amountIn, out[0].(*big.Int).String())
+
+	return out[0].(*big.Int), nil
+}
+
 func (c *Simulator) Execute(t1 models.Asset, t2 models.Asset, amountIn string, fees *big.Int) (string, error) {
 
 	token1 := coreEntities.NewToken(1, common.HexToAddress(t1.Address), uint(t1.Decimals), t1.Name, t1.Name)

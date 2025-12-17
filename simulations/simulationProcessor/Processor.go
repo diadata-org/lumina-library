@@ -9,6 +9,7 @@ import (
 	models "github.com/diadata-org/lumina-library/models"
 	simulationfilters "github.com/diadata-org/lumina-library/simulations/simulationFilters"
 	"github.com/diadata-org/lumina-library/simulations/simulators"
+	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 // Processor handles blocks from @tradesblockChannel.
@@ -20,6 +21,9 @@ func Processor(
 	tradesblockChannel chan map[string]models.SimulatedTradesBlock,
 	filtersChannel chan []models.FilterPointPair,
 	triggerChannel chan time.Time,
+	metacontractClient *ethclient.Client,
+	metacontractAddress string,
+	metacontractPrecision int,
 	wg *sync.WaitGroup,
 ) {
 
@@ -42,7 +46,7 @@ func Processor(
 			var atomicFilterValue float64
 			reducedTradesBlock := models.SimulatedTradesBlockToTradesBlock(tb)
 
-			basePrice, err := models.GetPriceBaseAsset(reducedTradesBlock, priceCacheMap)
+			basePrice, err := models.GetPriceBaseAsset(reducedTradesBlock, priceCacheMap, metacontractClient, metacontractAddress, metacontractPrecision)
 			if err != nil {
 				log.Errorf("Processor - GetPriceBaseAsset: %v", err)
 				continue
@@ -50,10 +54,14 @@ func Processor(
 
 			switch filterType {
 			case "LastPrice":
-				atomicFilterValue, _ = filters.LastPrice(reducedTradesBlock.Trades, basePrice)
+				atomicFilterValue, _, err = filters.LastPrice(reducedTradesBlock, basePrice)
+				if err != nil {
+					log.Warn("last price filter: ", err)
+					continue
+				}
 
 			case "Average":
-				atomicFilterValue, _, err = simulationfilters.Average(tb.Trades, true)
+				atomicFilterValue, _, err = simulationfilters.Average(tb.Trades, true, metacontractClient, metacontractAddress, metacontractPrecision)
 				if err != nil {
 					log.Errorf("Processor - Average: %v.", err)
 					continue
@@ -83,7 +91,6 @@ func Processor(
 		if removedFilterPoints > 0 {
 			log.Warnf("Processor - Removed %v old filter points.", removedFilterPoints)
 		}
-
 		// --------------------------------------------------------------------------------------------
 		// 2. Compute an aggregated value across exchanges for each asset obtained from the aggregated
 		// filter values in Step 1.
@@ -94,6 +101,13 @@ func Processor(
 		switch metaFilterType {
 		// TO DO: Add methodology for metafilters of simulated data.
 		case "Median":
+			filterPointsMedianized := metafilters.Median(filterPoints)
+			filtersChannel <- filterPointsMedianized
+			for _, fpm := range filterPointsMedianized {
+				log.Infof("Processor - filter %s for %s: %v.", fpm.Name, fpm.Pair.QuoteToken.Symbol, fpm.Value)
+			}
+		case "MedianWithPriceFilter":
+			filterPoints = models.RemoveLargeDeviationPrices(filterPoints)
 			filterPointsMedianized := metafilters.Median(filterPoints)
 			filtersChannel <- filterPointsMedianized
 			for _, fpm := range filterPointsMedianized {
