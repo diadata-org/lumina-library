@@ -199,6 +199,16 @@ func (b *BaseDEXScraper) startResubHandler(
 				b.streamCancel[addr] = cancel
 				lock.Unlock()
 
+				if b.waitTime > 0 {
+					select {
+					case <-time.After(time.Duration(b.waitTime) * time.Millisecond):
+					case <-ctx.Done():
+						return // represents the entire resub handler exiting
+					case <-pctx.Done():
+						continue // represents the stream being canceled, continue to the next loop
+					}
+				}
+
 				hooks.StartStream(pctx, b, addr, trades, lock)
 
 			case <-ctx.Done():
@@ -267,6 +277,17 @@ func (b *BaseDEXScraper) startPool(
 	pctx, cancel := context.WithCancel(ctx)
 	b.streamCancel[addr] = cancel
 	lock.Unlock()
+
+	if b.waitTime > 0 {
+		select {
+		case <-time.After(time.Duration(b.waitTime) * time.Millisecond):
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-pctx.Done():
+			return pctx.Err()
+		}
+	}
+
 	hooks.StartStream(pctx, b, addr, trades, lock)
 
 	return nil
