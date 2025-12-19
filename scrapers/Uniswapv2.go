@@ -38,11 +38,12 @@ type UniswapV2Scraper struct {
 }
 
 type uniswapV2Hooks struct {
-	s *UniswapV2Scraper
+	s            *UniswapV2Scraper
+	exchangeName string
 }
 
 func (h *uniswapV2Hooks) ExchangeName() string {
-	return h.s.base.exchange.Name
+	return h.exchangeName
 }
 
 func (h *uniswapV2Hooks) EnsurePair(
@@ -146,16 +147,18 @@ func NewUniswapV2Scraper(
 	pools []models.Pool,
 	tradesChannel chan models.Trade,
 	wg *sync.WaitGroup,
-) {
+) *UniswapV2Scraper {
 	log.Infof("Started %s scraper.", exchangeName)
 
 	s := &UniswapV2Scraper{
 		poolMap: make(map[common.Address]UniswapPair),
 	}
-	hooks := &uniswapV2Hooks{s: s}
+	hooks := &uniswapV2Hooks{s: s, exchangeName: exchangeName}
 
 	base := NewBaseDEXScraper(ctx, exchangeName, blockchain, hooks, pools, tradesChannel, wg)
 	s.base = base
+
+	return s
 }
 
 // watchSwaps subscribes to a UniswapV2 pool and forwards trades to the trades channel.
