@@ -209,17 +209,16 @@ func (p *PoolCallCache) Get(poolAddr common.Address, client *ethclient.Client) (
 	return data, nil
 }
 
-func (s *SimulationScraperVersion2) getAmountIn(ep models.ExchangePair, amountInBase float64) (*big.Int, *big.Float) {
-	decimals := big.NewInt(int64(ep.UnderlyingPair.QuoteToken.Decimals)) // e.g. 18
-	exponent := new(big.Int).Exp(big.NewInt(10), decimals, nil)          // e.g. 10^18
+func (scraper *SimulationScraperVersion2) getAmountIn(tokenIn models.Asset, amountIn float64) (*big.Int, *big.Float) {
+	decimals := big.NewInt(int64(tokenIn.Decimals))
+	exponent := new(big.Int).Exp(big.NewInt(10), decimals, nil)
 	exponentFloat := new(big.Float).SetInt(exponent)
 
-	amountIn := new(big.Float).Mul(big.NewFloat(amountInBase), exponentFloat) // e.g. 10^20
+	amountInF := new(big.Float).Mul(big.NewFloat(amountIn), exponentFloat)
 	amountInInt := new(big.Int)
-	amountIn.Int(amountInInt)
+	amountInF.Int(amountInInt)
 
-	amountInAfterDecimalAdjust := new(big.Float).Quo(amountIn, exponentFloat) // e.g. 10^2
-
+	amountInAfterDecimalAdjust := new(big.Float).Quo(amountInF, exponentFloat)
 	return amountInInt, amountInAfterDecimalAdjust
 }
 
@@ -249,22 +248,16 @@ func (scraper *SimulationScraperVersion2) simulateTradesVersion2(tradesChannel c
 				caller := poolData.Caller
 				poolToken0 := poolData.Token0
 
-				token0 := ep.UnderlyingPair.BaseToken
-				token1 := ep.UnderlyingPair.QuoteToken
-				power := ep.UnderlyingPair.QuoteToken.Decimals
-				if ep.UnderlyingPair.QuoteToken.Address == poolToken0.Hex() {
-					token0 = ep.UnderlyingPair.QuoteToken
-					token1 = ep.UnderlyingPair.BaseToken
-					power = ep.UnderlyingPair.BaseToken.Decimals
-				}
-				log.Infof("fee: %v, token0: %s, token1: %s, power: %d", fee, token0.Symbol, token1.Symbol, power)
+				tokenIn := ep.UnderlyingPair.BaseToken
+				tokenOut := ep.UnderlyingPair.QuoteToken
+				log.Infof("fee: %v, tokenIn: %s, tokenOut: %s", fee, tokenIn.Symbol, tokenOut.Symbol)
 
-				amountIn, amountInAfterDecimalAdjust := scraper.getAmountIn(ep, poolFee.amountIn)
+				amountIn, amountInAfterDecimalAdjust := scraper.getAmountIn(tokenIn, poolFee.amountIn)
 				log.Infof("amountInAfterDecimalAdjust: %v", amountInAfterDecimalAdjust)
 
 				amountOutInt, err := scraper.simulator.ExecuteVersion2(
-					token0,
-					token1,
+					tokenIn,
+					tokenOut,
 					amountIn,
 					fee,
 				)
@@ -287,13 +280,18 @@ func (scraper *SimulationScraperVersion2) simulateTradesVersion2(tradesChannel c
 				}
 				log.Infof("liquidityBig: %v", liquidityBig)
 
-				amount0 := new(big.Int).Neg(amountIn)
-				amount1 := amountOutInt
-				if ep.UnderlyingPair.QuoteToken.Address == poolToken0.Hex() {
-					amount0 = amountIn
-					amount1 = new(big.Int).Neg(amountOutInt)
-				}
+				amount0 := new(big.Int)
+				amount1 := new(big.Int)
 
+				if common.HexToAddress(tokenIn.Address) == poolToken0 {
+					// tokenIn == pool token0: token0 -> token1
+					amount0 = new(big.Int).Neg(amountIn)
+					amount1 = amountOutInt
+				} else {
+					// tokenIn == pool token1: token1 -> token0
+					amount0 = amountOutInt
+					amount1 = new(big.Int).Neg(amountIn)
+				}
 				log.Infof("amount0: %v, amount1: %v\n", amount0, amount1)
 
 				slippage := computeSlippageV3(
@@ -305,22 +303,19 @@ func (scraper *SimulationScraperVersion2) simulateTradesVersion2(tradesChannel c
 
 				log.Infof("slippage in pool %v: %v", address, slippage)
 
+				// amountOut is scaled by tokenOut decimals
 				amountOutFloat := new(big.Float).SetInt(amountOutInt)
-				divisor := new(big.Float).SetInt(
+				divOut := new(big.Float).SetInt(
 					new(big.Int).Exp(
 						big.NewInt(10),
-						big.NewInt(int64(power)),
+						big.NewInt(int64(tokenOut.Decimals)),
 						nil,
 					),
 				)
-				amountOutFloat.Quo(amountOutFloat, divisor)
+				amountOutFloat.Quo(amountOutFloat, divOut)
 
+				// price = tokenIn per tokenOut
 				priceBig := new(big.Float).Quo(amountInAfterDecimalAdjust, amountOutFloat)
-
-				if ep.UnderlyingPair.QuoteToken.Address == poolToken0.Hex() {
-					priceBig = new(big.Float).Quo(amountOutFloat, amountInAfterDecimalAdjust)
-				}
-
 				price, _ := priceBig.Float64()
 				volume, _ := amountOutFloat.Float64()
 
