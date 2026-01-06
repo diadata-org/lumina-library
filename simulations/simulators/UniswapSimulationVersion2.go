@@ -209,6 +209,10 @@ func (p *PoolCallCache) Get(poolAddr common.Address, client *ethclient.Client) (
 	return data, nil
 }
 
+// getAmountIn converts a human amount (float64, in tokenIn units) into:
+// 1) amountInInt: the on-chain integer amount scaled by tokenIn decimals (used for Quoter/contract calls)
+// 2) amountInFloat: the same amount as a decimal-adjusted big.Float (used for price computation)
+// Example: amountIn=100, tokenIn.Decimals=6 -> (100*1e6, 100)
 func (scraper *SimulationScraperVersion2) getAmountIn(tokenIn models.Asset, amountIn float64) (*big.Int, *big.Float) {
 	decimals := big.NewInt(int64(tokenIn.Decimals))
 	exponent := new(big.Int).Exp(big.NewInt(10), decimals, nil)
@@ -216,6 +220,9 @@ func (scraper *SimulationScraperVersion2) getAmountIn(tokenIn models.Asset, amou
 
 	amountInF := new(big.Float).Mul(big.NewFloat(amountIn), exponentFloat)
 	amountInInt := new(big.Int)
+	// Truncate fractional part when converting to on-chain integer units.
+	// This is acceptable for simulation purposes since Uniswap contracts
+	// require integer amounts. Note: small inputs with low decimals may lose precision.
 	amountInF.Int(amountInInt)
 
 	amountInAfterDecimalAdjust := new(big.Float).Quo(amountInF, exponentFloat)
@@ -314,7 +321,7 @@ func (scraper *SimulationScraperVersion2) simulateTradesVersion2(tradesChannel c
 				)
 				amountOutFloat.Quo(amountOutFloat, divOut)
 
-				// price = tokenIn per tokenOut
+				// price is computed as tokenIn per tokenOut (amountIn / amountOut), matching the trade.Price convention.
 				priceBig := new(big.Float).Quo(amountInAfterDecimalAdjust, amountOutFloat)
 				price, _ := priceBig.Float64()
 				volume, _ := amountOutFloat.Float64()
