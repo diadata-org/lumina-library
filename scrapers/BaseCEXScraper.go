@@ -70,6 +70,7 @@ func NewBaseCEXScraper(
 	pairs []models.ExchangePair,
 	wg *sync.WaitGroup,
 	hooks ScraperHooks,
+	branchMarketConfig string,
 ) *BaseCEXScraper {
 	defer wg.Done()
 
@@ -118,7 +119,7 @@ func NewBaseCEXScraper(
 	go bs.runReadLoop(ctx, &lock)
 	go bs.runResubscribe(ctx, &lock)
 	go bs.runProcessUnsubscribe(ctx, &lock)
-	go bs.runWatchConfig(ctx, &lock)
+	go bs.runWatchConfig(ctx, &lock, branchMarketConfig)
 
 	for _, p := range pairs {
 		bs.startWatchdogForPair(ctx, &lock, p)
@@ -284,11 +285,16 @@ func (bs *BaseCEXScraper) runProcessUnsubscribe(ctx context.Context, lock *sync.
 	}
 }
 
-func (bs *BaseCEXScraper) runWatchConfig(ctx context.Context, lock *sync.RWMutex) {
+func (bs *BaseCEXScraper) runWatchConfig(ctx context.Context, lock *sync.RWMutex, branchMarketConfig string) {
 	ex := bs.hooks.ExchangeKey()
-	go WatchConfigLoop(ctx, ex, 3600, func(ctx context.Context, last, current map[string]int64) {
-		bs.applyConfigDiff(ctx, lock, last, current)
-	})
+	go WatchConfigLoop(
+		ctx,
+		ex,
+		3600,
+		func(ctx context.Context, last, current map[string]int64) {
+			bs.applyConfigDiff(ctx, lock, last, current, branchMarketConfig)
+		},
+		branchMarketConfig)
 }
 
 func WatchConfigLoop(
@@ -296,6 +302,7 @@ func WatchConfigLoop(
 	exKey string, // e.g. "MEXC" / hooks.ExchangeKey()
 	defaultIntervalSec int, // Base uses 3600
 	apply func(ctx context.Context, last, current map[string]int64),
+	branchMarketConfig string,
 ) {
 	envKey := strings.ToUpper(exKey) + "_WATCH_CONFIG_INTERVAL"
 	interval, err := strconv.Atoi(utils.Getenv(envKey, strconv.Itoa(defaultIntervalSec)))
@@ -307,7 +314,8 @@ func WatchConfigLoop(
 	ticker := time.NewTicker(time.Duration(interval) * time.Second)
 	defer ticker.Stop()
 
-	last, err := models.GetExchangePairMap(exKey)
+	// TO DO: Remove this github API call and hand over current exchangepairs instead.
+	last, err := models.GetExchangePairMap(exKey, branchMarketConfig)
 	if err != nil {
 		log.Errorf("%s - GetExchangePairMap: %v.", strings.ToUpper(exKey), err)
 		return
@@ -316,7 +324,7 @@ func WatchConfigLoop(
 	for {
 		select {
 		case <-ticker.C:
-			current, err := models.GetExchangePairMap(exKey)
+			current, err := models.GetExchangePairMap(exKey, branchMarketConfig)
 			if err != nil {
 				log.Errorf("%s - GetExchangePairMap: %v.", strings.ToUpper(exKey), err)
 				continue
@@ -330,7 +338,7 @@ func WatchConfigLoop(
 	}
 }
 
-func (bs *BaseCEXScraper) applyConfigDiff(ctx context.Context, lock *sync.RWMutex, last, current map[string]int64) {
+func (bs *BaseCEXScraper) applyConfigDiff(ctx context.Context, lock *sync.RWMutex, last, current map[string]int64, branchMarketConfig string) {
 	added, removed, changed := diffPairMap(last, current)
 
 	// removed -> unsubscribe
@@ -344,7 +352,7 @@ func (bs *BaseCEXScraper) applyConfigDiff(ctx context.Context, lock *sync.RWMute
 		delay := current[p]
 		log.Infof("%s - Added pair %s with delay %v.", strings.ToUpper(bs.hooks.ExchangeKey()), p, delay)
 
-		ep, err := bs.getExchangePairInfo(p, delay)
+		ep, err := bs.getExchangePairInfo(p, delay, branchMarketConfig)
 		if err != nil {
 			log.Errorf("%s - GetExchangePairInfo(%s) err: %v.", strings.ToUpper(bs.hooks.ExchangeKey()), p, err)
 			continue
@@ -366,7 +374,7 @@ func (bs *BaseCEXScraper) applyConfigDiff(ctx context.Context, lock *sync.RWMute
 	// changed -> restart watchdog (only delay)
 	for _, p := range changed {
 		newDelay := current[p]
-		bs.restartWatchdogForPair(ctx, lock, p, newDelay)
+		bs.restartWatchdogForPair(ctx, lock, p, newDelay, branchMarketConfig)
 	}
 }
 
@@ -398,8 +406,8 @@ func diffPairMap(last, current map[string]int64) (added, removed, changed []stri
 
 // ---------------- watchdog & config helper ----------------
 
-func (bs *BaseCEXScraper) getExchangePairInfo(foreignName string, delay int64) (models.ExchangePair, error) {
-	idMap, err := models.GetSymbolIdentificationMap(bs.hooks.ExchangeKey())
+func (bs *BaseCEXScraper) getExchangePairInfo(foreignName string, delay int64, branchMarketConfig string) (models.ExchangePair, error) {
+	idMap, err := models.GetSymbolIdentificationMap(bs.hooks.ExchangeKey(), branchMarketConfig)
 	if err != nil {
 		return models.ExchangePair{}, fmt.Errorf("GetSymbolIdentificationMap(%s): %w", bs.hooks.ExchangeKey(), err)
 	}
@@ -423,9 +431,9 @@ func (bs *BaseCEXScraper) stopWatchdogForPair(lock *sync.RWMutex, foreignName st
 	StopWatchdogForPair(lock, foreignName, bs.watchdogCancel)
 }
 
-func (bs *BaseCEXScraper) restartWatchdogForPair(ctx context.Context, lock *sync.RWMutex, foreignName string, newDelay int64) {
+func (bs *BaseCEXScraper) restartWatchdogForPair(ctx context.Context, lock *sync.RWMutex, foreignName string, newDelay int64, branchMarketConfig string) {
 	bs.stopWatchdogForPair(lock, foreignName)
-	ep, err := bs.getExchangePairInfo(foreignName, newDelay)
+	ep, err := bs.getExchangePairInfo(foreignName, newDelay, branchMarketConfig)
 	if err != nil {
 		log.Errorf("%s - GetExchangePairInfo(%s) err: %v.", strings.ToUpper(bs.hooks.ExchangeKey()), foreignName, err)
 		return

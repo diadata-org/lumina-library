@@ -43,7 +43,7 @@ func MakePoolMap(pools []Pool) map[string][]Pool {
 //	"exchange": { "Pools": [ { "Address": "...", "Order": "2", "WatchDogDelay": 300 }, ... ] }
 //
 // and returns []Pool, with Exchange.Name set to the input exchange (e.g. "UniswapV2").
-func PoolsFromConfigFile(exchange string) ([]Pool, error) {
+func PoolsFromConfigFile(exchange string, branchMarketConfig string) ([]Pool, error) {
 	type filePool struct {
 		Address       string `json:"Address"`
 		Order         string `json:"Order"`         // note: the file contains strings
@@ -53,7 +53,7 @@ func PoolsFromConfigFile(exchange string) ([]Pool, error) {
 		Pools []filePool `json:"Pools"`
 	}
 
-	jsonFile, err := GetConfig("pools", exchange)
+	jsonFile, err := utils.GetConfig("pools", exchange, branchMarketConfig)
 	if err != nil {
 		return nil, fmt.Errorf("GetConfig(pools, %s): %w", exchange, err)
 	}
@@ -88,7 +88,7 @@ func PoolsFromConfigFile(exchange string) ([]Pool, error) {
 }
 
 // aggregate multiple pools from multiple config files
-func PoolsFromConfigFiles(exchanges []string) ([]Pool, error) {
+func PoolsFromConfigFiles(exchanges []string, branchMarketConfig string) ([]Pool, error) {
 	if len(exchanges) == 0 {
 		return []Pool{}, nil
 	}
@@ -105,7 +105,7 @@ func PoolsFromConfigFiles(exchanges []string) ([]Pool, error) {
 		if ex == "" {
 			continue
 		}
-		pools, err := PoolsFromConfigFile(ex)
+		pools, err := PoolsFromConfigFile(ex, branchMarketConfig)
 		if err != nil {
 			errs = append(errs, err)
 			continue // do not interrupt, collect results from other exchanges

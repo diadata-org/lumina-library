@@ -44,6 +44,7 @@ type DEXHooks interface {
 		addr common.Address,
 		oldPool models.Pool,
 		newPool models.Pool,
+		branchMarketConfig string,
 		lock *sync.RWMutex,
 	)
 }
@@ -74,6 +75,7 @@ func NewBaseDEXScraper(
 	hooks DEXHooks,
 	pools []models.Pool,
 	tradesChannel chan models.Trade,
+	branchMarketConfig string,
 	wg *sync.WaitGroup,
 ) *BaseDEXScraper {
 	if wg != nil {
@@ -129,7 +131,7 @@ func NewBaseDEXScraper(
 	// Start generic handlers
 	base.startResubHandler(ctx, hooks, tradesChannel, &lock)
 	base.startUnsubHandler(ctx, hooks, &lock)
-	go base.watchConfig(ctx, hooks, tradesChannel, &lock, pools)
+	go base.watchConfig(ctx, hooks, tradesChannel, &lock, pools, branchMarketConfig)
 
 	return base
 }
@@ -360,6 +362,7 @@ func (b *BaseDEXScraper) watchConfig(
 	trades chan models.Trade,
 	lock *sync.RWMutex,
 	initialPools []models.Pool,
+	branchMarketConfig string,
 ) {
 	ex := hooks.ExchangeName()
 
@@ -377,13 +380,13 @@ func (b *BaseDEXScraper) watchConfig(
 	for {
 		select {
 		case <-tk.C:
-			nowList, err := models.PoolsFromConfigFile(ex)
+			nowList, err := models.PoolsFromConfigFile(ex, branchMarketConfig)
 			if err != nil {
 				log.Errorf("%s - reload pools: %v", ex, err)
 				continue
 			}
 			now := mapPoolsByAddrLower(nowList)
-			b.applyConfigDiff(ctx, hooks, last, now, trades, lock)
+			b.applyConfigDiff(ctx, hooks, last, now, trades, branchMarketConfig, lock)
 			last = now
 
 		case <-ctx.Done():
@@ -411,6 +414,7 @@ func (b *BaseDEXScraper) applyConfigDiff(
 	last map[string]models.Pool,
 	curr map[string]models.Pool,
 	trades chan models.Trade,
+	branchMarketConfig string,
 	lock *sync.RWMutex,
 ) {
 	ex := hooks.ExchangeName()
@@ -440,7 +444,7 @@ func (b *BaseDEXScraper) applyConfigDiff(
 		// Order changed
 		if old.Order != p.Order {
 			log.Infof("%s - update order %s: %d -> %d", ex, addr.Hex(), old.Order, p.Order)
-			hooks.OnOrderChanged(b, addr, old, p, lock)
+			hooks.OnOrderChanged(b, addr, old, p, branchMarketConfig, lock)
 		}
 
 		// Watchdog delay changed

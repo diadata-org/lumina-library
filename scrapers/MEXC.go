@@ -43,7 +43,7 @@ var (
 	maxSubscriptionPerConn = 20
 )
 
-func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, wg *sync.WaitGroup) Scraper {
+func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, branchMarketConfig string, wg *sync.WaitGroup) Scraper {
 	defer wg.Done()
 	log.Info("MEXC - Started scraper.")
 
@@ -94,7 +94,7 @@ func NewMEXCScraper(ctx context.Context, pairs []models.ExchangePair, wg *sync.W
 	}
 	go scraper.resubscribe(ctx)
 	go scraper.processUnsubscribe(ctx, &scraper.mu)
-	go scraper.watchConfig(ctx, &scraper.mu)
+	go scraper.watchConfig(ctx, &scraper.mu, branchMarketConfig)
 
 	// Check last trade time for each subscribed pair and resubscribe if no activity for more than @MEXCWatchdogDelayMap.
 	for _, pair := range pairs {
@@ -180,13 +180,19 @@ func (scraper *MEXCScraper) processUnsubscribe(ctx context.Context, lock *sync.R
 	}
 }
 
-func (scraper *MEXCScraper) watchConfig(ctx context.Context, lock *sync.RWMutex) {
+func (scraper *MEXCScraper) watchConfig(ctx context.Context, lock *sync.RWMutex, branchMarketConfig string) {
 	go WatchConfigLoop(ctx, MEXC_EXCHANGE, 30, func(ctx context.Context, last, current map[string]int64) {
-		scraper.applyConfigDiff(ctx, lock, last, current)
-	})
+		scraper.applyConfigDiff(ctx, lock, last, current, branchMarketConfig)
+	}, branchMarketConfig)
 }
 
-func (scraper *MEXCScraper) applyConfigDiff(ctx context.Context, lock *sync.RWMutex, last map[string]int64, current map[string]int64) {
+func (scraper *MEXCScraper) applyConfigDiff(
+	ctx context.Context,
+	lock *sync.RWMutex,
+	last map[string]int64,
+	current map[string]int64,
+	branchMarketConfig string,
+) {
 
 	added, removed, changed := diffPairMap(last, current)
 
@@ -203,7 +209,7 @@ func (scraper *MEXCScraper) applyConfigDiff(ctx context.Context, lock *sync.RWMu
 		delay := current[p]
 		log.Infof("MEXC - Added pair %s with delay %v.", p, delay)
 
-		ep, err := scraper.getExchangePairInfo(p, delay)
+		ep, err := scraper.getExchangePairInfo(p, delay, branchMarketConfig)
 		if err != nil {
 			log.Errorf("MEXC - Failed to GetExchangePairInfo for new pair %s: %v.", p, err)
 			continue
@@ -229,15 +235,21 @@ func (scraper *MEXCScraper) applyConfigDiff(ctx context.Context, lock *sync.RWMu
 	for _, p := range changed {
 		newDelay := current[p]
 		log.Infof("MEXC - Changed pair %s with delay %v.", p, newDelay)
-		scraper.restartWatchdogForPair(ctx, lock, p, newDelay)
+		scraper.restartWatchdogForPair(ctx, lock, p, newDelay, branchMarketConfig)
 	}
 }
 
-func (scraper *MEXCScraper) restartWatchdogForPair(ctx context.Context, lock *sync.RWMutex, foreignName string, newDelay int64) {
+func (scraper *MEXCScraper) restartWatchdogForPair(
+	ctx context.Context,
+	lock *sync.RWMutex,
+	foreignName string,
+	newDelay int64,
+	branchMarketConfig string,
+) {
 	// 1. Stop the watchdog for the pair.
 	scraper.stopWatchdogForPair(lock, foreignName)
 	// 2. Get the new exchange pair info (only for watchdog, no effect on subscription).
-	ep, err := scraper.getExchangePairInfo(foreignName, newDelay)
+	ep, err := scraper.getExchangePairInfo(foreignName, newDelay, branchMarketConfig)
 	if err != nil {
 		log.Errorf("MEXC - Failed to GetExchangePairInfo for changed pair %s: %v.", foreignName, err)
 		return
@@ -246,8 +258,8 @@ func (scraper *MEXCScraper) restartWatchdogForPair(ctx context.Context, lock *sy
 	scraper.startWatchdogForPair(ctx, lock, ep)
 }
 
-func (scraper *MEXCScraper) getExchangePairInfo(foreignName string, delay int64) (models.ExchangePair, error) {
-	idMap, err := models.GetSymbolIdentificationMap(MEXC_EXCHANGE)
+func (scraper *MEXCScraper) getExchangePairInfo(foreignName string, delay int64, branchMarketConfig string) (models.ExchangePair, error) {
+	idMap, err := models.GetSymbolIdentificationMap(MEXC_EXCHANGE, branchMarketConfig)
 	if err != nil {
 		return models.ExchangePair{}, fmt.Errorf("GetSymbolIdentificationMap(%s): %w", MEXC_EXCHANGE, err)
 	}
