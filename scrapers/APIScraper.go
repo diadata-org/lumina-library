@@ -309,6 +309,8 @@ func RunScraper(
 		NewUniswapV2Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, wg)
 	case UNISWAPV3_EXCHANGE:
 		NewUniswapV3Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, wg)
+	case UNISWAPV3_BASE_EXCHANGE:
+		NewUniswapV3Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, wg)
 	case PANCAKESWAPV3_EXCHANGE:
 		NewUniswapV3Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, wg)
 	case CURVE_EXCHANGE:
