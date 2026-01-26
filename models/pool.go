@@ -45,9 +45,10 @@ func MakePoolMap(pools []Pool) map[string][]Pool {
 // and returns []Pool, with Exchange.Name set to the input exchange (e.g. "UniswapV2").
 func PoolsFromConfigFile(exchange string, branchMarketConfig string) ([]Pool, error) {
 	type filePool struct {
-		Address       string `json:"Address"`
-		Order         string `json:"Order"`         // note: the file contains strings
-		WatchDogDelay int64  `json:"WatchDogDelay"` // optional, default to 300 if not provided
+		Address       string        `json:"Address"`
+		Order         string        `json:"Order"`         // note: the file contains strings
+		WatchDogDelay int64         `json:"WatchDogDelay"` // optional, default to 300 if not provided
+		AssetVolumes  []AssetVolume `json:"AssetVolumes"`
 	}
 	type fileSchema struct {
 		Pools []filePool `json:"Pools"`
@@ -77,11 +78,28 @@ func PoolsFromConfigFile(exchange string, branchMarketConfig string) ([]Pool, er
 		if wd <= 0 {
 			wd = 300
 		}
+
+		// Assetvolumes: if missing -> empty list
+		avs := make([]AssetVolume, 0, len(p.AssetVolumes))
+		for j, av := range p.AssetVolumes {
+			addr := strings.TrimSpace(av.Asset.Address)
+			if addr == "" {
+				log.Warnf("%s - pools[%d].Assetvolumes[%d] has empty asset address", exchange, i, j)
+				continue
+			}
+			avs = append(avs, AssetVolume{
+				Asset: Asset{
+					Address: addr,
+				},
+			})
+		}
+
 		out = append(out, Pool{
 			Exchange:      Exchange{Name: exchange},
 			Address:       p.Address,
 			Order:         ord,
 			WatchDogDelay: wd,
+			Assetvolumes:  avs,
 		})
 	}
 	return out, nil
