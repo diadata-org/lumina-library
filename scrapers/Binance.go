@@ -203,11 +203,12 @@ func (h *binanceHooks) LastTradeTimeKeyFromForeign(foreign string) string {
 func NewBinanceScraper(
 	ctx context.Context,
 	pairs []models.ExchangePair,
+	branchMarketConfig string,
 	wg *sync.WaitGroup,
 ) Scraper {
 	hooks := &binanceHooks{
 		apiConnectRetries: 0,
 		proxyIndex:        0,
 	}
-	return NewBaseCEXScraper(ctx, pairs, wg, hooks)
+	return NewBaseCEXScraper(ctx, pairs, wg, hooks, branchMarketConfig)
 }

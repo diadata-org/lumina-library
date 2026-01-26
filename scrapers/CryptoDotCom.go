@@ -235,7 +235,8 @@ func cryptodotcomParseTradeMessage(message cryptodotcomWSResponse) (trades []mod
 func NewCryptodotcomScraper(
 	ctx context.Context,
 	pairs []models.ExchangePair,
+	branchMarketConfig string,
 	wg *sync.WaitGroup,
 ) Scraper {
-	return NewBaseCEXScraper(ctx, pairs, wg, cryptodotcomHooks{})
+	return NewBaseCEXScraper(ctx, pairs, wg, cryptodotcomHooks{}, branchMarketConfig)
 }

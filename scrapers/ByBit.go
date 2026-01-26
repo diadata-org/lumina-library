@@ -123,6 +123,6 @@ func (bybitHooks) LastTradeTimeKeyFromForeign(foreign string) string {
 	return foreign // bybit's lastTradeTimeMap key use "QUOTE-BASE"
 }
 
-func NewByBitScraper(ctx context.Context, pairs []models.ExchangePair, wg *sync.WaitGroup) Scraper {
-	return NewBaseCEXScraper(ctx, pairs, wg, bybitHooks{})
+func NewByBitScraper(ctx context.Context, pairs []models.ExchangePair, branchMarketConfig string, wg *sync.WaitGroup) Scraper {
+	return NewBaseCEXScraper(ctx, pairs, wg, bybitHooks{}, branchMarketConfig)
 }

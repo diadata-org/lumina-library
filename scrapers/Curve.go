@@ -178,13 +178,14 @@ func (h *curveHooks) OnOrderChanged(
 	addr common.Address,
 	oldPool models.Pool,
 	newPool models.Pool,
+	branchMarketConfig string,
 	lock *sync.RWMutex,
 ) {
 	lock.Lock()
 	delete(h.s.poolMap, addr)
 	lock.Unlock()
 
-	_, err := h.s.ensureAllOrdersForAddress(context.Background(), base, addr, lock)
+	_, err := h.s.ensureAllOrdersForAddress(context.Background(), base, addr, branchMarketConfig, lock)
 	if err != nil {
 		log.Errorf("Curve - OnOrderChanged ensureAllOrdersForAddress %s: %v", addr.Hex(), err)
 	}
@@ -197,6 +198,7 @@ func NewCurveScraper(
 	blockchain string,
 	pools []models.Pool,
 	tradesChannel chan models.Trade,
+	branchMarketConfig string,
 	wg *sync.WaitGroup,
 ) {
 	if wg != nil {
@@ -212,7 +214,7 @@ func NewCurveScraper(
 	hooks := &curveHooks{s: scraper}
 
 	//let BaseDEXScraper manage: rest/ws client, watchdog, resub/unsub, config diff by address level
-	scraper.base = NewBaseDEXScraper(ctx, exchangeName, blockchain, hooks, pools, tradesChannel, nil)
+	scraper.base = NewBaseDEXScraper(ctx, exchangeName, blockchain, hooks, pools, tradesChannel, branchMarketConfig, nil)
 }
 
 // ensureAllOrdersForAddress:
@@ -223,11 +225,12 @@ func (s *CurveScraper) ensureAllOrdersForAddress(
 	ctx context.Context,
 	base *BaseDEXScraper,
 	addr common.Address,
+	branchMarketConfig string,
 	lock *sync.RWMutex,
 ) (maxDelay int64, err error) {
 	ex := s.exchange
 
-	pools, err := models.PoolsFromConfigFile(ex)
+	pools, err := models.PoolsFromConfigFile(ex, branchMarketConfig)
 	if err != nil {
 		return 0, fmt.Errorf("load pools for %s: %w", ex, err)
 	}

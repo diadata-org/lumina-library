@@ -177,7 +177,8 @@ func parseGateIOTrade(
 func NewGateIOScraper(
 	ctx context.Context,
 	pairs []models.ExchangePair,
+	branchMarketConfig string,
 	wg *sync.WaitGroup,
 ) Scraper {
-	return NewBaseCEXScraper(ctx, pairs, wg, gateIOHooks{})
+	return NewBaseCEXScraper(ctx, pairs, wg, gateIOHooks{}, branchMarketConfig)
 }

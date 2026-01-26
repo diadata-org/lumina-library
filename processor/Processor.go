@@ -25,12 +25,13 @@ func Processor(
 	metacontractClient *ethclient.Client,
 	metacontractAddress string,
 	metacontractPrecision int,
+	branchMarketConfig string,
 	wg *sync.WaitGroup,
 ) {
 
 	log.Info("Processor - Start......")
 	// Collector starts collecting trades in the background and sends atomic tradesblocks to @tradesblockChannel.
-	go scrapers.Collector(exchangePairs, pools, tradesblockChannel, triggerChannel, failoverChannel, wg)
+	go scrapers.Collector(exchangePairs, pools, tradesblockChannel, triggerChannel, failoverChannel, branchMarketConfig, wg)
 
 	// As soon as the trigger channel receives input a processing step is initiated.
 	for tradesblocks := range tradesblockChannel {

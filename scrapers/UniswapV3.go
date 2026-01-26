@@ -51,6 +51,7 @@ func NewUniswapV3Scraper(
 	blockchain string,
 	pools []models.Pool,
 	tradesChannel chan models.Trade,
+	branchMarketConfig string,
 	wg *sync.WaitGroup,
 ) *UniswapV3Scraper {
 	s := &UniswapV3Scraper{
@@ -65,7 +66,7 @@ func NewUniswapV3Scraper(
 	//  - initialize exchange / WS client
 	//  - subscribe/unsubscribe/watchdog logic
 	//  - dynamically add/remove pools from config file
-	s.base = NewBaseDEXScraper(ctx, exchangeName, blockchain, hooks, pools, tradesChannel, wg)
+	s.base = NewBaseDEXScraper(ctx, exchangeName, blockchain, hooks, pools, tradesChannel, branchMarketConfig, wg)
 	log.Infof("Started %s scraper.", exchangeName)
 	return s
 }
@@ -313,6 +314,7 @@ func (h *uniswapV3Hooks) OnOrderChanged(
 	addr common.Address,
 	oldPool models.Pool,
 	newPool models.Pool,
+	branchMarketConfig string,
 	lock *sync.RWMutex,
 ) {
 	lock.Lock()
