@@ -1,17 +1,11 @@
 package models
 
 import (
-	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"os"
-	"os/user"
 	"sort"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/diadata-org/lumina-library/utils"
 	"github.com/ethereum/go-ethereum/common"
@@ -20,11 +14,6 @@ import (
 
 // Separator for a pair ticker's assets, i.e. BTC-USDT.
 const PAIR_TICKER_SEPARATOR = "-"
-
-type GitHubContent struct {
-	Content  string `json:"content"`
-	Encoding string `json:"encoding"`
-}
 
 // ExchangePair is the container for a pair as used by exchanges.
 // Across exchanges, these pairs cannot be uniquely mapped on asset pairs.
@@ -59,102 +48,13 @@ func (p *Pair) Identifier() string {
 	return p.QuoteToken.Blockchain + "-" + p.QuoteToken.Address + "-" + p.BaseToken.Blockchain + "-" + p.BaseToken.Address
 }
 
-func getPath2Config(directory string) (string, error) {
-	usr, err := user.Current()
-	if err != nil {
-		return "", fmt.Errorf("error getting user: %v", err)
-	}
-	dir := usr.HomeDir
-	configPath := "/config/" + directory + "/"
-	if dir == "/root" || dir == "/home" {
-		return configPath, nil
-	}
-	return os.Getenv("GOPATH") + "/src/github.com/diadata-org/decentral-feeder" + configPath, nil
-}
-
-func getLocalConfig(directory string, exchange string) (data []byte, err error) {
-	configPath, err := getPath2Config(directory)
-	if err != nil {
-		return nil, err
-	}
-	path := configPath + exchange + ".json"
-	jsonFile, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	return jsonFile, nil
-}
-
-func readFromRemote(directory string, exchange string) ([]byte, error) {
-	url := "https://api.github.com/repos/diadata-org/decentral-feeder/contents/config/" + directory + "/" + exchange + ".json"
-
-	req, _ := http.NewRequest("GET", url, nil)
-
-	// Optional authentication
-	githubToken := utils.Getenv("GITHUB_TOKEN", "")
-	if githubToken != "" {
-		log.Info("Set github token for API requests.")
-		req.Header.Set("Authorization", "token "+githubToken)
-	}
-
-	time.Sleep(350 * time.Millisecond)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	// --- Rate limit handling ---
-	ratelimitRemaining, err := strconv.Atoi(resp.Header.Get("X-RateLimit-Remaining"))
-	if err != nil {
-		log.Error("rateLimitRemaining for github API calls: ", err)
-	}
-	log.Info("remaining github API calls: ", ratelimitRemaining)
-
-	// Only applies for anonymous calls or exhausted PAT limits
-	if ratelimitRemaining == 0 {
-		rateLimitReset, errParseInt := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64)
-		if errParseInt != nil {
-			log.Error("rateLimitReset for github API calls: ", errParseInt)
-		}
-
-		timeWait := rateLimitReset - time.Now().Unix()
-		if timeWait < 0 {
-			timeWait = 0
-		}
-
-		log.Warnf("rate limit reached, waiting for refresh in %v", time.Duration(timeWait)*time.Second)
-		time.Sleep(time.Duration(timeWait+30) * time.Second)
-
-		resp.Body.Close()
-		resp, err = http.DefaultClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Body.Close()
-	}
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		err = fmt.Errorf("GitHub API error: %s\n%s", resp.Status, string(body))
-		return nil, err
-	}
-
-	var gh GitHubContent
-	if err := json.NewDecoder(resp.Body).Decode(&gh); err != nil {
-		return nil, err
-	}
-
-	return base64.StdEncoding.DecodeString(gh.Content)
-}
-
 // According to pairs config file + symbol identifiers directory, construct []ExchangePair
 // - exchangeList:        List of exchange names (e.g. ["GateIO", "Binance"])
 // - return:              List of ExchangePairs with WatchDogDelay
 // - return err:          Error if any
-func ExchangePairsFromConfigFiles(exchangeList []string) (allExchangePairs []ExchangePair, err error) {
+func ExchangePairsFromConfigFiles(exchangeList []string, branch string) (allExchangePairs []ExchangePair, err error) {
 
+	// Handle edge cases
 	if len(exchangeList) == 0 {
 		return
 	}
@@ -164,15 +64,17 @@ func ExchangePairsFromConfigFiles(exchangeList []string) (allExchangePairs []Exc
 
 	for _, exchange := range exchangeList {
 		// 1) Read exchange pairs config (e.g. GateIO.json -> map["ETH-USDT"]watchdogDelay)
-		exPairMap, err := GetExchangePairMap(exchange)
+		exPairMap, err := GetExchangePairMap(exchange, branch)
 		if err != nil {
-			return nil, fmt.Errorf("GetExchangeConfig(%s): %w", exchange, err)
+			log.Errorf("GetExchangePairMap for %s: %v", exchange, err)
+			continue
 		}
 
 		// 2) Read symbol identifiers mapping (directory + exchange.json)
-		idMap, err := GetSymbolIdentificationMap(exchange)
+		idMap, err := GetSymbolIdentificationMap(exchange, branch)
 		if err != nil {
-			return nil, fmt.Errorf("GetSymbolIdentificationMap(%s): %w", exchange, err)
+			log.Errorf("GetSymbolIdentificationMap for %s: %v", exchange, err)
+			continue
 		}
 
 		// 3) To ensure stable output, sort pairs by name (exPairMap's key is "QUOTE-BASE")
@@ -187,14 +89,20 @@ func ExchangePairsFromConfigFiles(exchangeList []string) (allExchangePairs []Exc
 		for _, pair := range pairs {
 			ep, err := ConstructExchangePair(exchange, pair, exPairMap[pair], idMap)
 			if err != nil {
-				return nil, fmt.Errorf("ConstructExchangePair(%s, %s, %v): %w", exchange, pair, exPairMap[pair], err)
+				log.Errorf("ConstructExchangePair(%s, %s, %v): %v", exchange, pair, exPairMap[pair], err)
+				continue
 			}
 			exchangePairs = append(exchangePairs, ep)
 		}
 		allExchangePairs = append(allExchangePairs, exchangePairs...)
 	}
 
-	return allExchangePairs, nil
+	if len(allExchangePairs) == 0 {
+		err = errors.New("no verifiable exchangepairs available")
+		return
+	}
+
+	return
 }
 
 func ConstructExchangePair(exchange string, pair string, watchDogDelay int64, idMap map[string]Asset) (ExchangePair, error) {
@@ -229,24 +137,8 @@ func ConstructExchangePair(exchange string, pair string, watchDogDelay int64, id
 	return ep, nil
 }
 
-func GetConfig(directory string, exchange string) (data []byte, err error) {
-	jsonFile, err := readFromRemote(directory, exchange)
-	if err != nil {
-		log.Errorf("Failed to read %s from remote config for %s: %v", directory, exchange, err)
-		jsonFile, err = getLocalConfig(directory, exchange)
-		if err != nil {
-			log.Errorf("Failed to read %s from local config for %s: %v", directory, exchange, err)
-			return nil, err
-		}
-		log.Infof("Read %s from local config for %s", directory, exchange)
-	} else {
-		log.Infof("Read %s from remote config for %s", directory, exchange)
-	}
-	return jsonFile, nil
-}
-
-func GetExchangePairMap(exchange string) (map[string]int64, error) {
-	jsonFile, err := GetConfig("exchangePairs", exchange)
+func GetExchangePairMap(exchange string, branch string) (map[string]int64, error) {
+	jsonFile, err := utils.GetConfig("exchangePairs", exchange, branch)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,10 @@
 package models
 
-import "github.com/tkanos/gonfig"
+import (
+	"encoding/json"
+
+	"github.com/diadata-org/lumina-library/utils"
+)
 
 var (
 	CEX_SOURCE        = SourceType("CEX")
@@ -23,33 +27,35 @@ type Exchange struct {
 	Blockchain  string `json:"Blockchain"`
 }
 
+type IdentifiedAsset struct {
+	Exchange   string
+	Symbol     string
+	Blockchain string
+	Address    string
+	Decimals   uint8
+}
+
+type IdentifiedAssets struct {
+	Tokens []IdentifiedAsset
+}
+
 // GetSymbolIdentificationMap returns a map which maps an asset's symbol ticker from @exchange onto the underlying asset.
 // It assumes symbol mappings can be found in the file exchange.json at @configPath.
 // e.g. identificationMap["ETH_GateIO"] = Asset{Symbol: "ETH", Blockchain: "ETH", Address: "0x0000000000000000000000000000000000000000", Decimals: 18}
-func GetSymbolIdentificationMap(exchange string) (map[string]Asset, error) {
-	identificationMap := make(map[string]Asset)
-	type IdentifiedAsset struct {
-		Exchange   string
-		Symbol     string
-		Blockchain string
-		Address    string
-		Decimals   uint8
-	}
-	type IdentifiedAssets struct {
-		Tokens []IdentifiedAsset
-	}
-	var identifiedAssets IdentifiedAssets
-	configPath, configErr := getPath2Config("symbolIdentification")
-	if configErr != nil {
-		return nil, configErr
-	}
-	path := configPath + exchange + ".json"
-	err := gonfig.GetConf(path, &identifiedAssets)
+func GetSymbolIdentificationMap(exchange string, branch string) (map[string]Asset, error) {
+	jsonFile, err := utils.GetConfig("symbolIdentification", exchange, branch)
 	if err != nil {
-		return identificationMap, err
+		return nil, err
 	}
 
-	for _, t := range identifiedAssets.Tokens {
+	var ia IdentifiedAssets
+	if err := json.Unmarshal(jsonFile, &ia); err != nil {
+		return nil, err
+	}
+
+	identificationMap := make(map[string]Asset)
+
+	for _, t := range ia.Tokens {
 		identificationMap[ExchangeSymbolIdentifier(t.Symbol, t.Exchange)] = Asset{
 			Symbol:     t.Symbol,
 			Blockchain: t.Blockchain,
@@ -57,6 +63,7 @@ func GetSymbolIdentificationMap(exchange string) (map[string]Asset, error) {
 			Decimals:   t.Decimals,
 		}
 	}
+
 	return identificationMap, nil
 }
 

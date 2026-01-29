@@ -81,6 +81,7 @@ func (f *fakeDEXHooks) OnOrderChanged(
 	addr common.Address,
 	oldPool models.Pool,
 	newPool models.Pool,
+	branchMarketConfig string,
 	lock *sync.RWMutex,
 ) {
 	f.mu.Lock()
@@ -259,7 +260,7 @@ func TestBaseDEXScraper_ApplyConfigDiff_RemovedPool(t *testing.T) {
 	}
 	curr := map[string]models.Pool{}
 
-	go base.applyConfigDiff(ctx, hooks, last, curr, trades, &lock)
+	go base.applyConfigDiff(ctx, hooks, last, curr, trades, "", &lock)
 
 	// read an address from unsubscribeChannel, check if it is lastAddr
 	select {

@@ -26,13 +26,14 @@ func RunScraper(
 	pools []models.Pool,
 	tradesChannel chan models.Trade,
 	failoverChannel chan string,
+	branchMarketConfig string,
 	wg *sync.WaitGroup,
 ) {
 	switch exchange {
 	case BINANCE_EXCHANGE:
 
 		ctx, cancel := context.WithCancel(context.Background())
-		scraper := NewBinanceScraper(ctx, pairs, wg)
+		scraper := NewBinanceScraper(ctx, pairs, branchMarketConfig, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("BINANCE_WATCHDOG", "300"))
 		if err != nil {
@@ -63,7 +64,7 @@ func RunScraper(
 
 	case COINBASE_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
-		scraper := NewCoinBaseScraper(ctx, pairs, wg)
+		scraper := NewCoinBaseScraper(ctx, pairs, branchMarketConfig, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("COINBASE_WATCHDOG", "300"))
 		if err != nil {
@@ -93,7 +94,7 @@ func RunScraper(
 		}
 	case BYBIT_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
-		scraper := NewByBitScraper(ctx, pairs, wg)
+		scraper := NewByBitScraper(ctx, pairs, branchMarketConfig, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("BYBIT_WATCHDOG", "300"))
 		if err != nil {
@@ -124,7 +125,7 @@ func RunScraper(
 
 	case CRYPTODOTCOM_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
-		scraper := NewCryptodotcomScraper(ctx, pairs, wg)
+		scraper := NewCryptodotcomScraper(ctx, pairs, branchMarketConfig, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("CRYPTODOTCOM_WATCHDOG", "300"))
 		if err != nil {
@@ -154,7 +155,7 @@ func RunScraper(
 		}
 	case GATEIO_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
-		scraper := NewGateIOScraper(ctx, pairs, wg)
+		scraper := NewGateIOScraper(ctx, pairs, branchMarketConfig, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("GATEIO_WATCHDOG", "300"))
 		if err != nil {
@@ -184,7 +185,7 @@ func RunScraper(
 		}
 	case KRAKEN_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
-		scraper := NewKrakenScraper(ctx, pairs, wg)
+		scraper := NewKrakenScraper(ctx, pairs, branchMarketConfig, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("KRAKEN_WATCHDOG", "300"))
 		if err != nil {
@@ -214,7 +215,7 @@ func RunScraper(
 		}
 	case KUCOIN_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
-		scraper := NewKuCoinScraper(ctx, pairs, wg)
+		scraper := NewKuCoinScraper(ctx, pairs, branchMarketConfig, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("KUCOIN_WATCHDOG", "300"))
 		if err != nil {
@@ -244,7 +245,7 @@ func RunScraper(
 		}
 	case MEXC_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
-		scraper := NewMEXCScraper(ctx, pairs, wg)
+		scraper := NewMEXCScraper(ctx, pairs, branchMarketConfig, wg)
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("MEXC_WATCHDOG", "300"))
 		if err != nil {
 			log.Errorf("parse MEXC_WATCHDOG: %v.", err)
@@ -274,7 +275,7 @@ func RunScraper(
 
 	case OKEX_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
-		scraper := NewOKExScraper(ctx, pairs, wg)
+		scraper := NewOKExScraper(ctx, pairs, branchMarketConfig, wg)
 
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("OKEX_WATCHDOG", "300"))
 		if err != nil {
@@ -304,17 +305,17 @@ func RunScraper(
 		}
 
 	case UNISWAPV2_EXCHANGE:
-		NewUniswapV2Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, wg)
+		NewUniswapV2Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	case UNISWAPV2_BASE_EXCHANGE:
-		NewUniswapV2Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, wg)
+		NewUniswapV2Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	case UNISWAPV3_EXCHANGE:
-		NewUniswapV3Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, wg)
+    NewUniswapV3Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	case UNISWAPV3_BASE_EXCHANGE:
-		NewUniswapV3Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, wg)
+		NewUniswapV3Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	case PANCAKESWAPV3_EXCHANGE:
-		NewUniswapV3Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, wg)
+		NewUniswapV3Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	case CURVE_EXCHANGE:
-		NewCurveScraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, wg)
+		NewCurveScraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	}
 }
 

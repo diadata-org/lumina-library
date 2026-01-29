@@ -15,6 +15,7 @@ func Collector(
 	tradesblockChannel chan map[string]models.TradesBlock,
 	triggerChannel chan time.Time,
 	failoverChannel chan string,
+	branchMarketConfig string,
 	wg *sync.WaitGroup,
 ) {
 
@@ -30,11 +31,11 @@ func Collector(
 	tradesChannelIn := make(chan models.Trade)
 	for exchange := range exchangepairMap {
 		wg.Add(1)
-		go RunScraper(context.Background(), exchange, exchangepairMap[exchange], []models.Pool{}, tradesChannelIn, failoverChannel, wg)
+		go RunScraper(context.Background(), exchange, exchangepairMap[exchange], []models.Pool{}, tradesChannelIn, failoverChannel, branchMarketConfig, wg)
 	}
 	for exchange := range poolMap {
 		wg.Add(1)
-		go RunScraper(context.Background(), exchange, []models.ExchangePair{}, poolMap[exchange], tradesChannelIn, failoverChannel, wg)
+		go RunScraper(context.Background(), exchange, []models.ExchangePair{}, poolMap[exchange], tradesChannelIn, failoverChannel, branchMarketConfig, wg)
 	}
 
 	// tradesblockMap maps an exchangpair identifier onto a TradesBlock.
@@ -83,12 +84,21 @@ func Collector(
 				log.Debugf("Collector - Restart scraper for %s.", exchange)
 				wg.Add(1)
 				cexLists := []string{exchange}
-				exchangePairs, epErr := models.ExchangePairsFromConfigFiles(cexLists)
+				exchangePairs, epErr := models.ExchangePairsFromConfigFiles(cexLists, branchMarketConfig)
 				if epErr != nil {
 					log.Fatal("Read exchange pairs from latest config: ", epErr)
 				}
 				newExchangepairMap := models.MakeExchangepairMap(exchangePairs)
-				go RunScraper(context.Background(), exchange, newExchangepairMap[exchange], []models.Pool{}, tradesChannelIn, failoverChannel, wg)
+				go RunScraper(
+					context.Background(),
+					exchange,
+					newExchangepairMap[exchange],
+					[]models.Pool{},
+					tradesChannelIn,
+					failoverChannel,
+					branchMarketConfig,
+					wg,
+				)
 			}
 		}
 	}()

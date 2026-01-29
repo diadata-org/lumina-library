@@ -130,6 +130,7 @@ func (h *uniswapV2Hooks) OnOrderChanged(
 	addr common.Address,
 	oldPool models.Pool,
 	newPool models.Pool,
+	branchMarketConfig string,
 	lock *sync.RWMutex,
 ) {
 	lock.Lock()
@@ -146,6 +147,7 @@ func NewUniswapV2Scraper(
 	blockchain string,
 	pools []models.Pool,
 	tradesChannel chan models.Trade,
+	branchMarketConfig string,
 	wg *sync.WaitGroup,
 ) *UniswapV2Scraper {
 	log.Infof("Started %s scraper.", exchangeName)
@@ -155,7 +157,7 @@ func NewUniswapV2Scraper(
 	}
 	hooks := &uniswapV2Hooks{s: s, exchangeName: exchangeName}
 
-	base := NewBaseDEXScraper(ctx, exchangeName, blockchain, hooks, pools, tradesChannel, wg)
+	base := NewBaseDEXScraper(ctx, exchangeName, blockchain, hooks, pools, tradesChannel, branchMarketConfig, wg)
 	s.base = base
 
 	return s
