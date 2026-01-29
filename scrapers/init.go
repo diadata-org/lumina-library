@@ -21,6 +21,7 @@ const (
 	UNISWAPV2_EXCHANGE      = "UniswapV2"
 	UNISWAPV2_BASE_EXCHANGE = "UniswapV2_Base"
 	UNISWAPV3_EXCHANGE      = "UniswapV3"
+	UNISWAPV3_BASE_EXCHANGE = "UniswapV3_Base"
 	PANCAKESWAPV3_EXCHANGE  = "PancakeswapV3"
 	UNISWAP_SIMULATION      = "UniswapSimulation"
 )
@@ -48,6 +49,7 @@ func init() {
 	Exchanges[UNISWAPV2_EXCHANGE] = models.Exchange{Name: UNISWAPV2_EXCHANGE, Centralized: false, Blockchain: utils.ETHEREUM}
 	Exchanges[UNISWAPV2_BASE_EXCHANGE] = models.Exchange{Name: UNISWAPV2_BASE_EXCHANGE, Centralized: false, Blockchain: utils.BASE}
 	Exchanges[UNISWAPV3_EXCHANGE] = models.Exchange{Name: UNISWAPV3_EXCHANGE, Centralized: false, Blockchain: utils.ETHEREUM}
+	Exchanges[UNISWAPV3_BASE_EXCHANGE] = models.Exchange{Name: UNISWAPV3_BASE_EXCHANGE, Centralized: false, Blockchain: utils.BASE}
 
 	log = logrus.New()
 	loglevel, err := logrus.ParseLevel(utils.Getenv("LOG_LEVEL_SCRAPERS", "info"))
