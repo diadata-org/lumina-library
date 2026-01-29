@@ -174,7 +174,7 @@ func (h *uniswapV4Hooks) StartStream(
 	log.Infof("%s - subscribe to %s with pair %s ",
 		h.ExchangeName(), pair.PoolHex, pair.Token0.Symbol+"-"+pair.Token1.Symbol)
 
-	sink, sub, err := s.GetSwapsChannel(base, pair)
+	sink, sub, err := s.GetSwapsChannel(ctx, base, pair)
 	if err != nil {
 		log.Errorf("%s - error fetching swaps channel for %s (poolId=%s): %v", h.ExchangeName(), addrKey.Hex(), pair.PoolHex, err)
 		return
@@ -197,7 +197,7 @@ func (h *uniswapV4Hooks) StartStream(
 					return
 				}
 
-				swap := s.normalizeUniV4Swap(*rawSwap, pair)
+				swap := s.normalizeUniV4Swap(ctx, base, *rawSwap, pair)
 				price, volume := getSwapDataUniV4(swap)
 				if math.IsNaN(price) || math.IsInf(price, 0) || price == 0 {
 					log.Debugf("%s - skip zero/+inf price, tx=%s", h.ExchangeName(), swap.ID)
@@ -282,6 +282,7 @@ func (h *uniswapV4Hooks) OnOrderChanged(
 // ============ UniV4 channel + normalize ============
 
 func (s *UniswapV4Scraper) GetSwapsChannel(
+	ctx context.Context,
 	base *BaseDEXScraper,
 	pair UniV4Pair,
 ) (chan *poolmanager.PoolManagerSwap, event.Subscription, error) {
@@ -299,7 +300,7 @@ func (s *UniswapV4Scraper) GetSwapsChannel(
 	}
 
 	sub, err := filterer.WatchSwap(
-		&bind.WatchOpts{Context: context.Background()},
+		&bind.WatchOpts{Context: ctx},
 		sink,
 		[][32]byte{pair.PoolID},
 		[]common.Address{},
@@ -313,20 +314,23 @@ func (s *UniswapV4Scraper) GetSwapsChannel(
 }
 
 // normalizeUniV4Swap converts raw event amounts into scaled float64 amounts (signed).
-func (s *UniswapV4Scraper) normalizeUniV4Swap(ev poolmanager.PoolManagerSwap, pair UniV4Pair) (normalizedSwap UniswapV4Swap) {
+func (s *UniswapV4Scraper) normalizeUniV4Swap(ctx context.Context, base *BaseDEXScraper, ev poolmanager.PoolManagerSwap, pair UniV4Pair) (normalizedSwap UniswapV4Swap) {
 	amount0, _ := new(big.Float).Quo(new(big.Float).SetInt(ev.Amount0), pair.Divisor0).Float64()
 	amount1, _ := new(big.Float).Quo(new(big.Float).SetInt(ev.Amount1), pair.Divisor1).Float64()
 
 	id := ev.Raw.TxHash.Hex()
 
 	id = fmt.Sprintf("%s:%d", id, ev.Raw.Index)
-
 	normalizedSwap = UniswapV4Swap{
 		ID:        id,
 		Timestamp: time.Now().Unix(),
 		Pair:      pair,
 		Amount0:   amount0,
 		Amount1:   amount1,
+	}
+	block, err := base.RESTClient().BlockByNumber(ctx, big.NewInt(int64(ev.Raw.BlockNumber)))
+	if err == nil {
+		normalizedSwap.Timestamp = int64(block.Time())
 	}
 	return
 }
