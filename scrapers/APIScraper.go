@@ -309,7 +309,7 @@ func RunScraper(
 	case UNISWAPV2_BASE_EXCHANGE:
 		NewUniswapV2Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	case UNISWAPV3_EXCHANGE:
-    NewUniswapV3Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
+		NewUniswapV3Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	case UNISWAPV3_BASE_EXCHANGE:
 		NewUniswapV3Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	case PANCAKESWAPV3_EXCHANGE:
@@ -318,6 +318,8 @@ func RunScraper(
 		NewUniswapV4Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	case CURVE_EXCHANGE:
 		NewCurveScraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
+	case AERODROMESLIPSTREAM_EXCHANGE:
+		NewAerodromeSlipstreamScraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	}
 }
 
