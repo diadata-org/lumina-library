@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	clpool "github.com/diadata-org/lumina-library/contracts/aerodrome/slipstream/clpool"
+	UniswapV3Pair "github.com/diadata-org/lumina-library/contracts/uniswapv3/uniswapV3Pair"
 	"github.com/diadata-org/lumina-library/models"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -93,8 +93,7 @@ func (h *aerodromeSlipstreamHooks) EnsurePair(
 	lock.RUnlock()
 
 	if !ok {
-		// CLPool caller (REST client)
-		caller, err := clpool.NewClpoolCaller(addr, base.RESTClient())
+		caller, err := UniswapV3Pair.NewUniswapV3PairCaller(addr, base.RESTClient())
 		if err != nil {
 			return addr, 0, err
 		}
@@ -185,7 +184,7 @@ func (h *aerodromeSlipstreamHooks) StartStream(
 				swap := s.normalizeSlipstreamSwap(ctx, base, *rawSwap)
 
 				price, volume := getSwapDataSlipstream(swap)
-				if math.IsNaN(price) || math.IsInf(price, 0) || price == 0 {
+				if math.IsNaN(price) || math.IsInf(price, 0) {
 					log.Debugf("%s - skip zero/+inf price, tx=%s", h.ExchangeName(), swap.ID)
 					continue
 				}
@@ -265,20 +264,20 @@ func (h *aerodromeSlipstreamHooks) OnOrderChanged(
 	h.s.poolMap[addr] = pair
 }
 
-// GetSwapsChannel subscribes to Slipstream CLPool Swap events (WS).
+// GetSwapsChannel subscribes to UniswapV3Pair Swap events (WS).
 func (s *AerodromeSlipstreamScraper) GetSwapsChannel(
 	base *BaseDEXScraper,
 	poolAddress common.Address,
-) (chan *clpool.ClpoolSwap, event.Subscription, error) {
+) (chan *UniswapV3Pair.UniswapV3PairSwap, event.Subscription, error) {
 
 	wsClient := base.WSClient()
 	if wsClient == nil {
 		return nil, nil, fmt.Errorf("WS client is nil for pool %s", poolAddress.Hex())
 	}
 
-	sink := make(chan *clpool.ClpoolSwap)
+	sink := make(chan *UniswapV3Pair.UniswapV3PairSwap)
 
-	filterer, err := clpool.NewClpoolFilterer(poolAddress, wsClient)
+	filterer, err := UniswapV3Pair.NewUniswapV3PairFilterer(poolAddress, wsClient)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -298,7 +297,7 @@ func (s *AerodromeSlipstreamScraper) GetSwapsChannel(
 	return sink, sub, nil
 }
 
-func (s *AerodromeSlipstreamScraper) normalizeSlipstreamSwap(ctx context.Context, base *BaseDEXScraper, ev clpool.ClpoolSwap) (normalized AerodromeSlipstreamSwap) {
+func (s *AerodromeSlipstreamScraper) normalizeSlipstreamSwap(ctx context.Context, base *BaseDEXScraper, ev UniswapV3Pair.UniswapV3PairSwap) (normalized AerodromeSlipstreamSwap) {
 	pair := s.poolMap[ev.Raw.Address]
 
 	// Scale amounts by token decimals, keep sign.
@@ -325,6 +324,12 @@ func getSwapDataSlipstream(swap AerodromeSlipstreamSwap) (price float64, volume 
 		log.Warnf("Invalid swap data: Amount0=0 for tx %s", swap.ID)
 		return 0, 0
 	}
+
+	if swap.Amount1 == 0 {
+		log.Warnf("Invalid swap data: Amount1=0 for tx %s", swap.ID)
+		return 0, 0
+	}
+
 	price = math.Abs(swap.Amount1 / swap.Amount0)
 	return
 }
