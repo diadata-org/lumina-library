@@ -83,7 +83,7 @@ func GetSourceType(exchange Exchange) SourceType {
 func GetOracleKey(sourceType SourceType, pair Pair) string {
 	switch sourceType {
 	case SourceType(""):
-		return pair.QuoteToken.Symbol + "/USD"
+		return pair.QuoteToken.Blockchain + "-" + pair.QuoteToken.Address + "-" + pair.QuoteToken.Symbol + "/USD"
 	case SIMULATION_SOURCE:
 		return string(SIMULATION_SOURCE) + ":" + pair.QuoteToken.Blockchain + "-" + pair.QuoteToken.Address + "-" + pair.QuoteToken.Symbol + "/USD"
 	case DEX_SOURCE:
