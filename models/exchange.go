@@ -97,6 +97,6 @@ func GetOracleKey(sourceType SourceType, pair Pair) string {
 // corresponding value in an oracle. It is restricted to values originating from simulated DEX pools.
 func GetOracleKeySimulation(pair Pair) string {
 
-	return pair.QuoteToken.Symbol + "/USD"
+	return pair.QuoteToken.Blockchain + "-" + pair.QuoteToken.Address + "-" + pair.QuoteToken.Symbol + "/USD"
 
 }
