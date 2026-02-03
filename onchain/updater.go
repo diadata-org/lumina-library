@@ -98,7 +98,7 @@ func OracleUpdateExecutor(
 
 			key := models.GetOracleKey(fp.SourceType, fp.Pair)
 			keys = append(keys, key)
-			// keys = append(keys, fp.Pair.QuoteToken.Symbol+"/USD")
+			// keys = append(keys, fp.Pair.QuoteToken.Blockchain + "-" + fp.Pair.QuoteToken.Address + "-" + fp.Pair.QuoteToken.Symbol + "/USD")
 			values = append(values, int64(fp.Value*math.Pow10(int(DECIMALS_ORACLE_VALUE))))
 		}
 		err := updateOracleMultiValues(conn, contract, auth, chainId, keys, values, timestamp)

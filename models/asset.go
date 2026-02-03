@@ -69,7 +69,7 @@ func (a *Asset) GetOnchainPrice(
 		return
 	}
 
-	priceBig, timeUnixBig, err := caller.GetValue(&bind.CallOpts{}, a.Symbol+"/USD")
+	priceBig, timeUnixBig, err := caller.GetValue(&bind.CallOpts{}, a.Blockchain+"-"+a.Address+"-"+a.Symbol+"/USD")
 	if err != nil {
 		return
 	}
