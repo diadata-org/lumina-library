@@ -319,7 +319,7 @@ func RunScraper(
 	case CURVE_EXCHANGE:
 		NewCurveScraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	case AERODROMESLIPSTREAM_EXCHANGE:
-		NewAerodromeSlipstreamScraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
+		NewUniswapV3Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	}
 }
 
