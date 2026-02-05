@@ -164,130 +164,57 @@ func (h *uniswapV3Hooks) StartStream(
 	log.Infof("%s - subscribe to %s with pair %s",
 		h.ExchangeName(), addr.Hex(), pair.Token0.Symbol+"-"+pair.Token1.Symbol)
 
-	// -------- PancakeswapV3 --------
-	if base.exchange.Name == PANCAKESWAPV3_EXCHANGE {
-		sink, sub, err := s.GetPancakeSwapsChannel(base, addr)
-		if err != nil {
-			log.Errorf("PancakeswapV3 - error fetching swaps channel for %s: %v", addr.Hex(), err)
-			return
-		}
-
-		go func() {
-			for {
-				select {
-				case rawSwap, ok := <-sink:
-					if !ok {
-						log.Infof("PancakeswapV3 - swaps channel closed for %s", addr.Hex())
-						return
-					}
-
-					swap := s.normalizeUniV3Swap(*rawSwap)
-					price, volume := getSwapDataUniV3(swap)
-					if math.IsNaN(price) || math.IsInf(price, 0) || price == 0 {
-						log.Debugf("PancakeswapV3 - skip zero/+inf price, tx=%s", swap.ID)
-						continue
-					}
-
-					t := makeTrade(
-						pair,
-						price,
-						volume,
-						time.Unix(swap.Timestamp, 0),
-						addr,
-						swap.ID,
-						base.exchange.Name,
-						base.exchange.Blockchain,
-					)
-
-					base.UpdateLastTradeTime(addr, t.Time, lock)
-
-					switch pair.Order {
-					case 0:
-						tradesChan <- t
-					case 1:
-						t.SwapTrade()
-						tradesChan <- t
-					case 2:
-						logTrade(t)
-						tradesChan <- t
-						t.SwapTrade()
-						tradesChan <- t
-					}
-					logTrade(t)
-
-				case err := <-sub.Err():
-					log.Errorf("PancakeswapV3 - subscription error for pool %s: %v", addr.Hex(), err)
-					base.SubscribeChannel() <- addr
-					return
-
-				case <-ctx.Done():
-					log.Infof("PancakeswapV3 - shutting down stream for %s", addr.Hex())
-					sub.Unsubscribe()
-					return
-				}
-			}
-		}()
-
-		return
-	}
-
-	// -------- UniswapV3 --------
-	sink, sub, err := s.GetSwapsChannel(base, addr)
+	sink, sub, err := s.GetAnySwapsChannel(base, addr)
 	if err != nil {
-		log.Errorf("UniswapV3 - error fetching swaps channel for %s: %v", addr.Hex(), err)
+		log.Errorf("%s - error fetching swaps channel for %s: %v", h.ExchangeName(), addr.Hex(), err)
 		return
 	}
 
 	go func() {
 		for {
-			select {
-			case rawSwap, ok := <-sink:
-				if !ok {
-					log.Infof("UniswapV3 - swaps channel closed for %s", addr.Hex())
+			switch ch := sink.(type) {
+
+			case chan *UniswapV3Pair.UniswapV3PairSwap:
+				select {
+				case rawSwap, ok := <-ch:
+					if !ok {
+						log.Infof("%s - swaps channel closed for %s", h.ExchangeName(), addr.Hex())
+						return
+					}
+					s.processOneSwap(base, pair, addr, rawSwap, tradesChan, lock)
+
+				case <-ctx.Done():
+					log.Infof("%s - shutting down stream for %s", h.ExchangeName(), addr.Hex())
+					sub.Unsubscribe()
+					return
+				case err := <-sub.Err():
+					log.Errorf("%s - subscription error for pool %s: %v", h.ExchangeName(), addr.Hex(), err)
+					base.SubscribeChannel() <- addr
 					return
 				}
 
-				swap := s.normalizeUniV3Swap(*rawSwap)
-				price, volume := getSwapDataUniV3(swap)
-				if math.IsNaN(price) || math.IsInf(price, 0) || price == 0 {
-					log.Debugf("UniswapV3 - skip zero/+inf price, tx=%s", swap.ID)
-					continue
+			case chan *PancakeswapV3Pair.Pancakev3pairSwap:
+				select {
+				case rawSwap, ok := <-ch:
+					if !ok {
+						log.Infof("%s - swaps channel closed for %s", h.ExchangeName(), addr.Hex())
+						return
+					}
+					s.processOneSwap(base, pair, addr, rawSwap, tradesChan, lock)
+
+				case <-ctx.Done():
+					log.Infof("%s - shutting down stream for %s", h.ExchangeName(), addr.Hex())
+					sub.Unsubscribe()
+					return
+
+				case err := <-sub.Err():
+					log.Errorf("%s - subscription error for pool %s: %v", h.ExchangeName(), addr.Hex(), err)
+					base.SubscribeChannel() <- addr
+					return
 				}
 
-				t := makeTrade(
-					pair,
-					price,
-					volume,
-					time.Unix(swap.Timestamp, 0),
-					addr,
-					swap.ID,
-					base.exchange.Name,
-					base.exchange.Blockchain,
-				)
-
-				base.UpdateLastTradeTime(addr, t.Time, lock)
-
-				switch pair.Order {
-				case 0:
-					tradesChan <- t
-				case 1:
-					t.SwapTrade()
-					tradesChan <- t
-				case 2:
-					logTrade(t)
-					tradesChan <- t
-					t.SwapTrade()
-					tradesChan <- t
-				}
-				logTrade(t)
-
-			case err := <-sub.Err():
-				log.Errorf("UniswapV3 - subscription error for pool %s: %v", addr.Hex(), err)
-				base.SubscribeChannel() <- addr
-				return
-
-			case <-ctx.Done():
-				log.Infof("UniswapV3 - shutting down stream for %s", addr.Hex())
+			default:
+				log.Errorf("%s - unsupported swap channel type for %s", h.ExchangeName(), addr.Hex())
 				sub.Unsubscribe()
 				return
 			}
@@ -395,7 +322,7 @@ func (s *UniswapV3Scraper) GetPancakeSwapsChannel(
 // normalizeUniV3Swap takes a swap as returned by the swap contract's channel and converts it to a UniswapV3Swap type.
 func (s *UniswapV3Scraper) normalizeUniV3Swap(swapI interface{}) (normalizedSwap UniswapV3Swap) {
 	switch swap := swapI.(type) {
-	case UniswapV3Pair.UniswapV3PairSwap:
+	case *UniswapV3Pair.UniswapV3PairSwap:
 		pair := s.poolMap[swap.Raw.Address]
 		amount0, _ := new(big.Float).Quo(new(big.Float).SetInt(swap.Amount0), pair.Divisor0).Float64()
 		amount1, _ := new(big.Float).Quo(new(big.Float).SetInt(swap.Amount1), pair.Divisor1).Float64()
@@ -406,7 +333,7 @@ func (s *UniswapV3Scraper) normalizeUniV3Swap(swapI interface{}) (normalizedSwap
 			Amount0:   amount0,
 			Amount1:   amount1,
 		}
-	case PancakeswapV3Pair.Pancakev3pairSwap:
+	case *PancakeswapV3Pair.Pancakev3pairSwap:
 		pair := s.poolMap[swap.Raw.Address]
 		amount0, _ := new(big.Float).Quo(new(big.Float).SetInt(swap.Amount0), pair.Divisor0).Float64()
 		amount1, _ := new(big.Float).Quo(new(big.Float).SetInt(swap.Amount1), pair.Divisor1).Float64()
@@ -460,4 +387,61 @@ func logTrade(t models.Trade) {
 	log.Debugf(
 		"Got trade at time %v - symbol: %s, pair: %s, price: %v, volume:%v",
 		t.Time, t.QuoteToken.Symbol, t.QuoteToken.Symbol+"-"+t.BaseToken.Symbol, t.Price, t.Volume)
+}
+
+func (s *UniswapV3Scraper) GetAnySwapsChannel(
+	base *BaseDEXScraper,
+	pairAddress common.Address,
+) (sink interface{}, sub event.Subscription, err error) {
+
+	switch base.exchange.Name {
+	case PANCAKESWAPV3_EXCHANGE:
+		return s.GetPancakeSwapsChannel(base, pairAddress)
+	default:
+		return s.GetSwapsChannel(base, pairAddress)
+	}
+}
+
+func (s *UniswapV3Scraper) processOneSwap(
+	base *BaseDEXScraper,
+	pair UniV3Pair,
+	addr common.Address,
+	rawSwap interface{},
+	tradesChan chan models.Trade,
+	lock *sync.RWMutex,
+) {
+	swap := s.normalizeUniV3Swap(rawSwap)
+
+	price, volume := getSwapDataUniV3(swap)
+	if math.IsNaN(price) || math.IsInf(price, 0) || price == 0 {
+		log.Debugf("%s - skip zero/+inf price, tx=%s", base.exchange.Name, swap.ID)
+		return
+	}
+
+	t := makeTrade(
+		pair,
+		price,
+		volume,
+		time.Unix(swap.Timestamp, 0),
+		addr,
+		swap.ID,
+		base.exchange.Name,
+		base.exchange.Blockchain,
+	)
+
+	base.UpdateLastTradeTime(addr, t.Time, lock)
+
+	switch pair.Order {
+	case 0:
+		tradesChan <- t
+	case 1:
+		t.SwapTrade()
+		tradesChan <- t
+	case 2:
+		logTrade(t)
+		tradesChan <- t
+		t.SwapTrade()
+		tradesChan <- t
+	}
+	logTrade(t)
 }
