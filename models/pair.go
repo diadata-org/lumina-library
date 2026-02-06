@@ -209,3 +209,22 @@ func GetWhitelistedPoolsFromConfig(exchange string) (whitelistedPools []common.A
 	}
 	return
 }
+
+func (p Pair) GetOracleKey(sourceType SourceType) string {
+	switch sourceType {
+	case SourceType(""):
+		return p.QuoteToken.GetOracleKey("USD")
+	case SIMULATION_SOURCE:
+		return string(SIMULATION_SOURCE) + ":" + p.QuoteToken.GetOracleKey("USD")
+	case DEX_SOURCE:
+		return string(DEX_SOURCE) + ":" + p.QuoteToken.GetOracleKey("USD")
+	default:
+		return ""
+	}
+}
+
+func (pair Pair) GetOracleKeySimulation() string {
+
+	return pair.QuoteToken.Blockchain + "-" + pair.QuoteToken.Address + "-" + pair.QuoteToken.Symbol + "/USD"
+
+}

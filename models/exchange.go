@@ -77,26 +77,3 @@ func GetSourceType(exchange Exchange) SourceType {
 	}
 	return SourceType("")
 }
-
-// GetOracleKey returns a key for an asset (or a pair) that can be used for calling the
-// corresponding value in an oracle.
-func GetOracleKey(sourceType SourceType, pair Pair) string {
-	switch sourceType {
-	case SourceType(""):
-		return pair.QuoteToken.Blockchain + "-" + pair.QuoteToken.Address + "-" + pair.QuoteToken.Symbol + "/USD"
-	case SIMULATION_SOURCE:
-		return string(SIMULATION_SOURCE) + ":" + pair.QuoteToken.Blockchain + "-" + pair.QuoteToken.Address + "-" + pair.QuoteToken.Symbol + "/USD"
-	case DEX_SOURCE:
-		return string(DEX_SOURCE) + ":" + pair.QuoteToken.Blockchain + "-" + pair.QuoteToken.Address + "-" + pair.QuoteToken.Symbol + "/USD"
-	default:
-		return ""
-	}
-}
-
-// GetOracleKeySimulation returns a key for an asset (or a pool) that can be used for calling the
-// corresponding value in an oracle. It is restricted to values originating from simulated DEX pools.
-func GetOracleKeySimulation(pair Pair) string {
-
-	return pair.QuoteToken.Blockchain + "-" + pair.QuoteToken.Address + "-" + pair.QuoteToken.Symbol + "/USD"
-
-}
