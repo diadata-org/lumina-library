@@ -2,6 +2,7 @@ package scrapers
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/big"
 	"sync"
@@ -169,7 +170,7 @@ func (s *AerodromeV1Scraper) watchSwaps(
 	}
 	log.Infof("AerodromeV1 - subscribe to %s with pair %s", address.Hex(), pair.Token0.Symbol+"-"+pair.Token1.Symbol)
 
-	sink, sub, err := s.getSwapsChannel(base, address)
+	sink, sub, err := s.getSwapsChannel(ctx, base, address)
 	if err != nil {
 		log.Error("AerodromeV1 - error fetching swaps channel: ", err)
 		return
@@ -180,12 +181,12 @@ func (s *AerodromeV1Scraper) watchSwaps(
 			select {
 			case rawSwap, ok := <-sink:
 				if ok {
-					swap, err := s.normalizeSwap(*rawSwap)
+					swap, err := s.normalizeSwap(ctx, base, *rawSwap)
 					if err != nil {
 						log.Error("AerodromeV1 - error normalizing swap: ", err)
 						continue
 					}
-					price, volume := getSwapDataV2_Aero(swap)
+					price, volume := getSwapDataAero(swap)
 					if math.IsNaN(price) || math.IsInf(price, 0) ||
 						math.IsNaN(volume) || math.IsInf(volume, 0) ||
 						price == 0 || volume == 0 {
@@ -208,13 +209,17 @@ func (s *AerodromeV1Scraper) watchSwaps(
 
 					switch pair.Order {
 					case 0:
+						logTradeAerodromeV1(t)
 						tradesChannel <- t
 					case 1:
 						t.SwapTrade()
+						logTradeAerodromeV1(t)
 						tradesChannel <- t
 					case 2:
+						logTradeAerodromeV1(t)
 						tradesChannel <- t
 						t.SwapTrade()
+						logTradeAerodromeV1(t)
 						tradesChannel <- t
 					}
 				}
@@ -232,6 +237,7 @@ func (s *AerodromeV1Scraper) watchSwaps(
 }
 
 func (s *AerodromeV1Scraper) getSwapsChannel(
+	ctx context.Context,
 	base *BaseDEXScraper,
 	pairAddress common.Address,
 ) (chan *velodrome.IPoolSwap, event.Subscription, error) {
@@ -244,9 +250,7 @@ func (s *AerodromeV1Scraper) getSwapsChannel(
 		return nil, nil, err
 	}
 
-	// Aerodrome Swap has indexed sender & to; abigen will expose WatchSwap with filter args for those indexed fields.
-	// Passing empty slices means "no filtering".
-	sub, err := filterer.WatchSwap(&bind.WatchOpts{Context: context.Background()}, sink, []common.Address{}, []common.Address{})
+	sub, err := filterer.WatchSwap(&bind.WatchOpts{Context: ctx}, sink, []common.Address{}, []common.Address{})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -255,12 +259,14 @@ func (s *AerodromeV1Scraper) getSwapsChannel(
 }
 
 func (s *AerodromeV1Scraper) normalizeSwap(
+	ctx context.Context,
+	base *BaseDEXScraper,
 	swap velodrome.IPoolSwap,
 ) (AerodromeV1Swap, error) {
 
 	pair, ok := s.poolMap[swap.Raw.Address]
 	if !ok {
-		return AerodromeV1Swap{}, nil
+		return AerodromeV1Swap{}, fmt.Errorf("pool not found in poolMap: %s", swap.Raw.Address.Hex())
 	}
 
 	decimals0 := int(pair.Token0.Decimals)
@@ -271,7 +277,7 @@ func (s *AerodromeV1Scraper) normalizeSwap(
 	amount1In, _ := new(big.Float).Quo(new(big.Float).SetInt(swap.Amount1In), new(big.Float).SetFloat64(math.Pow10(decimals1))).Float64()
 	amount1Out, _ := new(big.Float).Quo(new(big.Float).SetInt(swap.Amount1Out), new(big.Float).SetFloat64(math.Pow10(decimals1))).Float64()
 
-	return AerodromeV1Swap{
+	normalizedSwap := AerodromeV1Swap{
 		ID:         swap.Raw.TxHash.Hex(),
 		Timestamp:  time.Now().Unix(),
 		Pair:       pair,
@@ -279,10 +285,19 @@ func (s *AerodromeV1Scraper) normalizeSwap(
 		Amount0Out: amount0Out,
 		Amount1In:  amount1In,
 		Amount1Out: amount1Out,
-	}, nil
+	}
+
+	block, err := base.RESTClient().BlockByNumber(ctx, big.NewInt(int64(swap.Raw.BlockNumber)))
+	if err == nil {
+		normalizedSwap.Timestamp = int64(block.Time())
+	}
+	return normalizedSwap, nil
 }
 
-func getSwapDataV2_Aero(swap AerodromeV1Swap) (price float64, volume float64) {
+func getSwapDataAero(swap AerodromeV1Swap) (price float64, volume float64) {
+	if swap.Amount0In == 0 && swap.Amount0Out == 0 {
+		return 0, 0 // Invalid swap
+	}
 	if swap.Amount0In == 0 {
 		volume = swap.Amount0Out
 		price = swap.Amount1In / swap.Amount0Out
@@ -313,4 +328,11 @@ func makeTradeAerodromeV1(
 		ForeignTradeID: foreignTradeID,
 		Exchange:       models.Exchange{Name: exchangeName, Blockchain: blockchain},
 	}
+}
+
+func logTradeAerodromeV1(t models.Trade) {
+	log.Debugf(
+		"AerodromeV1 - Got trade at time %v - symbol: %s, pair: %s, price: %v, volume:%v",
+		t.Time, t.QuoteToken.Symbol, t.QuoteToken.Symbol+"-"+t.BaseToken.Symbol, t.Price, t.Volume,
+	)
 }
