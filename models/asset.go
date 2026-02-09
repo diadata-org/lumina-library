@@ -56,14 +56,14 @@ func (a *Asset) GetPrice(
 	return
 }
 
-func (a Asset) GetOracleKey(quote string) string {
+func (a *Asset) GetOracleKey(quote string) string {
 	if quote == "" {
 		quote = "USD"
 	}
 	return a.oracleKeyPrefix() + "/" + quote
 }
 
-func (a Asset) oracleKeyPrefix() string {
+func (a *Asset) oracleKeyPrefix() string {
 	if strings.TrimSpace(a.Blockchain) == "" || strings.TrimSpace(a.Address) == "" {
 		return a.Symbol
 	}

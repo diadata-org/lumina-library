@@ -210,7 +210,7 @@ func GetWhitelistedPoolsFromConfig(exchange string) (whitelistedPools []common.A
 	return
 }
 
-func (p Pair) GetOracleKey(sourceType SourceType) string {
+func (p *Pair) GetOracleKey(sourceType SourceType) string {
 	switch sourceType {
 	case SourceType(""):
 		return p.QuoteToken.GetOracleKey("USD")
@@ -223,7 +223,7 @@ func (p Pair) GetOracleKey(sourceType SourceType) string {
 	}
 }
 
-func (pair Pair) GetOracleKeySimulation() string {
+func (pair *Pair) GetOracleKeySimulation() string {
 
 	return pair.QuoteToken.Blockchain + "-" + pair.QuoteToken.Address + "-" + pair.QuoteToken.Symbol + "/USD"
 
