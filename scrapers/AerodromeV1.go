@@ -209,17 +209,17 @@ func (s *AerodromeV1Scraper) watchSwaps(
 
 					switch pair.Order {
 					case 0:
-						logTradeAerodromeV1(t)
+						logTradeAero(t)
 						tradesChannel <- t
 					case 1:
 						t.SwapTrade()
-						logTradeAerodromeV1(t)
+						logTradeAero(t)
 						tradesChannel <- t
 					case 2:
-						logTradeAerodromeV1(t)
+						logTradeAero(t)
 						tradesChannel <- t
 						t.SwapTrade()
-						logTradeAerodromeV1(t)
+						logTradeAero(t)
 						tradesChannel <- t
 					}
 				}
@@ -330,7 +330,7 @@ func makeTradeAerodromeV1(
 	}
 }
 
-func logTradeAerodromeV1(t models.Trade) {
+func logTradeAero(t models.Trade) {
 	log.Debugf(
 		"AerodromeV1 - Got trade at time %v - symbol: %s, pair: %s, price: %v, volume:%v",
 		t.Time, t.QuoteToken.Symbol, t.QuoteToken.Symbol+"-"+t.BaseToken.Symbol, t.Price, t.Volume,
