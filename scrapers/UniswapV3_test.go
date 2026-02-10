@@ -69,7 +69,7 @@ func TestNormalizeUniV3Swap_UniswapV3(t *testing.T) {
 		},
 	}
 
-	normalized := s.normalizeUniV3Swap(swap)
+	normalized := s.normalizeUniV3Swap(&swap)
 
 	if normalized.ID != swap.Raw.TxHash.Hex() {
 		t.Fatalf("expected ID %s, got %s", swap.Raw.TxHash.Hex(), normalized.ID)
@@ -128,7 +128,7 @@ func TestNormalizeUniV3Swap_PancakeswapV3(t *testing.T) {
 		},
 	}
 
-	normalized := s.normalizeUniV3Swap(swap)
+	normalized := s.normalizeUniV3Swap(&swap)
 
 	if normalized.ID != swap.Raw.TxHash.Hex() {
 		t.Fatalf("expected ID %s, got %s", swap.Raw.TxHash.Hex(), normalized.ID)
