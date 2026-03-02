@@ -57,17 +57,13 @@ func (a *Asset) GetPrice(
 }
 
 func (a *Asset) GetOracleKey(quote string) string {
+	// SYMBOL/USD:CHAIN/ADDRESS
 	if quote == "" {
 		quote = "USD"
 	}
-	return a.oracleKeyPrefix() + "/" + quote
-}
-
-func (a *Asset) oracleKeyPrefix() string {
-	if strings.TrimSpace(a.Blockchain) == "" || strings.TrimSpace(a.Address) == "" {
-		return a.Symbol
-	}
-	return a.Blockchain + "-" + a.Address + "-" + a.Symbol
+	blockchain := strings.ToUpper(strings.TrimSpace(a.Blockchain))
+	address := strings.ToLower(strings.TrimSpace(a.Address))
+	return a.Symbol + "/USD:" + blockchain + "/" + address
 }
 
 // GetOnchainPrice returns a quotation for asset @a by querying the metacontract with @metacontractAddress.
