@@ -225,5 +225,7 @@ func (p *Pair) GetOracleKey(sourceType SourceType) string {
 
 func (pair *Pair) GetOracleKeySimulation() string {
 	// SYMBOL/USD:CHAIN/ADDRESS
-	return pair.QuoteToken.Symbol + "/USD:" + pair.QuoteToken.Blockchain + "/" + pair.QuoteToken.Address
+	blockchain := strings.ToUpper(strings.TrimSpace(pair.QuoteToken.Blockchain))
+	address := strings.ToLower(strings.TrimSpace(pair.QuoteToken.Address))
+	return pair.QuoteToken.Symbol + "/USD:" + blockchain + "/" + address
 }
