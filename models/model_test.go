@@ -64,7 +64,7 @@ func TestPair_GetOracleKey_PrefixBySourceType(t *testing.T) {
 			Blockchain: "eth",
 			Address:    "0xAbC",
 		},
-		BaseToken: Asset{Symbol: "weth"}, // irrelevant for GetOracleKey()
+		BaseToken: Asset{Symbol: "weth"},
 	}
 
 	quoteKey := p.QuoteToken.GetOracleKey()
@@ -78,14 +78,9 @@ func TestPair_GetOracleKey_PrefixBySourceType(t *testing.T) {
 		want       string
 	}{
 		{
-			name:       "empty sourceType no prefix",
+			name:       "empty sourceType (CEX path) no prefix",
 			sourceType: SourceType(""),
 			want:       quoteKey,
-		},
-		{
-			name:       "CEX_SOURCE prefixes with CEX_SOURCE:",
-			sourceType: CEX_SOURCE,
-			want:       string(CEX_SOURCE) + ":" + quoteKey,
 		},
 		{
 			name:       "SIMULATION_SOURCE prefixes with SIMULATION_SOURCE:",
@@ -96,6 +91,11 @@ func TestPair_GetOracleKey_PrefixBySourceType(t *testing.T) {
 			name:       "DEX_SOURCE prefixes with DEX_SOURCE:",
 			sourceType: DEX_SOURCE,
 			want:       string(DEX_SOURCE) + ":" + quoteKey,
+		},
+		{
+			name:       "unknown sourceType returns empty",
+			sourceType: SourceType("UNKNOWN_SOURCE"),
+			want:       "",
 		},
 	}
 
@@ -109,22 +109,7 @@ func TestPair_GetOracleKey_PrefixBySourceType(t *testing.T) {
 	}
 }
 
-func TestPair_GetOracleKey_UnknownSourceType_ReturnsEmpty(t *testing.T) {
-	p := Pair{
-		QuoteToken: Asset{
-			Symbol:     "USDC",
-			Blockchain: "ETH",
-			Address:    "0xabc",
-		},
-	}
-
-	got := p.GetOracleKey(SourceType("UNKNOWN_SOURCE"))
-	if got != "" {
-		t.Fatalf("GetOracleKey(UNKNOWN_SOURCE) = %q, want empty string", got)
-	}
-}
-
-func TestPair_GetOracleKey_WhenQuoteKeyEmpty_ReturnsEmptyOrPrefixedEmpty(t *testing.T) {
+func TestPair_GetOracleKey_WhenQuoteKeyEmpty_ReturnsEmptyForAllSourceTypes(t *testing.T) {
 	// QuoteToken missing chain/address -> QuoteToken.GetOracleKey() == ""
 	p := Pair{
 		QuoteToken: Asset{
@@ -132,16 +117,21 @@ func TestPair_GetOracleKey_WhenQuoteKeyEmpty_ReturnsEmptyOrPrefixedEmpty(t *test
 			Blockchain: "",
 			Address:    "",
 		},
+		BaseToken: Asset{Symbol: "WETH"},
 	}
 
-	// case SourceType("") returns empty
-	if got := p.GetOracleKey(SourceType("")); got != "" {
-		t.Fatalf("GetOracleKey(empty) = %q, want empty string", got)
+	sourceTypes := []SourceType{
+		SourceType(""), // CEX path
+		SIMULATION_SOURCE,
+		DEX_SOURCE,
+		SourceType("UNKNOWN"), // default
 	}
 
-	// Prefixed cases will return "<SRC>:" because QuoteToken.GetOracleKey() is "".
-	// This test documents current behavior (might be something you later change).
-	if got := p.GetOracleKey(DEX_SOURCE); got != string(DEX_SOURCE)+":" {
-		t.Fatalf("GetOracleKey(DEX_SOURCE) = %q, want %q", got, string(DEX_SOURCE)+":")
+	for _, st := range sourceTypes {
+		t.Run(string(st), func(t *testing.T) {
+			if got := p.GetOracleKey(st); got != "" {
+				t.Fatalf("GetOracleKey(%v) = %q, want empty string", st, got)
+			}
+		})
 	}
 }
