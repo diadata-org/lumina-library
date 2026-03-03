@@ -210,10 +210,15 @@ func GetWhitelistedPoolsFromConfig(exchange string) (whitelistedPools []common.A
 	return
 }
 
+// GetOracleKey returns the oracle lookup key for this asset in the format
+// SYMBOL/USD:BLOCKCHAIN/ADDRESS (e.g., "ETH/USD:ETHEREUM/0xc02aaa3...").
+// Symbol is normalized to uppercase; blockchain is normalized to uppercase; address is normalized to lowercase.
 func (p *Pair) GetOracleKey(sourceType SourceType) string {
 	switch sourceType {
 	case SourceType(""):
 		return p.QuoteToken.GetOracleKey()
+	case CEX_SOURCE:
+		return string(CEX_SOURCE) + ":" + p.QuoteToken.GetOracleKey()
 	case SIMULATION_SOURCE:
 		return string(SIMULATION_SOURCE) + ":" + p.QuoteToken.GetOracleKey()
 	case DEX_SOURCE:
