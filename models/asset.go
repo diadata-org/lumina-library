@@ -56,11 +56,8 @@ func (a *Asset) GetPrice(
 	return
 }
 
-func (a *Asset) GetOracleKey(quote string) string {
+func (a *Asset) GetOracleKey() string {
 	// SYMBOL/USD:CHAIN/ADDRESS
-	if quote == "" {
-		quote = "USD"
-	}
 	blockchain := strings.ToUpper(strings.TrimSpace(a.Blockchain))
 	address := strings.ToLower(strings.TrimSpace(a.Address))
 	return a.Symbol + "/USD:" + blockchain + "/" + address
@@ -79,7 +76,7 @@ func (a *Asset) GetOnchainPrice(
 		return
 	}
 
-	priceBig, timeUnixBig, err := caller.GetValue(&bind.CallOpts{}, a.GetOracleKey("USD"))
+	priceBig, timeUnixBig, err := caller.GetValue(&bind.CallOpts{}, a.GetOracleKey())
 	if err != nil {
 		return
 	}

@@ -57,7 +57,7 @@ func OracleUpdateExecutorSimulation(
 				fp.Time,
 			)
 
-			key := fp.Pair.GetOracleKeySimulation()
+			key := fp.Pair.QuoteToken.GetOracleKey()
 			keys = append(keys, key)
 			values = append(values, int64(fp.Value*math.Pow10(int(DECIMALS_ORACLE_VALUE))))
 		}
