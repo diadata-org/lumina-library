@@ -56,6 +56,18 @@ func (a *Asset) GetPrice(
 	return
 }
 
+// GetOracleKey returns the oracle lookup key for this asset in the format
+// "SYMBOL/USD:BLOCKCHAIN/address". Returns an empty string if Blockchain or Address is empty.
+func (a *Asset) GetOracleKey() string {
+	blockchain := strings.ToUpper(strings.TrimSpace(a.Blockchain))
+	address := strings.ToLower(strings.TrimSpace(a.Address))
+	symbol := strings.ToUpper(strings.TrimSpace(a.Symbol))
+	if blockchain == "" || address == "" {
+		return ""
+	}
+	return symbol + "/USD:" + blockchain + "/" + address
+}
+
 // GetOnchainPrice returns a quotation for asset @a by querying the metacontract with @metacontractAddress.
 func (a *Asset) GetOnchainPrice(
 	metacontractAddress common.Address,
@@ -69,7 +81,12 @@ func (a *Asset) GetOnchainPrice(
 		return
 	}
 
-	priceBig, timeUnixBig, err := caller.GetValue(&bind.CallOpts{}, a.Symbol+"/USD")
+	key := a.GetOracleKey()
+	if key == "" {
+		return AssetQuotation{}, errors.New("empty oracle key")
+	}
+
+	priceBig, timeUnixBig, err := caller.GetValue(&bind.CallOpts{}, key)
 	if err != nil {
 		return
 	}

@@ -209,3 +209,24 @@ func GetWhitelistedPoolsFromConfig(exchange string) (whitelistedPools []common.A
 	}
 	return
 }
+
+// GetOracleKey returns the oracle lookup key for the quote token of this pair,
+// optionally prefixed by the given source type (e.g. "DEX:", "SIMULATION:").
+// If the quote token lacks blockchain or address, it returns an empty string.
+func (p *Pair) GetOracleKey(sourceType SourceType) string {
+	key := p.QuoteToken.GetOracleKey()
+	if key == "" {
+		return ""
+	}
+
+	switch sourceType {
+	case SourceType(""): //CEX_SOURCE
+		return key
+	case SIMULATION_SOURCE:
+		return string(SIMULATION_SOURCE) + ":" + key
+	case DEX_SOURCE:
+		return string(DEX_SOURCE) + ":" + key
+	default:
+		return ""
+	}
+}

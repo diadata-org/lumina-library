@@ -57,7 +57,11 @@ func OracleUpdateExecutorSimulation(
 				fp.Time,
 			)
 
-			key := models.GetOracleKeySimulation(fp.Pair)
+			key := fp.Pair.QuoteToken.GetOracleKey()
+			if key == "" {
+				log.Warnf("updater - skipping filter point with empty oracle key for asset %s", fp.Pair.QuoteToken.Symbol)
+				continue
+			}
 			keys = append(keys, key)
 			values = append(values, int64(fp.Value*math.Pow10(int(DECIMALS_ORACLE_VALUE))))
 		}
@@ -96,9 +100,12 @@ func OracleUpdateExecutor(
 				fp.Time,
 			)
 
-			key := models.GetOracleKey(fp.SourceType, fp.Pair)
+			key := fp.Pair.GetOracleKey(fp.SourceType)
+			if key == "" {
+				log.Warnf("updater - skipping filter point with empty oracle key for asset %s", fp.Pair.QuoteToken.Symbol)
+				continue
+			}
 			keys = append(keys, key)
-			// keys = append(keys, fp.Pair.QuoteToken.Symbol+"/USD")
 			values = append(values, int64(fp.Value*math.Pow10(int(DECIMALS_ORACLE_VALUE))))
 		}
 		err := updateOracleMultiValues(conn, contract, auth, chainId, keys, values, timestamp)
