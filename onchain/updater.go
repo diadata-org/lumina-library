@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	diaOracleV3 "github.com/diadata-org/lumina-library/contracts/lumina/diaoraclev3"
+	diaOracleV3MultiupdateService "github.com/diadata-org/lumina-library/contracts/lumina/diaoraclev3"
 	"github.com/diadata-org/lumina-library/models"
 	"github.com/diadata-org/lumina-library/utils"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -36,8 +36,8 @@ func init() {
 
 func OracleUpdateExecutorSimulation(
 	auth *bind.TransactOpts,
-	contract *diaOracleV3.DiaOracleV3,
-	contractBackup *diaOracleV3.DiaOracleV3,
+	contract *diaOracleV3MultiupdateService.DiaOracleV3MultiupdateService,
+	contractBackup *diaOracleV3MultiupdateService.DiaOracleV3MultiupdateService,
 	conn *ethclient.Client,
 	connBackup *ethclient.Client,
 	chainId int64,
@@ -75,8 +75,8 @@ func OracleUpdateExecutorSimulation(
 
 func OracleUpdateExecutor(
 	auth *bind.TransactOpts,
-	contract *diaOracleV3.DiaOracleV3,
-	contractBackup *diaOracleV3.DiaOracleV3,
+	contract *diaOracleV3MultiupdateService.DiaOracleV3MultiupdateService,
+	contractBackup *diaOracleV3MultiupdateService.DiaOracleV3MultiupdateService,
 	conn *ethclient.Client,
 	connBackup *ethclient.Client,
 	chainId int64,
@@ -115,7 +115,7 @@ func OracleUpdateExecutor(
 
 func updateOracleMultiValues(
 	client *ethclient.Client,
-	contract *diaOracleV3.DiaOracleV3,
+	contract *diaOracleV3MultiupdateService.DiaOracleV3MultiupdateService,
 	auth *bind.TransactOpts,
 	chainId int64,
 	keys []string,
