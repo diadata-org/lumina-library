@@ -56,7 +56,7 @@ func OracleUpdateExecutorSimulation(
 				fp.Value,
 				fp.Time,
 			)
-
+			log.Debugf("updater -- filterPoint received at unix timestamp (now) %v vs fp.Time %v", timestamp, fp.Time.Unix())
 			key := models.GetOracleKeySimulation(fp.Pair)
 			keys = append(keys, key)
 			values = append(values, int64(fp.Value*math.Pow10(int(DECIMALS_ORACLE_VALUE))))
