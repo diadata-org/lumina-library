@@ -95,7 +95,7 @@ func OracleUpdateExecutor(
 				fp.Value,
 				fp.Time,
 			)
-
+			log.Debugf("updater -- filterPoint received at unix timestamp (now) %v vs fp.Time %v", timestamp, fp.Time.Unix())
 			key := models.GetOracleKey(fp.SourceType, fp.Pair)
 			keys = append(keys, key)
 			// keys = append(keys, fp.Pair.QuoteToken.Symbol+"/USD")
