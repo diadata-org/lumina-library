@@ -56,7 +56,7 @@ func OracleUpdateExecutorSimulation(
 				fp.Value,
 				fp.Time,
 			)
-			log.Errorf("updater -- filterPoint received at unix timestamp (now) %v vs fp.Time %v", timestamp, fp.Time.Unix())
+			log.Infof("updater -- filterPoint received at unix timestamp (now) %v vs fp.Time %v", timestamp, fp.Time.Unix())
 			key := models.GetOracleKeySimulation(fp.Pair)
 			keys = append(keys, key)
 			values = append(values, int64(fp.Value*math.Pow10(int(DECIMALS_ORACLE_VALUE))))
@@ -95,7 +95,7 @@ func OracleUpdateExecutor(
 				fp.Value,
 				fp.Time,
 			)
-
+			log.Infof("updater -- filterPoint received at unix timestamp (now) %v vs fp.Time %v", timestamp, fp.Time.Unix())
 			key := models.GetOracleKey(fp.SourceType, fp.Pair)
 			keys = append(keys, key)
 			// keys = append(keys, fp.Pair.QuoteToken.Symbol+"/USD")
