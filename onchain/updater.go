@@ -166,16 +166,11 @@ func updateOracleMultiValues(
 		cValue = cValue.Lsh(cValue, 128)
 		cValue = cValue.Add(cValue, big.NewInt(timestamp))
 		cValues = append(cValues, cValue)
-		log.Infof("key -- value: %s -- %v", keys[i], value) // Debug logs.
+		// Debug logs.
+		log.Infof("key -- value: %s -- %v", keys[i], value)
+		log.Info("cValue: ", cValue.String())
 	}
-
-	// Debug logs.
-	blockNumber, err := client.BlockByNumber(context.Background(), nil)
-	if err != nil {
-		log.Error("blockNumber: ", err)
-	} else {
-		log.Infof("blockTime: %v vs time.Now() on server: %v ", blockNumber.Time(), timestamp)
-	}
+	log.Infof("len(keys) -- len(values): %v -- %v", len(keys), len(values))
 
 	// Write values to smart contract
 	tx, err := contract.SetMultipleValues(&bind.TransactOpts{
