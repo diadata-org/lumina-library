@@ -95,7 +95,6 @@ func OracleUpdateExecutor(
 				fp.Value,
 				fp.Time,
 			)
-			log.Infof("updater -- filterPoint received at unix timestamp (now) %v vs fp.Time %v", timestamp, fp.Time.Unix())
 			key := models.GetOracleKey(fp.SourceType, fp.Pair)
 			keys = append(keys, key)
 			// keys = append(keys, fp.Pair.QuoteToken.Symbol+"/USD")
@@ -161,12 +160,21 @@ func updateOracleMultiValues(
 		gasPrice, _ = fGas.Int(nil)
 	}
 
-	for _, value := range values {
+	for i, value := range values {
 		// Create compressed argument with values/timestamps
 		cValue := big.NewInt(value)
 		cValue = cValue.Lsh(cValue, 128)
 		cValue = cValue.Add(cValue, big.NewInt(timestamp))
 		cValues = append(cValues, cValue)
+		log.Infof("key -- value: %s -- %v", keys[i], value) // Debug logs.
+	}
+
+	// Debug logs.
+	blockNumber, err := client.BlockByNumber(context.Background(), nil)
+	if err != nil {
+		log.Error("blockNumber: ", err)
+	} else {
+		log.Infof("blockTime: %v vs time.Now() on server: %v ", blockNumber.Time(), timestamp)
 	}
 
 	// Write values to smart contract
