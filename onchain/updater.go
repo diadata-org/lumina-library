@@ -84,21 +84,32 @@ func OracleUpdateExecutor(
 ) {
 
 	for filterPoints := range filtersChannel {
+		keysMap := make(map[string]struct{})
+
 		timestamp := time.Now().Unix()
 		var keys []string
 		var values []int64
 		for _, fp := range filterPoints {
 			log.Infof(
-				"updater - filterPoint received at %v: %v -- %v -- %v.",
+				"updater - filterPoint received at %v: %s: %s-%s -- %v -- %v.",
 				time.Unix(timestamp, 0),
 				fp.Pair.QuoteToken.Symbol,
+				fp.Pair.QuoteToken.Blockchain,
+				fp.Pair.QuoteToken.Address,
 				fp.Value,
 				fp.Time,
 			)
 			key := models.GetOracleKey(fp.SourceType, fp.Pair)
-			keys = append(keys, key)
-			// keys = append(keys, fp.Pair.QuoteToken.Symbol+"/USD")
-			values = append(values, int64(fp.Value*math.Pow10(int(DECIMALS_ORACLE_VALUE))))
+
+			// TO DO: amend this check once we switch to blockchain-address identifier!!
+			if _, ok := keysMap[key]; !ok {
+				keys = append(keys, key)
+				values = append(values, int64(fp.Value*math.Pow10(int(DECIMALS_ORACLE_VALUE))))
+				keysMap[key] = struct{}{}
+			} else {
+				log.Warnf("symbol %s already existing.", key)
+			}
+
 		}
 		err := updateOracleMultiValues(conn, contract, auth, chainId, keys, values, timestamp)
 		if err != nil {
@@ -167,10 +178,9 @@ func updateOracleMultiValues(
 		cValue = cValue.Add(cValue, big.NewInt(timestamp))
 		cValues = append(cValues, cValue)
 		// Debug logs.
-		log.Infof("key -- value: %s -- %v", keys[i], value)
-		log.Info("cValue: ", cValue.String())
+		log.Debugf("key -- value: %s -- %v", keys[i], value)
+		log.Debug("cValue: ", cValue.String())
 	}
-	log.Infof("len(keys) -- len(values): %v -- %v", len(keys), len(values))
 
 	// Write values to smart contract
 	tx, err := contract.SetMultipleValues(&bind.TransactOpts{
