@@ -19,10 +19,12 @@ import (
 
 const (
 	DECIMALS_ORACLE_VALUE = 8
+	BATCH_SIZE            = 20
 )
 
 var (
-	log *logrus.Logger
+	log                 *logrus.Logger
+	firstUpdateComplete bool = false
 )
 
 func init() {
@@ -111,13 +113,49 @@ func OracleUpdateExecutor(
 			}
 
 		}
-		err := updateOracleMultiValues(conn, contract, auth, chainId, keys, values, timestamp)
-		if err != nil {
-			log.Warnf("updater - Failed to update Oracle: %v. Retry with backup node.", err)
-			err := updateOracleMultiValues(connBackup, contractBackup, auth, chainId, keys, values, timestamp)
+
+		if !firstUpdateComplete {
+			numBatches := (len(keys) + BATCH_SIZE - 1) / BATCH_SIZE
+			log.Infof("First oracle update run - enabling batch mode (%d key-value pairs in %d batches)", len(keys), numBatches)
+
+			allSuccessful := true
+			for i := 0; i < numBatches; i++ {
+				start := i * BATCH_SIZE
+				end := start + BATCH_SIZE
+				if end > len(keys) {
+					end = len(keys)
+				}
+
+				batchKeys := keys[start:end]
+				batchValues := values[start:end]
+
+				log.Infof("Processing batch %d of %d (%d pairs)", i+1, numBatches, len(batchKeys))
+
+				err := updateOracleMultiValues(conn, contract, auth, chainId, batchKeys, batchValues, timestamp)
+				if err != nil {
+					log.Warnf("updater - Failed to update Oracle batch %d: %v. Retry with backup node.", i+1, err)
+					err := updateOracleMultiValues(connBackup, contractBackup, auth, chainId, batchKeys, batchValues, timestamp)
+					if err != nil {
+						log.Errorf("backup updater - Failed to update Oracle batch %d: %v.", i+1, err)
+						allSuccessful = false
+						break
+					}
+				}
+			}
+
+			if allSuccessful {
+				firstUpdateComplete = true
+				log.Info("First oracle update run completed successfully")
+			}
+		} else {
+			err := updateOracleMultiValues(conn, contract, auth, chainId, keys, values, timestamp)
 			if err != nil {
-				log.Errorf("backup updater - Failed to update Oracle: %v.", err)
-				return
+				log.Warnf("updater - Failed to update Oracle: %v. Retry with backup node.", err)
+				err := updateOracleMultiValues(connBackup, contractBackup, auth, chainId, keys, values, timestamp)
+				if err != nil {
+					log.Errorf("backup updater - Failed to update Oracle: %v.", err)
+					return
+				}
 			}
 		}
 	}
