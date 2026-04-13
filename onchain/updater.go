@@ -3,7 +3,6 @@ package onchain
 import (
 	"context"
 	"io/ioutil"
-	"math"
 	"math/big"
 	"net/http"
 	"time"
@@ -17,10 +16,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-const (
-	DECIMALS_ORACLE_VALUE = 8
-	BATCH_SIZE            = 20
-)
+const BATCH_SIZE = 20
 
 var (
 	log                 *logrus.Logger
@@ -43,13 +39,14 @@ func OracleUpdateExecutorSimulation(
 	conn *ethclient.Client,
 	connBackup *ethclient.Client,
 	chainId int64,
+	decimals int,
 	filtersChannel <-chan []models.FilterPointPair,
 ) {
 
 	for filterPoints := range filtersChannel {
 		timestamp := time.Now().Unix()
 		var keys []string
-		var values []int64
+		var values []*big.Int
 		for _, fp := range filterPoints {
 			log.Infof(
 				"updater - filterPoint received at %v: %v -- %v -- %v.",
@@ -61,7 +58,7 @@ func OracleUpdateExecutorSimulation(
 			log.Infof("updater -- filterPoint received at unix timestamp (now) %v vs fp.Time %v", timestamp, fp.Time.Unix())
 			key := models.GetOracleKeySimulation(fp.Pair)
 			keys = append(keys, key)
-			values = append(values, int64(fp.Value*math.Pow10(int(DECIMALS_ORACLE_VALUE))))
+			values = append(values, utils.ScaleFloat(fp.Value, decimals))
 		}
 		err := updateOracleMultiValues(conn, contract, auth, chainId, keys, values, timestamp)
 		if err != nil {
@@ -82,6 +79,7 @@ func OracleUpdateExecutor(
 	conn *ethclient.Client,
 	connBackup *ethclient.Client,
 	chainId int64,
+	decimals int,
 	filtersChannel <-chan []models.FilterPointPair,
 ) {
 
@@ -90,7 +88,7 @@ func OracleUpdateExecutor(
 
 		timestamp := time.Now().Unix()
 		var keys []string
-		var values []int64
+		var values []*big.Int
 		for _, fp := range filterPoints {
 			log.Infof(
 				"updater - filterPoint received at %v: %s: %s-%s -- %v -- %v.",
@@ -106,7 +104,7 @@ func OracleUpdateExecutor(
 			// TO DO: amend this check once we switch to blockchain-address identifier!!
 			if _, ok := keysMap[key]; !ok {
 				keys = append(keys, key)
-				values = append(values, int64(fp.Value*math.Pow10(int(DECIMALS_ORACLE_VALUE))))
+				values = append(values, utils.ScaleFloat(fp.Value, decimals))
 				keysMap[key] = struct{}{}
 			} else {
 				log.Warnf("symbol %s already existing.", key)
@@ -167,7 +165,7 @@ func updateOracleMultiValues(
 	auth *bind.TransactOpts,
 	chainId int64,
 	keys []string,
-	values []int64,
+	values []*big.Int,
 	timestamp int64) error {
 
 	var cValues []*big.Int
@@ -211,12 +209,12 @@ func updateOracleMultiValues(
 
 	for i, value := range values {
 		// Create compressed argument with values/timestamps
-		cValue := big.NewInt(value)
+		cValue := value
 		cValue = cValue.Lsh(cValue, 128)
 		cValue = cValue.Add(cValue, big.NewInt(timestamp))
 		cValues = append(cValues, cValue)
 		// Debug logs.
-		log.Debugf("key -- value: %s -- %v", keys[i], value)
+		log.Debugf("key -- value: %s -- %s", keys[i], value.String())
 		log.Debug("cValue: ", cValue.String())
 	}
 
