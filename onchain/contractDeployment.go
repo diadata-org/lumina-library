@@ -40,7 +40,6 @@ func DeployOrBindContract(
 		var implTx *types.Transaction
 		implAddr, implTx, _, err = diaOracleV3MultiupdateService.DeployDiaOracleV3MultiupdateService(auth, conn)
 		if err != nil {
-			log.Fatalf("could not deploy contract implementation: %v", err)
 			return err
 		}
 		log.Infof("Implementation pending deploy: 0x%x.", implAddr)
