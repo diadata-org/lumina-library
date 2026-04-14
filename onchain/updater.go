@@ -3,12 +3,11 @@ package onchain
 import (
 	"context"
 	"io/ioutil"
-	"math"
 	"math/big"
 	"net/http"
 	"time"
 
-	diaOracleV2MultiupdateService "github.com/diadata-org/diadata/pkg/dia/scraper/blockchain-scrapers/blockchains/ethereum/diaOracleV2MultiupdateService"
+	diaOracleV3MultiupdateService "github.com/diadata-org/lumina-library/contracts/lumina/diaoraclev3"
 	"github.com/diadata-org/lumina-library/models"
 	"github.com/diadata-org/lumina-library/utils"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -17,12 +16,11 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-const (
-	DECIMALS_ORACLE_VALUE = 8
-)
+const BATCH_SIZE = 20
 
 var (
-	log *logrus.Logger
+	log                 *logrus.Logger
+	firstUpdateComplete bool = false
 )
 
 func init() {
@@ -36,18 +34,19 @@ func init() {
 
 func OracleUpdateExecutorSimulation(
 	auth *bind.TransactOpts,
-	contract *diaOracleV2MultiupdateService.DiaOracleV2MultiupdateService,
-	contractBackup *diaOracleV2MultiupdateService.DiaOracleV2MultiupdateService,
+	contract *diaOracleV3MultiupdateService.DiaOracleV3MultiupdateService,
+	contractBackup *diaOracleV3MultiupdateService.DiaOracleV3MultiupdateService,
 	conn *ethclient.Client,
 	connBackup *ethclient.Client,
 	chainId int64,
+	decimals int,
 	filtersChannel <-chan []models.FilterPointPair,
 ) {
 
 	for filterPoints := range filtersChannel {
 		timestamp := time.Now().Unix()
 		var keys []string
-		var values []int64
+		var values []*big.Int
 		for _, fp := range filterPoints {
 			log.Infof(
 				"updater - filterPoint received at %v: %v -- %v -- %v.",
@@ -56,10 +55,10 @@ func OracleUpdateExecutorSimulation(
 				fp.Value,
 				fp.Time,
 			)
-
+			log.Infof("updater -- filterPoint received at unix timestamp (now) %v vs fp.Time %v", timestamp, fp.Time.Unix())
 			key := models.GetOracleKeySimulation(fp.Pair)
 			keys = append(keys, key)
-			values = append(values, int64(fp.Value*math.Pow10(int(DECIMALS_ORACLE_VALUE))))
+			values = append(values, utils.ScaleFloat(fp.Value, decimals))
 		}
 		err := updateOracleMultiValues(conn, contract, auth, chainId, keys, values, timestamp)
 		if err != nil {
@@ -75,39 +74,86 @@ func OracleUpdateExecutorSimulation(
 
 func OracleUpdateExecutor(
 	auth *bind.TransactOpts,
-	contract *diaOracleV2MultiupdateService.DiaOracleV2MultiupdateService,
-	contractBackup *diaOracleV2MultiupdateService.DiaOracleV2MultiupdateService,
+	contract *diaOracleV3MultiupdateService.DiaOracleV3MultiupdateService,
+	contractBackup *diaOracleV3MultiupdateService.DiaOracleV3MultiupdateService,
 	conn *ethclient.Client,
 	connBackup *ethclient.Client,
 	chainId int64,
+	decimals int,
 	filtersChannel <-chan []models.FilterPointPair,
 ) {
 
 	for filterPoints := range filtersChannel {
+		keysMap := make(map[string]struct{})
+
 		timestamp := time.Now().Unix()
 		var keys []string
-		var values []int64
+		var values []*big.Int
 		for _, fp := range filterPoints {
 			log.Infof(
-				"updater - filterPoint received at %v: %v -- %v -- %v.",
+				"updater - filterPoint received at %v: %s: %s-%s -- %v -- %v.",
 				time.Unix(timestamp, 0),
 				fp.Pair.QuoteToken.Symbol,
+				fp.Pair.QuoteToken.Blockchain,
+				fp.Pair.QuoteToken.Address,
 				fp.Value,
 				fp.Time,
 			)
-
 			key := models.GetOracleKey(fp.SourceType, fp.Pair)
-			keys = append(keys, key)
-			// keys = append(keys, fp.Pair.QuoteToken.Symbol+"/USD")
-			values = append(values, int64(fp.Value*math.Pow10(int(DECIMALS_ORACLE_VALUE))))
+
+			// TO DO: amend this check once we switch to blockchain-address identifier!!
+			if _, ok := keysMap[key]; !ok {
+				keys = append(keys, key)
+				values = append(values, utils.ScaleFloat(fp.Value, decimals))
+				keysMap[key] = struct{}{}
+			} else {
+				log.Warnf("symbol %s already existing.", key)
+			}
+
 		}
-		err := updateOracleMultiValues(conn, contract, auth, chainId, keys, values, timestamp)
-		if err != nil {
-			log.Warnf("updater - Failed to update Oracle: %v. Retry with backup node.", err)
-			err := updateOracleMultiValues(connBackup, contractBackup, auth, chainId, keys, values, timestamp)
+
+		if !firstUpdateComplete {
+			numBatches := (len(keys) + BATCH_SIZE - 1) / BATCH_SIZE
+			log.Infof("First oracle update run - enabling batch mode (%d key-value pairs in %d batches)", len(keys), numBatches)
+
+			allSuccessful := true
+			for i := 0; i < numBatches; i++ {
+				start := i * BATCH_SIZE
+				end := start + BATCH_SIZE
+				if end > len(keys) {
+					end = len(keys)
+				}
+
+				batchKeys := keys[start:end]
+				batchValues := values[start:end]
+
+				log.Infof("Processing batch %d of %d (%d pairs)", i+1, numBatches, len(batchKeys))
+
+				err := updateOracleMultiValues(conn, contract, auth, chainId, batchKeys, batchValues, timestamp)
+				if err != nil {
+					log.Warnf("updater - Failed to update Oracle batch %d: %v. Retry with backup node.", i+1, err)
+					err := updateOracleMultiValues(connBackup, contractBackup, auth, chainId, batchKeys, batchValues, timestamp)
+					if err != nil {
+						log.Errorf("backup updater - Failed to update Oracle batch %d: %v.", i+1, err)
+						allSuccessful = false
+						break
+					}
+				}
+			}
+
+			if allSuccessful {
+				firstUpdateComplete = true
+				log.Info("First oracle update run completed successfully")
+			}
+		} else {
+			err := updateOracleMultiValues(conn, contract, auth, chainId, keys, values, timestamp)
 			if err != nil {
-				log.Errorf("backup updater - Failed to update Oracle: %v.", err)
-				return
+				log.Warnf("updater - Failed to update Oracle: %v. Retry with backup node.", err)
+				err := updateOracleMultiValues(connBackup, contractBackup, auth, chainId, keys, values, timestamp)
+				if err != nil {
+					log.Errorf("backup updater - Failed to update Oracle: %v.", err)
+					return
+				}
 			}
 		}
 	}
@@ -115,11 +161,11 @@ func OracleUpdateExecutor(
 
 func updateOracleMultiValues(
 	client *ethclient.Client,
-	contract *diaOracleV2MultiupdateService.DiaOracleV2MultiupdateService,
+	contract *diaOracleV3MultiupdateService.DiaOracleV3MultiupdateService,
 	auth *bind.TransactOpts,
 	chainId int64,
 	keys []string,
-	values []int64,
+	values []*big.Int,
 	timestamp int64) error {
 
 	var cValues []*big.Int
@@ -161,12 +207,15 @@ func updateOracleMultiValues(
 		gasPrice, _ = fGas.Int(nil)
 	}
 
-	for _, value := range values {
+	for i, value := range values {
 		// Create compressed argument with values/timestamps
-		cValue := big.NewInt(value)
+		cValue := value
 		cValue = cValue.Lsh(cValue, 128)
 		cValue = cValue.Add(cValue, big.NewInt(timestamp))
 		cValues = append(cValues, cValue)
+		// Debug logs.
+		log.Debugf("key -- value: %s -- %s", keys[i], value.String())
+		log.Debug("cValue: ", cValue.String())
 	}
 
 	// Write values to smart contract
