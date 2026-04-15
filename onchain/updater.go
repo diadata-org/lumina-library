@@ -2,7 +2,7 @@ package onchain
 
 import (
 	"context"
-	"io/ioutil"
+	"io"
 	"math/big"
 	"net/http"
 	"time"
@@ -15,8 +15,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
-
-const BATCH_SIZE = 20
 
 var (
 	log                 *logrus.Logger
@@ -80,6 +78,7 @@ func OracleUpdateExecutor(
 	connBackup *ethclient.Client,
 	chainId int64,
 	decimals int,
+	batchSize int,
 	filtersChannel <-chan []models.FilterPointPair,
 ) {
 
@@ -113,13 +112,13 @@ func OracleUpdateExecutor(
 		}
 
 		if !firstUpdateComplete {
-			numBatches := (len(keys) + BATCH_SIZE - 1) / BATCH_SIZE
+			numBatches := (len(keys) + batchSize - 1) / batchSize
 			log.Infof("First oracle update run - enabling batch mode (%d key-value pairs in %d batches)", len(keys), numBatches)
 
 			allSuccessful := true
 			for i := 0; i < numBatches; i++ {
-				start := i * BATCH_SIZE
-				end := start + BATCH_SIZE
+				start := i * batchSize
+				end := start + batchSize
 				if end > len(keys) {
 					end = len(keys)
 				}
@@ -186,7 +185,7 @@ func updateOracleMultiValues(
 		if 200 != response.StatusCode {
 			return err
 		}
-		contents, err := ioutil.ReadAll(response.Body)
+		contents, err := io.ReadAll(response.Body)
 		if err != nil {
 			return err
 		}
