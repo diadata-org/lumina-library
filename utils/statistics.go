@@ -108,3 +108,29 @@ func max(samples []float64) (maximum float64, index int) {
 	}
 	return
 }
+
+type TradeVolume struct {
+	Price  float64
+	Volume float64 //non-negative volume
+}
+
+// VWAP computes the volume-weighted average price from @trades.
+//
+//	VWAP = Σ(Price_i × Volume_i) / Σ(Volume_i)
+//
+// Trades with zero Volume are ignored. Returns 0 if no trades have
+// positive volume.
+func VWAP(trades []TradeVolume) float64 {
+	var sumPriceVolume, sumVolume float64
+	for _, t := range trades {
+		if t.Volume <= 0 {
+			continue
+		}
+		sumPriceVolume += t.Price * t.Volume
+		sumVolume += t.Volume
+	}
+	if sumVolume == 0 {
+		return 0
+	}
+	return sumPriceVolume / sumVolume
+}
