@@ -34,7 +34,30 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64) (float64, tim
 		}
 	}
 
-	vwap := basePrice * utils.VWAP(tradeVolumes)
+	// Sort by volume ascending.
+	sorted := utils.SortByVolume(tradeVolumes)
+	medianIdx := len(sorted) / 2
+	log.Debugf(
+		"VWAPFilter: %s-%s on %s — median volume trade: price=%.6f volume=%.6f (%d total trades)",
+		tradesblock.Pair.QuoteToken.Symbol,
+		tradesblock.Pair.BaseToken.Symbol,
+		tradesblock.Trades[0].Exchange.Name,
+		sorted[medianIdx].Price,
+		sorted[medianIdx].Volume,
+		len(sorted),
+	)
+
+	// Remove the single lowest-volume and single highest-volume trade.
+	trimmed := utils.TrimExtremesByVolume(sorted)
+	log.Debugf(
+		"VWAPFilter: %s-%s on %s — %d trades after trimming extremes",
+		tradesblock.Pair.QuoteToken.Symbol,
+		tradesblock.Pair.BaseToken.Symbol,
+		tradesblock.Trades[0].Exchange.Name,
+		len(trimmed),
+	)
+
+	vwap := basePrice * utils.VWAP(trimmed)
 	if vwap == 0 {
 		return 0, latestTime, fmt.Errorf(
 			"VWAPFilter: VWAP is zero for %s-%s (all volumes may be zero)",
@@ -44,12 +67,13 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64) (float64, tim
 	}
 
 	log.Infof(
-		"VWAPFilter: %s-%s on %s → %.6f USD (basePrice=%.6f, %d trades)",
+		"VWAPFilter: %s-%s on %s → %.6f USD (basePrice=%.6f, %d/%d trades used)",
 		tradesblock.Pair.QuoteToken.Symbol,
 		tradesblock.Pair.BaseToken.Symbol,
 		tradesblock.Trades[0].Exchange.Name,
 		vwap,
 		basePrice,
+		len(trimmed),
 		len(tradeVolumes),
 	)
 

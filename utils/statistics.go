@@ -134,3 +134,19 @@ func VWAP(trades []TradeVolume) float64 {
 	}
 	return sumPriceVolume / sumVolume
 }
+
+func SortByVolume(trades []TradeVolume) []TradeVolume {
+	sorted := make([]TradeVolume, len(trades))
+	copy(sorted, trades)
+	sort.Slice(sorted, func(i, j int) bool {
+		return math.Abs(sorted[i].Volume) < math.Abs(sorted[j].Volume)
+	})
+	return sorted
+}
+
+func TrimExtremesByVolume(trades []TradeVolume) []TradeVolume {
+	if len(trades) <= 2 {
+		return trades
+	}
+	return trades[1 : len(trades)-1]
+}

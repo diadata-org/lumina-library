@@ -18,6 +18,7 @@ var (
 
 	FILTER_LAST_PRICE = models.FilterType("LastPrice")
 	METAFILTER_MEDIAN = models.MetafilterType("Median")
+	FILTER_VWAP       = models.FilterType("VWAP")
 )
 
 func init() {

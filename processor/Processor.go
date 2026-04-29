@@ -52,7 +52,7 @@ func Processor(
 				continue
 			}
 
-			// filter switch, for instance LastPrice, Median, Average, Minimum, etc.
+			// filter switch, for instance LastPrice, Median, Average, Minimum, VWAP, etc.
 			sourceType, err := tb.GetSourceType()
 			if err != nil {
 				log.Warn(err)
@@ -70,6 +70,18 @@ func Processor(
 
 				log.Infof(
 					"Processor - Atomic filter value for market %s with %v trades: %v.",
+					tb.Trades[0].Exchange.Name+":"+tb.Trades[0].QuoteToken.Symbol+"-"+tb.Trades[0].BaseToken.Symbol,
+					len(tb.Trades),
+					atomicFilterValue,
+				)
+			case string(FILTER_VWAP):
+				atomicFilterValue, _, err = filters.VWAPFilter(tb, basePrice)
+				if err != nil {
+					log.Warn("VWAP filter: ", err)
+					continue
+				}
+				log.Infof(
+					"Processor - VWAP filter value for market %s with %v trades: %v.",
 					tb.Trades[0].Exchange.Name+":"+tb.Trades[0].QuoteToken.Symbol+"-"+tb.Trades[0].BaseToken.Symbol,
 					len(tb.Trades),
 					atomicFilterValue,
