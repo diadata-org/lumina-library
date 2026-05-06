@@ -54,7 +54,11 @@ func OracleUpdateExecutorSimulation(
 				fp.Time,
 			)
 			log.Infof("updater -- filterPoint received at unix timestamp (now) %v vs fp.Time %v", timestamp, fp.Time.Unix())
-			key := models.GetOracleKeySimulation(fp.Pair)
+			key := fp.Pair.GetOracleKey(fp.SourceType)
+			if key == "" {
+				log.Warnf("updater - skipping filter point with empty oracle key for asset %s", fp.Pair.QuoteToken.Symbol)
+				continue
+			}
 			keys = append(keys, key)
 			values = append(values, utils.ScaleFloat(fp.Value, decimals))
 		}
@@ -98,7 +102,11 @@ func OracleUpdateExecutor(
 				fp.Value,
 				fp.Time,
 			)
-			key := models.GetOracleKey(fp.SourceType, fp.Pair)
+			key := fp.Pair.GetOracleKey(fp.SourceType)
+			if key == "" {
+				log.Warnf("updater - skipping filter point with empty oracle key for asset %s", fp.Pair.QuoteToken.Symbol)
+				continue
+			}
 
 			// TO DO: amend this check once we switch to blockchain-address identifier!!
 			if _, ok := keysMap[key]; !ok {

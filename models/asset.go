@@ -69,7 +69,12 @@ func (a *Asset) GetOnchainPrice(
 		return
 	}
 
-	priceBig, timeUnixBig, err := caller.GetValue(&bind.CallOpts{}, a.Symbol+"/USD")
+	key := a.GetOracleKey()
+	if key == "" {
+		return AssetQuotation{}, errors.New("empty oracle key")
+	}
+
+	priceBig, timeUnixBig, err := caller.GetValue(&bind.CallOpts{}, key)
 	if err != nil {
 		return
 	}
@@ -177,4 +182,14 @@ func (a *Asset) GetBalance(poolAddress common.Address, client *ethclient.Client)
 	}
 	balance, _ := new(big.Float).Quo(big.NewFloat(0).SetInt(balanceBig), new(big.Float).SetFloat64(math.Pow10(int(a.Decimals)))).Float64()
 	return balance, nil
+}
+
+func (a *Asset) GetOracleKey() string {
+	blockchain := strings.ToUpper(strings.TrimSpace(a.Blockchain))
+	address := strings.ToLower(strings.TrimSpace(a.Address))
+	symbol := strings.ToUpper(strings.TrimSpace(a.Symbol))
+	if blockchain == "" || address == "" {
+		return ""
+	}
+	return symbol + "/USD:" + blockchain + "/" + address
 }

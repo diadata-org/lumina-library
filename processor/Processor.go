@@ -40,6 +40,10 @@ func Processor(
 		// Renew the price cache in each iteration. Could be refined by adjusting to the frequency of the source.
 		priceCacheMap := make(map[string]float64)
 
+		if filterType == string(FILTER_VWAP) {
+			tradesblocks = models.MergeTradesBlocksByPair(tradesblocks)
+		}
+
 		// --------------------------------------------------------------------------------------------
 		// 1. Compute an aggregated value for each pair on a given exchange using all collected trades.
 		// --------------------------------------------------------------------------------------------
@@ -52,10 +56,15 @@ func Processor(
 				continue
 			}
 
-			// filter switch, for instance LastPrice, Median, Average, Minimum, VWAP, etc.
-			sourceType, err := tb.GetSourceType()
-			if err != nil {
-				log.Warn(err)
+			// SourceType is not applicable for merged blocks in VWAP mode.
+			// Merged blocks contain trades from multiple exchanges (CEX + DEX),
+			// and VWAP does not rely on per-source aggregation.
+			var sourceType models.SourceType
+			if tb.IsAtomic() {
+				sourceType, err = tb.GetSourceType()
+				if err != nil {
+					log.Warn(err)
+				}
 			}
 
 			var atomicFilterValue float64
@@ -81,8 +90,9 @@ func Processor(
 					continue
 				}
 				log.Infof(
-					"Processor - VWAP filter value for market %s with %v trades: %v.",
-					tb.Trades[0].Exchange.Name+":"+tb.Trades[0].QuoteToken.Symbol+"-"+tb.Trades[0].BaseToken.Symbol,
+					"Processor - VWAP filter value for pair %s-%s with %v trades: %v.",
+					tb.Pair.QuoteToken.Symbol,
+					tb.Pair.BaseToken.Symbol,
 					len(tb.Trades),
 					atomicFilterValue,
 				)
@@ -116,10 +126,16 @@ func Processor(
 
 		switch metaFilterType {
 		case string(METAFILTER_MEDIAN):
-			filterPointsAggregated = metafilters.Median(filterPoints)
+			if filterType == string(FILTER_VWAP) {
+				filterPointsAggregated = filterPoints
+			} else {
+				filterPointsAggregated = metafilters.Median(filterPoints)
+			}
 			for _, fpm := range filterPointsAggregated {
 				log.Infof("Processor - filter %s for %s: %v.", fpm.Name, fpm.Pair.QuoteToken.Symbol, fpm.Value)
 			}
+		case string(METAFILTER_TRIMMED_VWAP):
+			filterPointsAggregated = filterPoints
 		}
 
 		filtersChannel <- filterPointsAggregated

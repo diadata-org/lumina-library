@@ -123,11 +123,12 @@ type TradeVolume struct {
 func VWAP(trades []TradeVolume) float64 {
 	var sumPriceVolume, sumVolume float64
 	for _, t := range trades {
-		if t.Volume <= 0 {
+		absVol := math.Abs(t.Volume)
+		if absVol == 0 {
 			continue
 		}
-		sumPriceVolume += t.Price * t.Volume
-		sumVolume += t.Volume
+		sumPriceVolume += t.Price * absVol
+		sumVolume += absVol
 	}
 	if sumVolume == 0 {
 		return 0

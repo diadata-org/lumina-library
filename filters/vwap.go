@@ -2,6 +2,7 @@ package filters
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	models "github.com/diadata-org/lumina-library/models"
@@ -24,6 +25,7 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64) (float64, tim
 	var tradeVolumes []utils.TradeVolume
 	var latestTime time.Time
 
+	exchangeSet := make(map[string]struct{})
 	for _, t := range tradesblock.Trades {
 		tradeVolumes = append(tradeVolumes, utils.TradeVolume{
 			Price:  t.Price,
@@ -32,16 +34,22 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64) (float64, tim
 		if t.Time.After(latestTime) {
 			latestTime = t.Time
 		}
+		exchangeSet[t.Exchange.Name] = struct{}{}
 	}
+	var exchanges []string
+	for name := range exchangeSet {
+		exchanges = append(exchanges, name)
+	}
+	exchangeList := strings.Join(exchanges, ", ")
 
 	// Sort by volume ascending.
 	sorted := utils.SortByVolume(tradeVolumes)
 	medianIdx := len(sorted) / 2
 	log.Debugf(
-		"VWAPFilter: %s-%s on %s — median volume trade: price=%.6f volume=%.6f (%d total trades)",
+		"VWAPFilter: %s-%s [%s] — median volume trade: price=%.6f volume=%.6f (%d total trades)",
 		tradesblock.Pair.QuoteToken.Symbol,
 		tradesblock.Pair.BaseToken.Symbol,
-		tradesblock.Trades[0].Exchange.Name,
+		exchangeList,
 		sorted[medianIdx].Price,
 		sorted[medianIdx].Volume,
 		len(sorted),
@@ -50,10 +58,10 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64) (float64, tim
 	// Remove the single lowest-volume and single highest-volume trade.
 	trimmed := utils.TrimExtremesByVolume(sorted)
 	log.Debugf(
-		"VWAPFilter: %s-%s on %s — %d trades after trimming extremes",
+		"VWAPFilter: %s-%s [%s] — %d trades after trimming extremes",
 		tradesblock.Pair.QuoteToken.Symbol,
 		tradesblock.Pair.BaseToken.Symbol,
-		tradesblock.Trades[0].Exchange.Name,
+		exchangeList,
 		len(trimmed),
 	)
 
@@ -67,10 +75,10 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64) (float64, tim
 	}
 
 	log.Infof(
-		"VWAPFilter: %s-%s on %s → %.6f USD (basePrice=%.6f, %d/%d trades used)",
+		"VWAPFilter: %s-%s [%s] → %.6f USD (basePrice=%.6f, %d/%d trades used)",
 		tradesblock.Pair.QuoteToken.Symbol,
 		tradesblock.Pair.BaseToken.Symbol,
-		tradesblock.Trades[0].Exchange.Name,
+		exchangeList,
 		vwap,
 		basePrice,
 		len(trimmed),

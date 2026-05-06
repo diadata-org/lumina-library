@@ -45,7 +45,11 @@ func (p *Pair) ExchangePairIdentifier(exchange string) string {
 }
 
 func (p *Pair) Identifier() string {
-	return p.QuoteToken.Blockchain + "-" + p.QuoteToken.Address + "-" + p.BaseToken.Blockchain + "-" + p.BaseToken.Address
+	quoteBlockchain := strings.ToUpper(strings.TrimSpace(p.QuoteToken.Blockchain))
+	quoteAddress := strings.ToLower(strings.TrimSpace(p.QuoteToken.Address))
+	baseBlockchain := strings.ToUpper(strings.TrimSpace(p.BaseToken.Blockchain))
+	baseAddress := strings.ToLower(strings.TrimSpace(p.BaseToken.Address))
+	return quoteBlockchain + "-" + quoteAddress + "-" + baseBlockchain + "-" + baseAddress
 }
 
 // According to pairs config file + symbol identifiers directory, construct []ExchangePair
@@ -208,4 +212,21 @@ func GetWhitelistedPoolsFromConfig(exchange string) (whitelistedPools []common.A
 		whitelistedPools = append(whitelistedPools, common.HexToAddress(pool.Address))
 	}
 	return
+}
+
+func (p *Pair) GetOracleKey(sourceType SourceType) string {
+	key := p.QuoteToken.GetOracleKey()
+	if key == "" {
+		return ""
+	}
+	switch sourceType {
+	case SourceType(""):
+		return key
+	case SIMULATION_SOURCE:
+		return string(SIMULATION_SOURCE) + ":" + key
+	case DEX_SOURCE:
+		return string(DEX_SOURCE) + ":" + key
+	default:
+		return ""
+	}
 }
