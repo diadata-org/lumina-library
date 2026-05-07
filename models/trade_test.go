@@ -101,8 +101,8 @@ func TestMergeTradesBlocksByPair(t *testing.T) {
 		t.Fatalf("expected 2 merged blocks, got %d", len(result))
 	}
 
-	btcKey := btcPair.Identifier()
-	ethKey := ethPair.Identifier()
+	btcKey := btcPair.GetOracleKey(SourceType(""))
+	ethKey := ethPair.GetOracleKey(SourceType(""))
 
 	// --- BTC block ---
 	btcBlock, ok := result[btcKey]
@@ -164,7 +164,7 @@ func TestMergeTradesBlocksByPair_SingleBlock(t *testing.T) {
 	if len(result) != 1 {
 		t.Fatalf("expected 1 block, got %d", len(result))
 	}
-	block := result[pair.Identifier()]
+	block := result[pair.GetOracleKey(SourceType(""))]
 	if block.Atomic {
 		t.Error("expected Atomic=false even for single-exchange merge")
 	}

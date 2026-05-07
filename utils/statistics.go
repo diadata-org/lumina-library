@@ -118,8 +118,10 @@ type TradeVolume struct {
 //
 //	VWAP = Σ(Price_i × Volume_i) / Σ(Volume_i)
 //
-// Trades with zero Volume are ignored. Returns 0 if no trades have
-// positive volume.
+// Volumes are treated as unsigned: DEX trades may carry signed volume
+// (negative = sell), but buys and sells both contribute to liquidity and
+// price discovery, so we take the absolute value here.
+// Trades with zero Volume are ignored.
 func VWAP(trades []TradeVolume) float64 {
 	var sumPriceVolume, sumVolume float64
 	for _, t := range trades {
@@ -145,8 +147,10 @@ func SortByVolume(trades []TradeVolume) []TradeVolume {
 	return sorted
 }
 
+const MinTrimSize = 2
+
 func TrimExtremesByVolume(trades []TradeVolume) []TradeVolume {
-	if len(trades) <= 2 {
+	if len(trades) <= MinTrimSize {
 		return trades
 	}
 	return trades[1 : len(trades)-1]

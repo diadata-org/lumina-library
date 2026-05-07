@@ -16,10 +16,10 @@ var (
 	filterType       = utils.Getenv("FILTER_TYPE", string(FILTER_LAST_PRICE))
 	metaFilterType   = utils.Getenv("METAFILTER_TYPE", string(METAFILTER_MEDIAN))
 
-	FILTER_LAST_PRICE       = models.FilterType("LastPrice")
-	METAFILTER_MEDIAN       = models.MetafilterType("Median")
-	METAFILTER_TRIMMED_VWAP = models.MetafilterType("TrimmedVWAPMergedTrades")
-	FILTER_VWAP             = models.FilterType("VWAP")
+	FILTER_LAST_PRICE      = models.FilterType("LastPrice")
+	METAFILTER_MEDIAN      = models.MetafilterType("Median")
+	METAFILTER_PASSTHROUGH = models.MetafilterType("Passthrough")
+	FILTER_VWAP            = models.FilterType("VWAP")
 )
 
 func init() {

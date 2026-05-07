@@ -15,7 +15,7 @@ import (
 // and an error if no usable trades are available.
 func VWAPFilter(tradesblock models.TradesBlock, basePrice float64) (float64, time.Time, error) {
 	if len(tradesblock.Trades) == 0 {
-		return 0, time.Now(), fmt.Errorf(
+		return 0, time.Time{}, fmt.Errorf(
 			"VWAPFilter: no trades available for %s-%s",
 			tradesblock.Pair.QuoteToken.Symbol,
 			tradesblock.Pair.BaseToken.Symbol,

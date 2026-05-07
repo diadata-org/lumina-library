@@ -224,8 +224,6 @@ func (p *Pair) GetOracleKey(sourceType SourceType) string {
 		return key
 	case SIMULATION_SOURCE:
 		return string(SIMULATION_SOURCE) + ":" + key
-	case DEX_SOURCE:
-		return string(DEX_SOURCE) + ":" + key
 	default:
 		return ""
 	}

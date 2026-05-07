@@ -60,7 +60,7 @@ func Processor(
 			// Merged blocks contain trades from multiple exchanges (CEX + DEX),
 			// and VWAP does not rely on per-source aggregation.
 			var sourceType models.SourceType
-			if tb.IsAtomic() {
+			if tb.Atomic {
 				sourceType, err = tb.GetSourceType()
 				if err != nil {
 					log.Warn(err)
@@ -126,16 +126,14 @@ func Processor(
 
 		switch metaFilterType {
 		case string(METAFILTER_MEDIAN):
-			if filterType == string(FILTER_VWAP) {
-				filterPointsAggregated = filterPoints
-			} else {
-				filterPointsAggregated = metafilters.Median(filterPoints)
-			}
+			filterPointsAggregated = metafilters.Median(filterPoints)
 			for _, fpm := range filterPointsAggregated {
 				log.Infof("Processor - filter %s for %s: %v.", fpm.Name, fpm.Pair.QuoteToken.Symbol, fpm.Value)
 			}
-		case string(METAFILTER_TRIMMED_VWAP):
+		case string(METAFILTER_PASSTHROUGH):
 			filterPointsAggregated = filterPoints
+		default:
+			log.Warnf("Processor - no metafilter matched for metaFilterType=%q, skipping update", metaFilterType)
 		}
 
 		filtersChannel <- filterPointsAggregated
