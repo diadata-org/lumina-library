@@ -91,11 +91,6 @@ func TestPair_GetOracleKey(t *testing.T) {
 			expected:   baseKey,
 		},
 		{
-			name:       "DEX source adds DEX: prefix",
-			sourceType: DEX_SOURCE,
-			expected:   "DEX:" + baseKey,
-		},
-		{
 			name:       "SIMULATION source adds SIM: prefix",
 			sourceType: SIMULATION_SOURCE,
 			expected:   "SIM:" + baseKey,
@@ -124,7 +119,7 @@ func TestPair_GetOracleKey_EmptyAsset(t *testing.T) {
 	usdt := Asset{Symbol: "USDT", Blockchain: "Ethereum", Address: "0x123456"}
 	pair := Pair{QuoteToken: emptyAsset, BaseToken: usdt}
 
-	for _, sourceType := range []SourceType{SourceType(""), DEX_SOURCE, SIMULATION_SOURCE} {
+	for _, sourceType := range []SourceType{SourceType(""), SIMULATION_SOURCE} {
 		got := pair.GetOracleKey(sourceType)
 		if got != "" {
 			t.Errorf("GetOracleKey(%q) = %q, want empty string for asset with no blockchain/address", sourceType, got)

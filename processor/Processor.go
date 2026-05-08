@@ -84,7 +84,7 @@ func Processor(
 					atomicFilterValue,
 				)
 			case string(FILTER_VWAP):
-				atomicFilterValue, _, err = filters.VWAPFilter(tb, basePrice)
+				atomicFilterValue, _, err = filters.VWAPFilter(tb, basePrice, toleranceSeconds)
 				if err != nil {
 					log.Warn("VWAP filter: ", err)
 					continue

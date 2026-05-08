@@ -37,4 +37,11 @@ func init() {
 		log.Errorf("Parse TOLERANCE_SECONDS environment variable: %v.", err)
 	}
 
+	// FILTER_TYPE=VWAP must be used with METAFILTER_TYPE=Passthrough.
+	// VWAP already produces one filter point per pair after merging, so running
+	// Median on top has no input to aggregate and will produce empty updates if misconfigured.
+	if filterType == string(FILTER_VWAP) && metaFilterType != string(METAFILTER_PASSTHROUGH) {
+		log.Fatalf("FILTER_TYPE=VWAP requires METAFILTER_TYPE=Passthrough, got %q", metaFilterType)
+	}
+
 }
