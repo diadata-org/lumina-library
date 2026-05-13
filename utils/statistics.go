@@ -111,7 +111,7 @@ func max(samples []float64) (maximum float64, index int) {
 
 type TradeVolume struct {
 	Price  float64
-	Volume float64 //non-negative volume
+	Volume float64 // volume may be negative (sell-side); VWAP takes absolute value
 }
 
 // VWAP computes the volume-weighted average price from @trades.
@@ -147,10 +147,10 @@ func SortByVolume(trades []TradeVolume) []TradeVolume {
 	return sorted
 }
 
-const MinTrimSize = 2
+const MinSizeForTrimming = 3
 
 func TrimExtremesByVolume(trades []TradeVolume) []TradeVolume {
-	if len(trades) <= MinTrimSize {
+	if len(trades) < MinSizeForTrimming {
 		return trades
 	}
 	return trades[1 : len(trades)-1]

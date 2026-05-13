@@ -101,7 +101,7 @@ func TestPair_GetOracleKey(t *testing.T) {
 			expected:   "SIM:" + baseKey,
 		},
 		{
-			name:       "unknown source type returns empty string",
+			name:       "unknown source type returns key unchanged",
 			sourceType: SourceType("UNKNOWN"),
 			expected:   baseKey,
 		},

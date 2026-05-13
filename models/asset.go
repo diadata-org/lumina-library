@@ -184,11 +184,17 @@ func (a *Asset) GetBalance(poolAddress common.Address, client *ethclient.Client)
 	return balance, nil
 }
 
+// GetOracleKey returns the canonical oracle key for this asset in the format
+// "SYMBOL/USD:BLOCKCHAIN/address", where SYMBOL and BLOCKCHAIN are upper-cased
+// and address is lower-cased. Whitespace is trimmed from all fields.
+// BaseToken is intentionally ignored — the oracle publishes quote/USD prices
+// and base normalization is handled separately via basePrice.
+// Returns "" if Blockchain or Address is empty.
 func (a *Asset) GetOracleKey() string {
 	blockchain := strings.ToUpper(strings.TrimSpace(a.Blockchain))
 	address := strings.ToLower(strings.TrimSpace(a.Address))
 	symbol := strings.ToUpper(strings.TrimSpace(a.Symbol))
-	if blockchain == "" || address == "" {
+	if blockchain == "" || address == "" || symbol == "" {
 		return ""
 	}
 	return symbol + "/USD:" + blockchain + "/" + address

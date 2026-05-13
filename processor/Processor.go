@@ -98,7 +98,7 @@ func Processor(
 				)
 			}
 
-			// Identify @Pair and @SourceType from atomic tradesblock.
+			// Identify @Pair and @SourceType from tradesblock (may be merged in VWAP mode).
 			filterPoint := models.FilterPointPair{
 				Pair:       tb.Pair,
 				Value:      atomicFilterValue,

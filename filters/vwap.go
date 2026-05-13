@@ -2,10 +2,11 @@ package filters
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
-	models "github.com/diadata-org/lumina-library/models"
+	"github.com/diadata-org/lumina-library/models"
 	"github.com/diadata-org/lumina-library/utils"
 )
 
@@ -22,7 +23,7 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64, toleranceSeco
 		)
 	}
 
-	var tradeVolumes []utils.TradeVolume
+	tradeVolumes := make([]utils.TradeVolume, 0, len(tradesblock.Trades))
 	var latestTime time.Time
 
 	cutoff := tradesblock.EndTime.Add(-time.Duration(toleranceSeconds) * time.Second)
@@ -52,6 +53,7 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64, toleranceSeco
 	for name := range exchangeSet {
 		exchanges = append(exchanges, name)
 	}
+	sort.Strings(exchanges)
 	exchangeList := strings.Join(exchanges, ", ")
 
 	if len(tradeVolumes) == 0 {

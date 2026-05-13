@@ -139,8 +139,8 @@ func SimulatedTradesBlockToTradesBlock(stb SimulatedTradesBlock) (tb TradesBlock
 //
 // The result is:
 //
-//	"BTC-USDT" → [trade1, trade2, trade3]  StartTime=1000 EndTime=1200 Atomic=false
-//	"ETH-USDT" → [trade4, trade5]          StartTime=1000 EndTime=1150 Atomic=false
+//	"BTC/USD:ETHEREUM/0xbtc…" → [trade1, trade2, trade3]  StartTime=1000 EndTime=1200 Atomic=false
+//	"ETH/USD:ETHEREUM/0xeth…" → [trade4, trade5]          StartTime=1000 EndTime=1150 Atomic=false
 //
 // StartTime and EndTime are expanded to cover the full range across all merged blocks.
 // The resulting blocks have Atomic=false since they contain trades from multiple exchanges.

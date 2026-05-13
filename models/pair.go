@@ -214,6 +214,11 @@ func GetWhitelistedPoolsFromConfig(exchange string) (whitelistedPools []common.A
 	return
 }
 
+// GetOracleKey returns the oracle key for this pair given @sourceType.
+// BaseToken is intentionally ignored: the oracle publishes quote/USD prices,
+// so BTC-USDT and BTC-USDC collapse to the same key; base normalization is
+// handled separately via basePrice.
+// Returns "" if the QuoteToken has no Blockchain or Address.
 func (p *Pair) GetOracleKey(sourceType SourceType) string {
 	key := p.QuoteToken.GetOracleKey()
 	if key == "" {
