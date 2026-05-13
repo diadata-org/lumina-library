@@ -91,6 +91,11 @@ func TestPair_GetOracleKey(t *testing.T) {
 			expected:   baseKey,
 		},
 		{
+			name:       "DEX source returns key as-is",
+			sourceType: DEX_SOURCE,
+			expected:   baseKey,
+		},
+		{
 			name:       "SIMULATION source adds SIM: prefix",
 			sourceType: SIMULATION_SOURCE,
 			expected:   "SIM:" + baseKey,
@@ -98,7 +103,7 @@ func TestPair_GetOracleKey(t *testing.T) {
 		{
 			name:       "unknown source type returns empty string",
 			sourceType: SourceType("UNKNOWN"),
-			expected:   "",
+			expected:   baseKey,
 		},
 	}
 

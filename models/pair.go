@@ -220,11 +220,10 @@ func (p *Pair) GetOracleKey(sourceType SourceType) string {
 		return ""
 	}
 	switch sourceType {
-	case SourceType(""):
-		return key
 	case SIMULATION_SOURCE:
 		return string(SIMULATION_SOURCE) + ":" + key
 	default:
-		return ""
+		// For CEX, DEX, and merged blocks, return the key as-is.
+		return key
 	}
 }
