@@ -5,6 +5,8 @@ import (
 	"sort"
 )
 
+const MinSizeForTrimming = 3
+
 func Median(samples []float64) (median float64) {
 	var length = len(samples)
 	if length > 0 {
@@ -147,8 +149,11 @@ func SortByVolume(trades []TradeVolume) []TradeVolume {
 	return sorted
 }
 
-const MinSizeForTrimming = 3
-
+// TrimExtremesByVolume removes the single lowest- and highest-volume trade from a
+// sorted slice to reduce the impact of outliers.
+// Note: for small samples (3 trades → 1 kept, 4 trades → 2 kept) this is aggressive
+// and the result is closer to median-price than true VWAP.
+// Trimming is skipped entirely for slices smaller than MinSizeForTrimming.
 func TrimExtremesByVolume(trades []TradeVolume) []TradeVolume {
 	if len(trades) < MinSizeForTrimming {
 		return trades

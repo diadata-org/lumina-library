@@ -26,6 +26,9 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64, toleranceSeco
 	tradeVolumes := make([]utils.TradeVolume, 0, len(tradesblock.Trades))
 	var latestTime time.Time
 
+	// Cutoff is relative to the block's EndTime rather than wall-clock time.
+	// This is intentional: for merged blocks, EndTime reflects when the trigger
+	// fired and defines the observation window consistently across all source blocks.
 	cutoff := tradesblock.EndTime.Add(-time.Duration(toleranceSeconds) * time.Second)
 	exchangeSet := make(map[string]struct{})
 	for _, t := range tradesblock.Trades {
