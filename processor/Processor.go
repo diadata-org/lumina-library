@@ -30,6 +30,14 @@ func Processor(
 ) {
 
 	log.Info("Processor - Start......")
+
+	// FILTER_TYPE=VWAP must be used with METAFILTER_TYPE=Passthrough.
+	// VWAP already produces one filter point per pair after merging, so running
+	// Median on top has no input to aggregate and will produce empty updates if misconfigured.
+	if filterType == string(FILTER_VWAP) && metaFilterType != string(METAFILTER_PASSTHROUGH) {
+		log.Errorf("FILTER_TYPE=VWAP requires METAFILTER_TYPE=Passthrough, got %q", metaFilterType)
+	}
+
 	// Collector starts collecting trades in the background and sends atomic tradesblocks to @tradesblockChannel.
 	go scrapers.Collector(exchangePairs, pools, tradesblockChannel, triggerChannel, failoverChannel, branchMarketConfig, wg)
 
