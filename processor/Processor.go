@@ -36,6 +36,7 @@ func Processor(
 	// Median on top has no input to aggregate and will produce empty updates if misconfigured.
 	if filterType == string(FILTER_VWAP) && metaFilterType != string(METAFILTER_PASSTHROUGH) {
 		log.Errorf("FILTER_TYPE=VWAP requires METAFILTER_TYPE=Passthrough, got %q", metaFilterType)
+		return
 	}
 
 	// Collector starts collecting trades in the background and sends atomic tradesblocks to @tradesblockChannel.

@@ -45,11 +45,7 @@ func (p *Pair) ExchangePairIdentifier(exchange string) string {
 }
 
 func (p *Pair) Identifier() string {
-	quoteBlockchain := strings.ToUpper(strings.TrimSpace(p.QuoteToken.Blockchain))
-	quoteAddress := strings.ToLower(strings.TrimSpace(p.QuoteToken.Address))
-	baseBlockchain := strings.ToUpper(strings.TrimSpace(p.BaseToken.Blockchain))
-	baseAddress := strings.ToLower(strings.TrimSpace(p.BaseToken.Address))
-	return quoteBlockchain + "-" + quoteAddress + "-" + baseBlockchain + "-" + baseAddress
+	return p.QuoteToken.Blockchain + "-" + p.QuoteToken.Address + "-" + p.BaseToken.Blockchain + "-" + p.BaseToken.Address
 }
 
 // According to pairs config file + symbol identifiers directory, construct []ExchangePair
