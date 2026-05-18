@@ -14,9 +14,9 @@ import (
 //
 // Returns the VWAP price (in USD), the timestamp of the most recent trade,
 // and an error if no usable trades are available.
-func VWAPFilter(tradesblock models.TradesBlock, basePrice float64, toleranceSeconds int64) (float64, time.Time, error) {
+func VWAPFilter(tradesblock models.TradesBlock, basePrice float64, toleranceSeconds int64) (float64, float64, time.Time, error) {
 	if len(tradesblock.Trades) == 0 {
-		return 0, time.Time{}, fmt.Errorf(
+		return 0, 0, time.Time{}, fmt.Errorf(
 			"VWAPFilter: no trades available for %s-%s",
 			tradesblock.Pair.QuoteToken.Symbol,
 			tradesblock.Pair.BaseToken.Symbol,
@@ -60,7 +60,7 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64, toleranceSeco
 	exchangeList := strings.Join(exchanges, ", ")
 
 	if len(tradeVolumes) == 0 {
-		return 0, time.Time{}, fmt.Errorf(
+		return 0, 0, time.Time{}, fmt.Errorf(
 			"VWAPFilter: all trades are stale for %s-%s",
 			tradesblock.Pair.QuoteToken.Symbol,
 			tradesblock.Pair.BaseToken.Symbol,
@@ -91,15 +91,16 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64, toleranceSeco
 	)
 
 	if basePrice == 0 {
-		return 0, time.Time{}, fmt.Errorf(
+		return 0, 0, time.Time{}, fmt.Errorf(
 			"VWAPFilter: basePrice is zero for %s-%s",
 			tradesblock.Pair.QuoteToken.Symbol,
 			tradesblock.Pair.BaseToken.Symbol,
 		)
 	}
-	vwap := basePrice * utils.VWAP(trimmed)
+	rawVwap, totalVolume := utils.VWAPWithVolume(trimmed)
+	vwap := basePrice * rawVwap
 	if vwap == 0 {
-		return 0, latestTime, fmt.Errorf(
+		return 0, 0, latestTime, fmt.Errorf(
 			"VWAPFilter: VWAP is zero for %s-%s (all volumes may be zero)",
 			tradesblock.Pair.QuoteToken.Symbol,
 			tradesblock.Pair.BaseToken.Symbol,
@@ -107,15 +108,16 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64, toleranceSeco
 	}
 
 	log.Infof(
-		"VWAPFilter: %s-%s [%s] → %.6f USD (basePrice=%.6f, %d/%d trades used)",
+		"VWAPFilter: %s-%s [%s] → %.6f USD (basePrice=%.6f, totalVolume=%.6f, %d/%d trades used)",
 		tradesblock.Pair.QuoteToken.Symbol,
 		tradesblock.Pair.BaseToken.Symbol,
 		exchangeList,
 		vwap,
 		basePrice,
+		totalVolume,
 		len(trimmed),
 		len(tradeVolumes),
 	)
 
-	return vwap, latestTime, nil
+	return vwap, totalVolume, latestTime, nil
 }

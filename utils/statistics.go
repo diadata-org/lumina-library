@@ -140,6 +140,26 @@ func VWAP(trades []TradeVolume) float64 {
 	return sumPriceVolume / sumVolume
 }
 
+// VWAPWithVolume computes the volume-weighted average price from @trades and also
+// returns the total absolute volume used in the calculation.
+// This is used when the caller needs to propagate volume for a subsequent
+// cross-source VWAP aggregation (e.g. the VWAP metafilter).
+func VWAPWithVolume(trades []TradeVolume) (vwap float64, totalVolume float64) {
+	var sumPriceVolume float64
+	for _, t := range trades {
+		absVol := math.Abs(t.Volume)
+		if absVol == 0 {
+			continue
+		}
+		sumPriceVolume += t.Price * absVol
+		totalVolume += absVol
+	}
+	if totalVolume == 0 {
+		return 0, 0
+	}
+	return sumPriceVolume / totalVolume, totalVolume
+}
+
 func SortByVolume(trades []TradeVolume) []TradeVolume {
 	sorted := make([]TradeVolume, len(trades))
 	copy(sorted, trades)

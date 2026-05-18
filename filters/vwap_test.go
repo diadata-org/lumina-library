@@ -59,6 +59,7 @@ func TestVWAPFilter(t *testing.T) {
 		wantErr       bool
 		wantErrSubstr string
 		wantPrice     float64
+		wantVolume    float64 // total absolute volume after stale exclusion and trim
 	}{
 		{
 			name:          "no trades at all",
@@ -98,10 +99,11 @@ func TestVWAPFilter(t *testing.T) {
 			block: makeBlock([]models.Trade{
 				freshTrade(2000, 1.0, "Binance"),
 			}),
-			basePrice: basePrice,
-			tolerance: tol,
-			wantErr:   false,
-			wantPrice: 2000.0,
+			basePrice:  basePrice,
+			tolerance:  tol,
+			wantErr:    false,
+			wantPrice:  2000.0,
+			wantVolume: 1.0,
 		},
 		{
 			// Two trades also bypass trim (len <= MinTrimSize=2).
@@ -111,10 +113,11 @@ func TestVWAPFilter(t *testing.T) {
 				freshTrade(2000, 1.0, "Binance"),
 				freshTrade(2100, 3.0, "Coinbase"),
 			}),
-			basePrice: basePrice,
-			tolerance: tol,
-			wantErr:   false,
-			wantPrice: 2075.0,
+			basePrice:  basePrice,
+			tolerance:  tol,
+			wantErr:    false,
+			wantPrice:  2075.0,
+			wantVolume: 4.0,
 		},
 		{
 			// Three trades: lowest (vol=1) and highest (vol=5) are trimmed,
@@ -126,10 +129,11 @@ func TestVWAPFilter(t *testing.T) {
 				freshTrade(2050, 2.0, "Coinbase"), // middle — kept
 				freshTrade(2100, 5.0, "Uniswap"),  // highest vol — trimmed
 			}),
-			basePrice: basePrice,
-			tolerance: tol,
-			wantErr:   false,
-			wantPrice: 2050.0,
+			basePrice:  basePrice,
+			tolerance:  tol,
+			wantErr:    false,
+			wantPrice:  2050.0,
+			wantVolume: 2.0,
 		},
 		{
 			// Four trades: vol=1 (lowest) and vol=10 (highest) trimmed.
@@ -142,10 +146,11 @@ func TestVWAPFilter(t *testing.T) {
 				freshTrade(2060, 4.0, "Coinbase"), // kept
 				freshTrade(2100, 10.0, "Uniswap"), // highest vol — trimmed
 			}),
-			basePrice: basePrice,
-			tolerance: tol,
-			wantErr:   false,
-			wantPrice: 12280.0 / 6.0,
+			basePrice:  basePrice,
+			tolerance:  tol,
+			wantErr:    false,
+			wantPrice:  12280.0 / 6.0,
+			wantVolume: 6.0,
 		},
 		{
 			// Stale trades are excluded before VWAP; only the two fresh ones remain.
@@ -156,10 +161,11 @@ func TestVWAPFilter(t *testing.T) {
 				freshTrade(2000, 1.0, "Binance"),
 				freshTrade(2100, 3.0, "Coinbase"),
 			}),
-			basePrice: basePrice,
-			tolerance: tol,
-			wantErr:   false,
-			wantPrice: 2075.0,
+			basePrice:  basePrice,
+			tolerance:  tol,
+			wantErr:    false,
+			wantPrice:  2075.0,
+			wantVolume: 4.0,
 		},
 		{
 			// Negative volume (sell-side DEX trade): VWAP uses abs(volume),
@@ -172,10 +178,11 @@ func TestVWAPFilter(t *testing.T) {
 				freshTrade(2050, 2.0, "Binance"),  // kept
 				freshTrade(2100, 5.0, "Coinbase"), // trimmed
 			}),
-			basePrice: basePrice,
-			tolerance: tol,
-			wantErr:   false,
-			wantPrice: 2050.0,
+			basePrice:  basePrice,
+			tolerance:  tol,
+			wantErr:    false,
+			wantPrice:  2050.0,
+			wantVolume: 2.0,
 		},
 		{
 			// basePrice != 1: result should be basePrice * VWAP(trimmed prices).
@@ -187,16 +194,17 @@ func TestVWAPFilter(t *testing.T) {
 				freshTrade(2050, 2.0, "Coinbase"),
 				freshTrade(2100, 5.0, "Kraken"),
 			}),
-			basePrice: 0.999,
-			tolerance: tol,
-			wantErr:   false,
-			wantPrice: 0.999 * 2050.0,
+			basePrice:  0.999,
+			tolerance:  tol,
+			wantErr:    false,
+			wantPrice:  0.999 * 2050.0,
+			wantVolume: 2.0,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			price, ts, err := VWAPFilter(tc.block, tc.basePrice, tc.tolerance)
+			price, vol, ts, err := VWAPFilter(tc.block, tc.basePrice, tc.tolerance)
 
 			if tc.wantErr {
 				if err == nil {
@@ -213,6 +221,9 @@ func TestVWAPFilter(t *testing.T) {
 			}
 			if diff := tc.wantPrice - price; diff > epsilon || diff < -epsilon {
 				t.Errorf("price: want %.6f, got %.6f (diff=%.6f)", tc.wantPrice, price, diff)
+			}
+			if diff := tc.wantVolume - vol; diff > epsilon || diff < -epsilon {
+				t.Errorf("volume: want %.6f, got %.6f (diff=%.6f)", tc.wantVolume, vol, diff)
 			}
 			if ts.IsZero() {
 				t.Errorf("expected non-zero timestamp, got zero time")

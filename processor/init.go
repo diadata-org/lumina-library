@@ -11,9 +11,9 @@ import (
 
 const (
 	FILTER_LAST_PRICE      = models.FilterType("LastPrice")
-	METAFILTER_MEDIAN      = models.MetafilterType("Median")
-	METAFILTER_PASSTHROUGH = models.MetafilterType("Passthrough")
 	FILTER_VWAP            = models.FilterType("VWAP")
+	METAFILTER_MEDIAN      = models.MetafilterType("Median")
+	METAFILTER_VWAP = models.MetafilterType("VWAP")
 )
 
 // For processing, all filters with timestamp older than time.Now()-toleranceSeconds are discarded.
