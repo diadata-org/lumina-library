@@ -91,6 +91,13 @@ func Processor(
 					atomicFilterValue,
 					atomicVolume,
 				)
+			default:
+				log.Warnf("Processor - unknown filterType %q for pair %s-%s, skipping.",
+					filterType,
+					tb.Pair.QuoteToken.Symbol,
+					tb.Pair.BaseToken.Symbol,
+				)
+				continue
 			}
 
 			filterPoint := models.FilterPointPair{
