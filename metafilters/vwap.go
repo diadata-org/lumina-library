@@ -1,9 +1,14 @@
 package metafilters
 
 import (
+	"sort"
+
 	"github.com/diadata-org/lumina-library/models"
 	"github.com/diadata-org/lumina-library/utils"
+	"github.com/sirupsen/logrus"
 )
+
+var log = logrus.New()
 
 const vwapMetaFilterName = "vwap"
 
@@ -31,6 +36,9 @@ func VWAPMeta(filterPoints []models.FilterPointPair) (result []models.FilterPoin
 		var value float64
 		if totalVolume == 0 {
 			// Fallback: equal-weight average when no volume information is available.
+			// This typically means the upstream filter type does not produce volume
+			// (e.g. LastPrice). Operators should alarm on this log line.
+			log.Warnf("VWAPMeta: zero volume for asset %s, falling back to equal-weight average", asset.Symbol)
 			value = utils.Average(models.GetValuesFromFilterPoints(fps))
 		} else {
 			for _, fp := range fps {
@@ -38,12 +46,32 @@ func VWAPMeta(filterPoints []models.FilterPointPair) (result []models.FilterPoin
 			}
 		}
 
+		// Propagate SourceType from the first input filter point so that
+		// downstream consumers (e.g. onchain/updater.go calling GetOracleKey)
+		// can correctly apply source-specific key prefixes.
+		// Note: SIMULATION_SOURCE data is handled by a separate pipeline and
+		// is never expected to flow through VWAPMeta. This propagation is
+		// defensive in case that assumption changes in the future.
+		var sourceType models.SourceType
+		if len(fps) > 0 {
+			sourceType = fps[0].SourceType
+		}
+
 		result = append(result, models.FilterPointPair{
-			Pair:  models.Pair{QuoteToken: asset},
-			Value: value,
-			Name:  vwapMetaFilterName,
-			Time:  models.GetLatestTimestampFromFilterPoints(fps),
+			Pair:       models.Pair{QuoteToken: asset},
+			Value:      value,
+			Name:       vwapMetaFilterName,
+			Time:       models.GetLatestTimestampFromFilterPoints(fps),
+			SourceType: sourceType,
 		})
 	}
+
+	// Sort by QuoteToken address for deterministic output ordering.
+	// VWAPMeta ranges over a map internally, so without this sort the result
+	// slice order varies run-to-run, which affects oracle batch write order.
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Pair.QuoteToken.Address < result[j].Pair.QuoteToken.Address
+	})
+
 	return
 }
