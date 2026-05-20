@@ -59,8 +59,6 @@ func TestVWAPMeta(t *testing.T) {
 		now  = time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 	)
 
-	_ = USDC // used only to construct Pairs
-
 	makeFP := func(quote models.Asset, value, volume float64, t time.Time) models.FilterPointPair {
 		return models.FilterPointPair{
 			Pair:   models.Pair{QuoteToken: quote, BaseToken: USDC},

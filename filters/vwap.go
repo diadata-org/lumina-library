@@ -23,6 +23,14 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64, toleranceSeco
 		)
 	}
 
+	if basePrice == 0 {
+		return 0, 0, time.Time{}, fmt.Errorf(
+			"VWAPFilter: basePrice is zero for %s-%s",
+			tradesblock.Pair.QuoteToken.Symbol,
+			tradesblock.Pair.BaseToken.Symbol,
+		)
+	}
+
 	tradeVolumes := make([]utils.TradeVolume, 0, len(tradesblock.Trades))
 	var latestTime time.Time
 
@@ -90,13 +98,6 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64, toleranceSeco
 		len(trimmed),
 	)
 
-	if basePrice == 0 {
-		return 0, 0, time.Time{}, fmt.Errorf(
-			"VWAPFilter: basePrice is zero for %s-%s",
-			tradesblock.Pair.QuoteToken.Symbol,
-			tradesblock.Pair.BaseToken.Symbol,
-		)
-	}
 	rawVwap, totalVolume := utils.VWAPWithVolume(trimmed)
 	vwap := basePrice * rawVwap
 	if vwap == 0 {

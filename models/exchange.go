@@ -67,13 +67,13 @@ func GetSymbolIdentificationMap(exchange string, branch string) (map[string]Asse
 	return identificationMap, nil
 }
 
-// GetSourceType returns the type of @exchange such as DEX. For CEX an empty SourceType is returned.
+// GetSourceType returns the SourceType of @exchange.
+// Only simulation exchanges return a non-empty SourceType (SIMULATION_SOURCE).
+// Both CEX and DEX return an empty SourceType since they share the same oracle key format.
 func GetSourceType(exchange Exchange) SourceType {
 	if exchange.Simulation {
 		return SIMULATION_SOURCE
 	}
-	if !exchange.Simulation && !exchange.Centralized {
-		return DEX_SOURCE
-	}
+	
 	return SourceType("")
 }

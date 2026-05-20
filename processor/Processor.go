@@ -56,7 +56,12 @@ func Processor(
 			// All blocks from Collector are atomic (single source). SourceType is always available.
 			sourceType, err := tb.GetSourceType()
 			if err != nil {
-				log.Warn(err)
+				log.Warnf("Processor - GetSourceType for pair %s-%s: %v, skipping.", 
+					tb.Pair.QuoteToken.Symbol, 
+					tb.Pair.BaseToken.Symbol, 
+					err,
+				)
+				continue
 			}
 
 			var atomicFilterValue float64
