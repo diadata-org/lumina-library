@@ -120,37 +120,37 @@ func TestVWAPFilter(t *testing.T) {
 			wantVolume: 4.0,
 		},
 		{
-			// Three trades: lowest (vol=1) and highest (vol=5) are trimmed,
-			// middle trade (2050, vol=2) remains.
-			// VWAP = 2050
-			name: "three trades — extremes trimmed, middle survives",
+			// Three trades: below MinSizeForTrimming=5, no trim applied.
+			// All three trades participate in VWAP.
+			// VWAP = (2000*1 + 2050*2 + 2100*5) / (1+2+5) = 26600/8 = 2075
+			name: "three trades — below trim threshold, all trades used",
 			block: makeBlock([]models.Trade{
-				freshTrade(2000, 1.0, "Binance"),  // lowest vol — trimmed
-				freshTrade(2050, 2.0, "Coinbase"), // middle — kept
-				freshTrade(2100, 5.0, "Uniswap"),  // highest vol — trimmed
+				freshTrade(2000, 1.0, "Binance"),
+				freshTrade(2050, 2.0, "Coinbase"),
+				freshTrade(2100, 5.0, "Uniswap"),
 			}),
 			basePrice:  basePrice,
 			tolerance:  tol,
 			wantErr:    false,
-			wantPrice:  2050.0,
-			wantVolume: 2.0,
+			wantPrice:  2075.0,
+			wantVolume: 8.0,
 		},
 		{
-			// Four trades: vol=1 (lowest) and vol=10 (highest) trimmed.
-			// Remaining: (2020, vol=2) and (2060, vol=4)
-			// VWAP = (2020*2 + 2060*4) / (2+4) = 12280/6 ≈ 2046.666...
-			name: "four trades — mixed CEX and DEX, weighted average after trim",
+			// Four trades: below MinSizeForTrimming=5, no trim applied.
+			// All four trades participate in VWAP.
+			// VWAP = (2000*1 + 2020*2 + 2060*4 + 2100*10) / (1+2+4+10) = 35280/17 ≈ 2075.294
+			name: "four trades — below trim threshold, all trades used",
 			block: makeBlock([]models.Trade{
-				freshTrade(2000, 1.0, "Kraken"),   // lowest vol — trimmed
-				freshTrade(2020, 2.0, "Binance"),  // kept
-				freshTrade(2060, 4.0, "Coinbase"), // kept
-				freshTrade(2100, 10.0, "Uniswap"), // highest vol — trimmed
+				freshTrade(2000, 1.0, "Kraken"),
+				freshTrade(2020, 2.0, "Binance"),
+				freshTrade(2060, 4.0, "Coinbase"),
+				freshTrade(2100, 10.0, "Uniswap"),
 			}),
 			basePrice:  basePrice,
 			tolerance:  tol,
 			wantErr:    false,
-			wantPrice:  12280.0 / 6.0,
-			wantVolume: 6.0,
+			wantPrice:  35280.0 / 17.0,
+			wantVolume: 17.0,
 		},
 		{
 			// Stale trades are excluded before VWAP; only the two fresh ones remain.
@@ -168,26 +168,27 @@ func TestVWAPFilter(t *testing.T) {
 			wantVolume: 4.0,
 		},
 		{
-			// Negative volume (sell-side DEX trade): VWAP uses abs(volume),
-			// so result is the same as if volume were positive.
-			// After abs: vol=1, vol=2, vol=5 → trim lowest and highest.
-			// Middle (2050, vol=2) remains. VWAP = 2050.
+			// Negative volume (sell-side DEX trade): VWAP uses abs(volume).
+			// Three trades, below MinSizeForTrimming=5, no trim applied.
+			// abs volumes: 1, 2, 5 → total = 8
+			// VWAP = (2000*1 + 2050*2 + 2100*5) / 8 = 2075
 			name: "negative volume sell trade — abs value used in VWAP",
 			block: makeBlock([]models.Trade{
-				freshTrade(2000, -1.0, "Uniswap"), // sell, |vol|=1 — trimmed
-				freshTrade(2050, 2.0, "Binance"),  // kept
-				freshTrade(2100, 5.0, "Coinbase"), // trimmed
+				freshTrade(2000, -1.0, "Uniswap"),
+				freshTrade(2050, 2.0, "Binance"),
+				freshTrade(2100, 5.0, "Coinbase"),
 			}),
 			basePrice:  basePrice,
 			tolerance:  tol,
 			wantErr:    false,
-			wantPrice:  2050.0,
-			wantVolume: 2.0,
+			wantPrice:  2075.0,
+			wantVolume: 8.0,
 		},
 		{
-			// basePrice != 1: result should be basePrice * VWAP(trimmed prices).
-			// Three trades, middle (2050, vol=2) survives trim.
-			// result = 0.999 * 2050 = 2047.95
+			// basePrice != 1: result should be basePrice * VWAP(all trades, no trim).
+			// Three trades, below MinSizeForTrimming=5, no trim.
+			// VWAP = (2000*1 + 2050*2 + 2100*5) / 8 = 2075
+			// result = 0.999 * 2075 = 2072.925
 			name: "basePrice not 1.0 — scales output correctly",
 			block: makeBlock([]models.Trade{
 				freshTrade(2000, 1.0, "Binance"),
@@ -197,8 +198,8 @@ func TestVWAPFilter(t *testing.T) {
 			basePrice:  0.999,
 			tolerance:  tol,
 			wantErr:    false,
-			wantPrice:  0.999 * 2050.0,
-			wantVolume: 2.0,
+			wantPrice:  0.999 * 2075.0,
+			wantVolume: 8.0,
 		},
 	}
 

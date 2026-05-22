@@ -5,12 +5,13 @@ import (
 	"errors"
 	"math"
 	"math/big"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	luminametacontract "github.com/diadata-org/lumina-library/contracts/lumina/metacontract"
@@ -184,17 +185,31 @@ func (a *Asset) GetBalance(poolAddress common.Address, client *ethclient.Client)
 	return balance, nil
 }
 
-// GetOracleKey returns the canonical oracle key for this asset in the format
-// "SYMBOL/USD:BLOCKCHAIN/address", where SYMBOL and BLOCKCHAIN are upper-cased
-// and address is lower-cased. Whitespace is trimmed from all fields.
+// eip55Re matches a standard Ethereum hex address: 0x followed by exactly 40 hex characters.
+var eip55Re = regexp.MustCompile(`(?i)^0x[0-9a-f]{40}$`)
+
+// toChecksumAddress applies EIP-55 checksum encoding to EVM addresses.
+// Non-EVM addresses (those that don't match the 0x+40-hex-char pattern) are returned as-is.
+func toChecksumAddress(address string) string {
+	if eip55Re.MatchString(address) {
+		return common.HexToAddress(address).Hex()
+	}
+	return address
+}
+
+// GetOracleKey returns the canonical oracle key for this asset in the form
+// "SYMBOL/USD:Blockchain/Address", where SYMBOL is upper-cased, Blockchain is
+// title-cased, and Address is EIP-55 checksummed for EVM addresses (or left
+// as-is for non-EVM addresses). Whitespace is trimmed from all fields.
 // BaseToken is intentionally ignored — the oracle publishes quote/USD prices
 // and base normalization is handled separately via basePrice.
+// Symbol may be empty; the asset is still uniquely identified by Blockchain and Address.
 // Returns "" if Blockchain or Address is empty.
 func (a *Asset) GetOracleKey() string {
-	blockchain := strings.ToUpper(strings.TrimSpace(a.Blockchain))
-	address := strings.ToLower(strings.TrimSpace(a.Address))
+	blockchain := strings.Title(strings.ToLower(strings.TrimSpace(a.Blockchain)))
+	address := toChecksumAddress(strings.TrimSpace(a.Address))
 	symbol := strings.ToUpper(strings.TrimSpace(a.Symbol))
-	if blockchain == "" || address == "" || symbol == "" {
+	if blockchain == "" || address == "" {
 		return ""
 	}
 	return symbol + "/USD:" + blockchain + "/" + address

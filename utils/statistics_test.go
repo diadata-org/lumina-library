@@ -181,7 +181,7 @@ func TestSortByVolume(t *testing.T) {
 	}
 }
 
-func TestTrimExtremesByVolume(t *testing.T) {
+func TestTrimVolumeOutliers(t *testing.T) {
 	cases := []struct {
 		name     string
 		input    []TradeVolume
@@ -206,13 +206,26 @@ func TestTrimExtremesByVolume(t *testing.T) {
 			wantVols: []float64{1, 2},
 		},
 		{
-			name: "three trades - only middle remains",
+			// With MinSizeForTrimming=5, three trades are below the threshold
+			// and are returned unchanged (no trimming applied).
+			name: "three trades - below threshold, unchanged",
 			input: []TradeVolume{
 				{Price: 100, Volume: 1},
 				{Price: 200, Volume: 2},
 				{Price: 300, Volume: 3},
 			},
-			wantVols: []float64{2},
+			wantVols: []float64{1, 2, 3},
+		},
+		{
+			// Four trades are also below the threshold — unchanged.
+			name: "four trades - below threshold, unchanged",
+			input: []TradeVolume{
+				{Price: 100, Volume: 1},
+				{Price: 200, Volume: 2},
+				{Price: 300, Volume: 3},
+				{Price: 400, Volume: 4},
+			},
+			wantVols: []float64{1, 2, 3, 4},
 		},
 		{
 			name: "five trades - removes lowest and highest volume",
@@ -229,13 +242,13 @@ func TestTrimExtremesByVolume(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := TrimExtremesByVolume(c.input)
+			got := TrimVolumeOutliers(c.input)
 			if len(got) != len(c.wantVols) {
-				t.Fatalf("TrimExtremesByVolume len = %d, want %d", len(got), len(c.wantVols))
+				t.Fatalf("TrimVolumeOutliers len = %d, want %d", len(got), len(c.wantVols))
 			}
 			for i, tv := range got {
 				if tv.Volume != c.wantVols[i] {
-					t.Errorf("TrimExtremesByVolume[%d].Volume = %.2f, want %.2f", i, tv.Volume, c.wantVols[i])
+					t.Errorf("TrimVolumeOutliers[%d].Volume = %.2f, want %.2f", i, tv.Volume, c.wantVols[i])
 				}
 			}
 		})

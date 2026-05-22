@@ -12,8 +12,11 @@ import (
 
 //	VWAP = Σ(price_i × |volume_i|) / Σ(|volume_i|)
 //
-// Returns the VWAP price (in USD), the timestamp of the most recent trade,
-// and an error if no usable trades are available.
+// Returns the VWAP price (in USD), the total absolute volume used in the
+// calculation, the timestamp of the most recent trade, and an error if no
+// usable trades are available.
+// The volume return value is intended for the VWAP metafilter, which uses it
+// to weight per-source filter points in a cross-source aggregation.
 func VWAPFilter(tradesblock models.TradesBlock, basePrice float64, toleranceSeconds int64) (float64, float64, time.Time, error) {
 	if len(tradesblock.Trades) == 0 {
 		return 0, 0, time.Time{}, fmt.Errorf(
@@ -22,7 +25,6 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64, toleranceSeco
 			tradesblock.Pair.BaseToken.Symbol,
 		)
 	}
-
 	if basePrice == 0 {
 		return 0, 0, time.Time{}, fmt.Errorf(
 			"VWAPFilter: basePrice is zero for %s-%s",
@@ -34,9 +36,8 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64, toleranceSeco
 	tradeVolumes := make([]utils.TradeVolume, 0, len(tradesblock.Trades))
 	var latestTime time.Time
 
-	// Cutoff is relative to the block's EndTime rather than wall-clock time.
-	// This is intentional: for merged blocks, EndTime reflects when the trigger
-	// fired and defines the observation window consistently across all source blocks.
+	// Cutoff is relative to the block's EndTime rather than wall-clock time,
+	// so the observation window is consistent regardless of when the trigger fires.
 	cutoff := tradesblock.EndTime.Add(-time.Duration(toleranceSeconds) * time.Second)
 	exchangeSet := make(map[string]struct{})
 	for _, t := range tradesblock.Trades {
@@ -89,7 +90,7 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64, toleranceSeco
 	)
 
 	// Remove the single lowest-volume and single highest-volume trade.
-	trimmed := utils.TrimExtremesByVolume(sorted)
+	trimmed := utils.TrimVolumeOutliers(sorted)
 	log.Debugf(
 		"VWAPFilter: %s-%s [%s] — %d trades after trimming extremes",
 		tradesblock.Pair.QuoteToken.Symbol,

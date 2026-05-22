@@ -2,7 +2,15 @@ package models
 
 import (
 	"testing"
+
+	"github.com/ethereum/go-ethereum/common"
 )
+
+// mustChecksumAddress returns the EIP-55 checksummed form of an EVM address.
+// Used in tests to avoid hardcoding the checksum output.
+func mustChecksumAddress(address string) string {
+	return common.HexToAddress(address).Hex()
+}
 
 func TestAsset_GetOracleKey(t *testing.T) {
 	cases := []struct {
@@ -17,16 +25,16 @@ func TestAsset_GetOracleKey(t *testing.T) {
 				Blockchain: "Ethereum",
 				Address:    "0xabcdef1234567890",
 			},
-			expected: "BTC/USD:ETHEREUM/0xabcdef1234567890",
+			expected: "BTC/USD:Ethereum/0xabcdef1234567890",
 		},
 		{
-			name: "symbol and blockchain are uppercased, address is lowercased",
+			name: "EVM address is EIP-55 checksummed, non-EVM left as-is",
 			asset: Asset{
 				Symbol:     "btc",
 				Blockchain: "ethereum",
-				Address:    "0xABCDEF",
+				Address:    "0xabcdef1234567890abcdef1234567890abcdef12",
 			},
-			expected: "BTC/USD:ETHEREUM/0xabcdef",
+			expected: "BTC/USD:Ethereum/" + mustChecksumAddress("0xabcdef1234567890abcdef1234567890abcdef12"),
 		},
 		{
 			name: "whitespace is trimmed",
@@ -35,7 +43,7 @@ func TestAsset_GetOracleKey(t *testing.T) {
 				Blockchain: "  Ethereum  ",
 				Address:    "  0xabcdef  ",
 			},
-			expected: "BTC/USD:ETHEREUM/0xabcdef",
+			expected: "BTC/USD:Ethereum/0xabcdef",
 		},
 		{
 			name:     "empty blockchain returns empty string",
@@ -78,7 +86,7 @@ func TestPair_GetOracleKey(t *testing.T) {
 	pair := Pair{QuoteToken: btc, BaseToken: usdt}
 
 	// Expected base key from Asset.GetOracleKey()
-	baseKey := "BTC/USD:ETHEREUM/0xabcdef"
+	baseKey := "BTC/USD:Ethereum/0xabcdef"
 
 	cases := []struct {
 		name       string

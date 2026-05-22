@@ -108,7 +108,6 @@ func OracleUpdateExecutor(
 				continue
 			}
 
-			// TO DO: amend this check once we switch to blockchain-address identifier!!
 			if _, ok := keysMap[key]; !ok {
 				keys = append(keys, key)
 				values = append(values, utils.ScaleFloat(fp.Value, decimals))

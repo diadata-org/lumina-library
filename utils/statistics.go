@@ -5,7 +5,12 @@ import (
 	"sort"
 )
 
-const MinSizeForTrimming = 3
+// MinSizeForTrimming is the minimum number of trades required before volume-outlier
+// trimming is applied. With this threshold, trimming only fires when there are at
+// least 5 trades, ensuring a minimum of 3 survive after removing the lowest and
+// highest-volume observations — giving VWAP meaningful input rather than collapsing
+// to a single-trade signal.
+const MinSizeForTrimming = 5
 
 func Median(samples []float64) (median float64) {
 	var length = len(samples)
@@ -169,12 +174,12 @@ func SortByVolume(trades []TradeVolume) []TradeVolume {
 	return sorted
 }
 
-// TrimExtremesByVolume removes the single lowest- and highest-volume trade from a
-// sorted slice to reduce the impact of outliers.
-// Note: for small samples (3 trades → 1 kept, 4 trades → 2 kept) this is aggressive
-// and the result is closer to median-price than true VWAP.
-// Trimming is skipped entirely for slices smaller than MinSizeForTrimming.
-func TrimExtremesByVolume(trades []TradeVolume) []TradeVolume {
+// TrimVolumeOutliers removes the single lowest- and highest-volume trade from a
+// sorted slice to reduce the impact of outliers on the VWAP calculation.
+// Trimming is skipped entirely for slices smaller than MinSizeForTrimming (5),
+// ensuring that at least 3 trades always survive and VWAP retains meaningful
+// volume-weighted semantics rather than collapsing to a single-trade signal.
+func TrimVolumeOutliers(trades []TradeVolume) []TradeVolume {
 	if len(trades) < MinSizeForTrimming {
 		return trades
 	}

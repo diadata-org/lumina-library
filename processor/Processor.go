@@ -56,9 +56,9 @@ func Processor(
 			// All blocks from Collector are atomic (single source). SourceType is always available.
 			sourceType, err := tb.GetSourceType()
 			if err != nil {
-				log.Warnf("Processor - GetSourceType for pair %s-%s: %v, skipping.", 
-					tb.Pair.QuoteToken.Symbol, 
-					tb.Pair.BaseToken.Symbol, 
+				log.Warnf("Processor - GetSourceType for pair %s-%s: %v, skipping.",
+					tb.Pair.QuoteToken.Symbol,
+					tb.Pair.BaseToken.Symbol,
 					err,
 				)
 				continue
@@ -144,6 +144,7 @@ func Processor(
 			}
 		default:
 			log.Warnf("Processor - no metafilter matched for metaFilterType=%q, skipping update", metaFilterType)
+			continue
 		}
 
 		filtersChannel <- filterPointsAggregated

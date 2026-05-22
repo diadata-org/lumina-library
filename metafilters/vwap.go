@@ -5,19 +5,8 @@ import (
 
 	"github.com/diadata-org/lumina-library/models"
 	"github.com/diadata-org/lumina-library/utils"
-	"github.com/sirupsen/logrus"
 )
 
-var log *logrus.Logger
-
-func init() {
-	log = logrus.New()
-	loglevel, err := logrus.ParseLevel(utils.Getenv("LOG_LEVEL_METAFILTERS", "info"))
-	if err != nil {
-		log.Errorf("Parse log level: %v.", err)
-	}
-	log.SetLevel(loglevel)
-}
 const vwapMetaFilterName = "vwap"
 
 // VWAPMeta aggregates per-source VWAP filter points into a single cross-source
@@ -74,11 +63,17 @@ func VWAPMeta(filterPoints []models.FilterPointPair) (result []models.FilterPoin
 		})
 	}
 
-	// Sort by QuoteToken address for deterministic output ordering.
+	// Sort by (Blockchain, Address) for deterministic output ordering.
 	// VWAPMeta ranges over a map internally, so without this sort the result
 	// slice order varies run-to-run, which affects oracle batch write order.
+	// Blockchain is the primary key to handle assets that share the same address
+	// across chains (e.g. 0x0000... used as a native-asset sentinel).
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].Pair.QuoteToken.Address < result[j].Pair.QuoteToken.Address
+		a, b := result[i].Pair.QuoteToken, result[j].Pair.QuoteToken
+		if a.Blockchain != b.Blockchain {
+			return a.Blockchain < b.Blockchain
+		}
+		return a.Address < b.Address
 	})
 
 	return
