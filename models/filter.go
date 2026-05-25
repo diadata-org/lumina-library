@@ -23,6 +23,11 @@ type FilterPointPair struct {
 	Pool       Pool
 	Pair       Pair
 	Value      float64
+	// Volume holds the total absolute trade volume used to compute Value.
+	// Populated by the VWAP filter; used by the VWAP metafilter to weight
+	// per-source filter points in the cross-source aggregation.
+	// Zero for filter types that do not track volume (e.g. LastPrice).
+	Volume     float64
 	Name       string
 	Time       time.Time
 	Source     Exchange

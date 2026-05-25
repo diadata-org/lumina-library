@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	luminametacontract "github.com/diadata-org/lumina-library/contracts/lumina/metacontract"
@@ -69,7 +69,12 @@ func (a *Asset) GetOnchainPrice(
 		return
 	}
 
-	priceBig, timeUnixBig, err := caller.GetValue(&bind.CallOpts{}, a.Symbol+"/USD")
+	key := a.GetOracleKey()
+	if key == "" {
+		return AssetQuotation{}, errors.New("empty oracle key")
+	}
+
+	priceBig, timeUnixBig, err := caller.GetValue(&bind.CallOpts{}, key)
 	if err != nil {
 		return
 	}
@@ -177,4 +182,17 @@ func (a *Asset) GetBalance(poolAddress common.Address, client *ethclient.Client)
 	}
 	balance, _ := new(big.Float).Quo(big.NewFloat(0).SetInt(balanceBig), new(big.Float).SetFloat64(math.Pow10(int(a.Decimals)))).Float64()
 	return balance, nil
+}
+
+// GetOracleKey returns the canonical oracle key for this asset in the form
+// "SYMBOL/USD", where SYMBOL is upper-cased and whitespace is trimmed.
+// BaseToken is intentionally ignored — the oracle publishes quote/USD prices
+// and base normalization is handled separately via basePrice.
+// Returns "" if Symbol is empty.
+func (a *Asset) GetOracleKey() string {
+	symbol := strings.ToUpper(strings.TrimSpace(a.Symbol))
+	if symbol == "" {
+		return ""
+	}
+	return symbol + "/USD"
 }

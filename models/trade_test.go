@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-func testGetLastTrade(t *testing.T) {
+func TestGetLastTrade(t *testing.T) {
 	cases := []struct {
 		tradesblock TradesBlock
 		lastTrade   Trade

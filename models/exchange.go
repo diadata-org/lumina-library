@@ -67,7 +67,7 @@ func GetSymbolIdentificationMap(exchange string, branch string) (map[string]Asse
 	return identificationMap, nil
 }
 
-// GetSourceType returns the type of @exchange such as DEX. For CEX an empty SourceType is returned.
+// GetSourceType returns the SourceType of @exchange.
 func GetSourceType(exchange Exchange) SourceType {
 	if exchange.Simulation {
 		return SIMULATION_SOURCE
@@ -91,12 +91,4 @@ func GetOracleKey(sourceType SourceType, pair Pair) string {
 	default:
 		return ""
 	}
-}
-
-// GetOracleKeySimulation returns a key for an asset (or a pool) that can be used for calling the
-// corresponding value in an oracle. It is restricted to values originating from simulated DEX pools.
-func GetOracleKeySimulation(pair Pair) string {
-
-	return pair.QuoteToken.Symbol + "/USD"
-
 }
