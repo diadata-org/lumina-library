@@ -23,6 +23,7 @@ const (
 	UNISWAPV3_EXCHANGE           = "UniswapV3"
 	UNISWAPV4_EXCHANGE           = "UniswapV4"
 	UNISWAPV3_BASE_EXCHANGE      = "UniswapV3_Base"
+	UNISWAPV4_BASE_EXCHANGE      = "UniswapV4_Base"
 	PANCAKESWAPV3_EXCHANGE       = "PancakeswapV3"
 	UNISWAP_SIMULATION           = "UniswapSimulation"
 	AERODROMESLIPSTREAM_EXCHANGE = "AerodromeSlipstream"
@@ -52,6 +53,7 @@ func init() {
 	Exchanges[UNISWAPV2_BASE_EXCHANGE] = models.Exchange{Name: UNISWAPV2_BASE_EXCHANGE, Centralized: false, Blockchain: utils.BASE}
 	Exchanges[UNISWAPV3_EXCHANGE] = models.Exchange{Name: UNISWAPV3_EXCHANGE, Centralized: false, Blockchain: utils.ETHEREUM}
 	Exchanges[UNISWAPV4_EXCHANGE] = models.Exchange{Name: UNISWAPV4_EXCHANGE, Centralized: false, Blockchain: utils.ETHEREUM}
+	Exchanges[UNISWAPV4_BASE_EXCHANGE] = models.Exchange{Name: UNISWAPV4_BASE_EXCHANGE, Centralized: false, Blockchain: utils.BASE}
 	Exchanges[UNISWAPV3_BASE_EXCHANGE] = models.Exchange{Name: UNISWAPV3_BASE_EXCHANGE, Centralized: false, Blockchain: utils.BASE}
 	Exchanges[AERODROMESLIPSTREAM_EXCHANGE] = models.Exchange{Name: AERODROMESLIPSTREAM_EXCHANGE, Centralized: false, Blockchain: utils.BASE}
 
