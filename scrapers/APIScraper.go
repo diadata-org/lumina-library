@@ -92,6 +92,34 @@ func RunScraper(
 				}
 			}
 		}
+	case BITGET_EXCHANGE:
+		ctx, cancel := context.WithCancel(context.Background())
+		scraper := NewBitGetScraper(ctx, pairs, branchMarketConfig, wg)
+		watchdogDelay, err := strconv.Atoi(utils.Getenv("BITGET_WATCHDOG", "300"))
+		if err != nil {
+			log.Errorf("parse BITGET_WATCHDOG: %v.", err)
+		}
+		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
+		lastTradeTime := time.Now()
+
+		for {
+			select {
+			case trade := <-scraper.TradesChannel():
+				lastTradeTime = time.Now()
+				tradesChannel <- trade
+			case <-watchdogTicker.C:
+				duration := time.Since(lastTradeTime)
+				if duration > time.Duration(watchdogDelay)*time.Second {
+					err := scraper.Close(cancel)
+					if err != nil {
+						log.Errorf("BitGet - Close(): %v.", err)
+					}
+				}
+				log.Warnf("Closed BitGet scraper as duration since last trade is %v.", duration)
+				failoverChannel <- BITGET_EXCHANGE
+				return
+			}
+		}
 	case BYBIT_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
 		scraper := NewByBitScraper(ctx, pairs, branchMarketConfig, wg)
