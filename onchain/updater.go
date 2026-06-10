@@ -64,7 +64,6 @@ func OracleUpdateExecutorSimulation(
 			err := updateOracleMultiValues(connBackup, contractBackup, auth, chainId, keys, values, timestamp)
 			if err != nil {
 				log.Errorf("backup updater - Failed to update Oracle: %v.", err)
-				return
 			}
 		}
 	}
@@ -151,7 +150,6 @@ func OracleUpdateExecutor(
 				err := updateOracleMultiValues(connBackup, contractBackup, auth, chainId, keys, values, timestamp)
 				if err != nil {
 					log.Errorf("backup updater - Failed to update Oracle: %v.", err)
-					return
 				}
 			}
 		}
