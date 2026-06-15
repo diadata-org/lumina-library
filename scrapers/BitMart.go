@@ -1,0 +1,209 @@
+package scrapers
+
+import (
+	"bytes"
+	"compress/flate"
+	"context"
+	"encoding/json"
+	"io"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	models "github.com/diadata-org/lumina-library/models"
+	ws "github.com/gorilla/websocket"
+)
+
+const (
+	bitmartWSBaseURL = "wss://ws-manager-compress.bitmart.com/api?protocol=1.1"
+
+	bitmartTradeChannel = "spot/trade"
+
+	bitmartPingMessage = "ping"
+	bitmartPongMessage = "pong"
+	bitmartSellSide    = "sell"
+
+	// Bitmart expects a heartbeat roughly every 15s; closes idle connections after ~60s.
+	bitmartPingInterval = 15 * time.Second
+)
+
+// subscribe / unsubscribe request.
+type bitmartWSRequest struct {
+	Op   string   `json:"op"`   // "subscribe" / "unsubscribe"
+	Args []string `json:"args"` // e.g. ["spot/trade:BTC_USDT"]
+}
+
+// trade push message.
+type bitmartWSTradeResponse struct {
+	Table string `json:"table"` // "spot/trade"
+	Data  []struct {
+		Symbol       string `json:"symbol"` // e.g. "BTC_USDT"
+		Price        string `json:"price"`
+		Side         string `json:"side"` // "buy" / "sell"
+		Size         string `json:"size"`
+		TimestampSec int64  `json:"s_t"` // seconds
+	} `json:"data"`
+	// error envelope fields (present only on errors)
+	ErrorMessage string `json:"errorMessage"`
+	ErrorCode    string `json:"errorCode"`
+	Event        string `json:"event"`
+}
+
+type bitmartHooks struct{}
+
+func (bitmartHooks) ExchangeKey() string { return BITMART_EXCHANGE }
+func (bitmartHooks) WSURL() string       { return bitmartWSBaseURL }
+
+// OnOpen starts the heartbeat. Bitmart's heartbeat is the literal text "ping"; the server
+// answers with the literal text "pong" (handled/ignored in OnMessage).
+func (bitmartHooks) OnOpen(ctx context.Context, bs *BaseCEXScraper) {
+	go func() {
+		tick := time.NewTicker(bitmartPingInterval)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				if err := bs.SafeWriteMessage(ws.TextMessage, []byte(bitmartPingMessage)); err != nil {
+					log.Errorf("%s - send ping: %v", BITMART_EXCHANGE, err)
+					return
+				}
+			}
+		}
+	}()
+}
+
+// Subscribe sends a subscribe/unsubscribe for a single pair on the spot/trade channel.
+// Bitmart's wire symbol uses an underscore (BTC_USDT). Our ExchangePair.ForeignName uses a
+// hyphen (BTC-USDT), so we convert here.
+func (bitmartHooks) Subscribe(bs *BaseCEXScraper, pair models.ExchangePair, subscribe bool, lock *sync.RWMutex) error {
+	op := "unsubscribe"
+	if subscribe {
+		op = "subscribe"
+	}
+	wireSymbol := strings.ReplaceAll(pair.ForeignName, "-", "_")
+	msg := bitmartWSRequest{
+		Op:   op,
+		Args: []string{bitmartTradeChannel + ":" + wireSymbol},
+	}
+	return bs.SafeWriteJSON(msg)
+}
+
+// ReadLoop: use the Base default read loop (ReadMessage -> OnMessage).
+func (bitmartHooks) ReadLoop(ctx context.Context, bs *BaseCEXScraper, lock *sync.RWMutex) (handled bool) {
+	return false
+}
+
+// OnMessage handles both compressed binary frames and plain text frames.
+func (bitmartHooks) OnMessage(bs *BaseCEXScraper, messageType int, data []byte, lock *sync.RWMutex) {
+	var payload []byte
+
+	switch messageType {
+	case ws.BinaryMessage:
+		// Bitmart's compressed endpoint sends raw-deflate (no zlib header) frames.
+		out, err := bitmartInflate(data)
+		if err != nil {
+			log.Errorf("%s - inflate message: %v", BITMART_EXCHANGE, err)
+			return
+		}
+		payload = out
+	case ws.TextMessage:
+		// Heartbeat reply on the plain endpoint, or JSON.
+		if string(data) == bitmartPongMessage {
+			return
+		}
+		payload = data
+	default:
+		return
+	}
+
+	// The pong on the compressed endpoint arrives as text "pong" too; guard once more.
+	if string(payload) == bitmartPongMessage {
+		return
+	}
+
+	var resp bitmartWSTradeResponse
+	if err := json.Unmarshal(payload, &resp); err != nil {
+		// subscription acks and other control frames are not trade payloads; ignore quietly.
+		log.Tracef("%s - non-trade message: %s", BITMART_EXCHANGE, string(payload))
+		return
+	}
+	if resp.ErrorCode != "" {
+		log.Errorf("%s - error code %s on %s event: %s", BITMART_EXCHANGE, resp.ErrorCode, resp.Event, resp.ErrorMessage)
+		return
+	}
+	if resp.Table != bitmartTradeChannel {
+		return
+	}
+
+	for _, d := range resp.Data {
+		price, err := strconv.ParseFloat(d.Price, 64)
+		if err != nil {
+			continue
+		}
+		volume, err := strconv.ParseFloat(d.Size, 64)
+		if err != nil {
+			continue
+		}
+		if d.Side == bitmartSellSide {
+			volume = -volume
+		}
+
+		// d.Symbol is "BTC_USDT"; tickerPairMap key is "BTCUSDT".
+		tickerKey := strings.ReplaceAll(d.Symbol, "_", "")
+		lock.RLock()
+		pair, ok := bs.tickerPairMap[tickerKey]
+		lock.RUnlock()
+		if !ok {
+			log.Tracef("%s - unknown ticker key: %s", BITMART_EXCHANGE, tickerKey)
+			continue
+		}
+
+		timestamp := time.Now()
+		if d.TimestampSec > 0 {
+			timestamp = time.Unix(d.TimestampSec, 0)
+		}
+
+		trade := models.Trade{
+			Price:          price,
+			Volume:         volume,
+			Time:           timestamp,
+			Exchange:       Exchanges[BITMART_EXCHANGE],
+			BaseToken:      pair.BaseToken,
+			QuoteToken:     pair.QuoteToken,
+			ForeignTradeID: d.Symbol + "-" + strconv.FormatInt(d.TimestampSec, 10),
+		}
+
+		log.Tracef("%s - got trade: %s -- %v -- %v.",
+			BITMART_EXCHANGE,
+			trade.QuoteToken.Symbol+"-"+trade.BaseToken.Symbol,
+			trade.Price, trade.Volume,
+		)
+
+		// lastTradeTimeMap key matches LastTradeTimeKeyFromForeign (hyphenated foreign name).
+		bs.setLastTradeTime(lock, strings.ReplaceAll(d.Symbol, "_", "-"), timestamp)
+		bs.tradesChannel <- trade
+	}
+}
+
+// tickerPairMap key: hyphen removed, e.g. "BTC-USDT" -> "BTCUSDT".
+func (bitmartHooks) TickerKeyFromForeign(foreign string) string {
+	return strings.ReplaceAll(foreign, "-", "")
+}
+
+// lastTradeTimeMap key: hyphenated foreign name, e.g. "BTC-USDT".
+func (bitmartHooks) LastTradeTimeKeyFromForeign(foreign string) string {
+	return foreign
+}
+
+func bitmartInflate(b []byte) ([]byte, error) {
+	r := flate.NewReader(bytes.NewReader(b))
+	defer r.Close()
+	return io.ReadAll(r)
+}
+
+func NewBitMartScraper(ctx context.Context, pairs []models.ExchangePair, branchMarketConfig string, wg *sync.WaitGroup) Scraper {
+	return NewBaseCEXScraper(ctx, pairs, wg, bitmartHooks{}, branchMarketConfig)
+}
