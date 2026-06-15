@@ -25,9 +25,9 @@ type bitMexSubscribeMsg struct {
 	Args []string `json:"args"`
 }
 
-// bitMexWSResponse covers both subscription acks and trade pushes.
-// BitMEX uses a table-diff protocol: the first push has action="partial",
-// subsequent pushes have action="insert" (new trades).
+// bitMexWSResponse covers subscription acks, error frames, and trade pushes.
+// BitMEX uses a table-diff protocol: the first push has action="partial"
+// (snapshot), subsequent pushes have action="insert" (new trades).
 type bitMexWSResponse struct {
 	// trade push fields
 	Table  string          `json:"table"`
@@ -37,20 +37,22 @@ type bitMexWSResponse struct {
 	// subscription ack fields
 	Success   bool   `json:"success"`
 	Subscribe string `json:"subscribe"`
-	Error     string `json:"error"`
-	Status    int    `json:"status"`
+
+	// error frame fields (sent on a bad subscribe; has no "subscribe" field)
+	Error   string          `json:"error"`
+	Status  int             `json:"status"`
+	Request json.RawMessage `json:"request"`
 }
 
-// bitMexWSTrade is a single trade row from the "trade" table push.
+// bitMexWSTrade is a single trade row from the spot "trade" table push.
+// For spot symbols (e.g. "ETH_USDT"), size is the base-asset amount traded.
 type bitMexWSTrade struct {
-	Timestamp       time.Time `json:"timestamp"`
-	Symbol          string    `json:"symbol"`          // BitMEX native symbol, e.g. "XBTUSD"
-	Side            string    `json:"side"`            // "Buy" or "Sell"
-	Size            float64   `json:"size"`            // contract count
-	Price           float64   `json:"price"`
-	HomeNotional    float64   `json:"homeNotional"`    // base asset value (XBT for inverse, quote for linear)
-	ForeignNotional float64   `json:"foreignNotional"` // quote asset value
-	TrdMatchID      string    `json:"trdMatchID"`      // unique trade ID
+	Timestamp  time.Time `json:"timestamp"`
+	Symbol     string    `json:"symbol"` // BitMEX native spot symbol, e.g. "ETH_USDT"
+	Side       string    `json:"side"`   // "Buy" or "Sell"
+	Size       float64   `json:"size"`   // base-asset amount (spot)
+	Price      float64   `json:"price"`
+	TrdMatchID string    `json:"trdMatchID"` // unique trade ID
 }
 
 type bitMexHooks struct{}
@@ -77,12 +79,12 @@ func (bitMexHooks) OnOpen(ctx context.Context, bs *BaseCEXScraper) {
 	}()
 }
 
-// Subscribe sends a subscribe or unsubscribe message for the trade channel
+// Subscribe sends a subscribe or unsubscribe message for the spot trade channel
 // of a single pair.
 //
-// ForeignName convention in lumina-library is "QUOTE-BASE" (e.g. "XBT-USD").
-// BitMEX native symbols concatenate the two without a separator (e.g. "XBTUSD"),
-// so we just strip the dash.
+// ForeignName convention in lumina-library is "QUOTE-BASE" (e.g. "ETH-USDT").
+// BitMEX spot symbols use an underscore separator (e.g. "ETH_USDT"), so we
+// convert the dash to an underscore.
 func (bitMexHooks) Subscribe(bs *BaseCEXScraper, pair models.ExchangePair, subscribe bool, lock *sync.RWMutex) error {
 	op := "unsubscribe"
 	if subscribe {
@@ -98,11 +100,11 @@ func (bitMexHooks) Subscribe(bs *BaseCEXScraper, pair models.ExchangePair, subsc
 
 // OnMessage handles every raw WS message from BitMEX.
 func (bitMexHooks) OnMessage(bs *BaseCEXScraper, mt int, data []byte, lock *sync.RWMutex) {
-	// BitMEX sends plain "pong" in response to our "ping".
-	if mt == ws.TextMessage && string(data) == "pong" {
+	if mt != ws.TextMessage {
 		return
 	}
-	if mt != ws.TextMessage {
+	// BitMEX sends plain "pong" in response to our "ping".
+	if string(data) == "pong" {
 		return
 	}
 
@@ -112,11 +114,18 @@ func (bitMexHooks) OnMessage(bs *BaseCEXScraper, mt int, data []byte, lock *sync
 		return
 	}
 
-	// Subscription ack — log errors, ignore success.
+	// Subscription ack: {"success":true,"subscribe":"trade:ETH_USDT", ...}
 	if resp.Subscribe != "" {
 		if !resp.Success {
-			log.Errorf("BitMEX - subscription failed for %s: %s (status=%d)", resp.Subscribe, resp.Error, resp.Status)
+			log.Errorf("BitMEX - subscription failed for %s.", resp.Subscribe)
 		}
+		return
+	}
+
+	// Error frame: a bad subscribe returns {"status":...,"error":"...","request":{...}}
+	// with no "subscribe" field, so handle it separately.
+	if resp.Error != "" {
+		log.Errorf("BitMEX - server error: %s (status=%d, request=%s).", resp.Error, resp.Status, string(resp.Request))
 		return
 	}
 
@@ -130,32 +139,31 @@ func (bitMexHooks) ReadLoop(ctx context.Context, bs *BaseCEXScraper, lock *sync.
 	return false // use BaseCEXScraper default ReadMessage loop
 }
 
-// TickerKeyFromForeign converts "XBT-USD" -> "XBTUSD" for tickerPairMap lookup.
+// TickerKeyFromForeign converts "ETH-USDT" -> "ETH_USDT" for tickerPairMap lookup.
 func (bitMexHooks) TickerKeyFromForeign(foreign string) string {
 	return bitMexNativeSymbol(foreign)
 }
 
-// LastTradeTimeKeyFromForeign uses the ForeignName as-is ("XBT-USD").
+// LastTradeTimeKeyFromForeign uses the ForeignName as-is ("ETH-USDT").
 func (bitMexHooks) LastTradeTimeKeyFromForeign(foreign string) string {
 	return foreign
 }
 
-// processBitMexTrades converts BitMEX trade rows to models.Trade and emits them.
+// processBitMexTrades converts BitMEX spot trade rows to models.Trade and emits them.
 func processBitMexTrades(bs *BaseCEXScraper, lock *sync.RWMutex, trades []bitMexWSTrade) {
 	for _, d := range trades {
-		// Look up the pair via the native symbol key (e.g. "XBTUSD").
+		// Look up the pair via the native spot symbol key (e.g. "ETH_USDT").
 		lock.RLock()
 		pair, ok := bs.tickerPairMap[d.Symbol]
 		lock.RUnlock()
 		if !ok {
-			log.Debugf("BitMEX - unknown symbol %s, skipping trade", d.Symbol)
+			log.Debugf("BitMEX - unknown symbol %s, skipping trade.", d.Symbol)
 			continue
 		}
 
+		// Spot: size is the base-asset amount traded.
 		// Volume sign convention: positive = buy, negative = sell.
-		// Use homeNotional (base-asset denominated) as the volume, consistent
-		// with how the old repo handled BitMEX inverse contracts.
-		volume := d.HomeNotional
+		volume := d.Size
 		if d.Side == "Sell" {
 			volume = -volume
 		}
@@ -187,7 +195,7 @@ func processBitMexTrades(bs *BaseCEXScraper, lock *sync.RWMutex, trades []bitMex
 	}
 }
 
-// bitMexNativeSymbol converts lumina ForeignName "XBT-USD" to BitMEX symbol "XBTUSD".
+// converts ForeignName "ETH-USDT" to BitMEX spot symbol "ETHUSDT".
 func bitMexNativeSymbol(foreignName string) string {
 	return strings.ReplaceAll(foreignName, "-", "")
 }
