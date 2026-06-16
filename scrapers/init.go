@@ -16,7 +16,7 @@ const (
 	KUCOIN_EXCHANGE       = "KuCoin"
 	OKEX_EXCHANGE         = "OKEx"
 	MEXC_EXCHANGE         = "MEXC"
-	BITGET_EXCHANGE       = "BitGet"
+	BITGET_EXCHANGE       = "Bitget"
 	
 	CURVE_EXCHANGE               = "Curve"
 	UNISWAPV2_EXCHANGE           = "UniswapV2"

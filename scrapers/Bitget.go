@@ -193,6 +193,6 @@ func (bitgetHooks) LastTradeTimeKeyFromForeign(foreign string) string {
 	return foreign // "QUOTE-BASE"
 }
 
-func NewBitGetScraper(ctx context.Context, pairs []models.ExchangePair, branchMarketConfig string, wg *sync.WaitGroup) Scraper {
+func NewBitgetScraper(ctx context.Context, pairs []models.ExchangePair, branchMarketConfig string, wg *sync.WaitGroup) Scraper {
 	return NewBaseCEXScraper(ctx, pairs, wg, bitgetHooks{}, branchMarketConfig)
 }

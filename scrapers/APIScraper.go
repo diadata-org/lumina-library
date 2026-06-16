@@ -94,7 +94,7 @@ func RunScraper(
 		}
 	case BITGET_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
-		scraper := NewBitGetScraper(ctx, pairs, branchMarketConfig, wg)
+		scraper := NewBitgetScraper(ctx, pairs, branchMarketConfig, wg)
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("BITGET_WATCHDOG", "300"))
 		if err != nil {
 			log.Errorf("parse BITGET_WATCHDOG: %v.", err)
@@ -112,12 +112,12 @@ func RunScraper(
 				if duration > time.Duration(watchdogDelay)*time.Second {
 					err := scraper.Close(cancel)
 					if err != nil {
-						log.Errorf("BitGet - Close(): %v.", err)
+						log.Errorf("Bitget - Close(): %v.", err)
 					}
+					log.Warnf("Closed Bitget scraper as duration since last trade is %v.", duration)
+					failoverChannel <- BITGET_EXCHANGE
+					return
 				}
-				log.Warnf("Closed BitGet scraper as duration since last trade is %v.", duration)
-				failoverChannel <- BITGET_EXCHANGE
-				return
 			}
 		}
 	case BYBIT_EXCHANGE:
