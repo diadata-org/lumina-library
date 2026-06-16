@@ -45,10 +45,10 @@ type bitMexWSResponse struct {
 }
 
 // bitMexWSTrade is a single trade row from the spot "trade" table push.
-// For spot symbols (e.g. "ETH_USDT"), size is the base-asset amount traded.
+// For spot symbols (e.g. "ETHUSDT"), size is the base-asset amount traded.
 type bitMexWSTrade struct {
 	Timestamp  time.Time `json:"timestamp"`
-	Symbol     string    `json:"symbol"` // BitMEX native spot symbol, e.g. "ETH_USDT"
+	Symbol     string    `json:"symbol"` // BitMEX native spot symbol, e.g. "ETHUSDT"
 	Side       string    `json:"side"`   // "Buy" or "Sell"
 	Size       float64   `json:"size"`   // base-asset amount (spot)
 	Price      float64   `json:"price"`
@@ -83,8 +83,7 @@ func (bitMexHooks) OnOpen(ctx context.Context, bs *BaseCEXScraper) {
 // of a single pair.
 //
 // ForeignName convention in lumina-library is "QUOTE-BASE" (e.g. "ETH-USDT").
-// BitMEX spot symbols use an underscore separator (e.g. "ETH_USDT"), so we
-// convert the dash to an underscore.
+// BitMEX spot symbols have no separator (e.g. "ETHUSDT"), so we strip the dash.
 func (bitMexHooks) Subscribe(bs *BaseCEXScraper, pair models.ExchangePair, subscribe bool, lock *sync.RWMutex) error {
 	op := "unsubscribe"
 	if subscribe {
@@ -114,7 +113,7 @@ func (bitMexHooks) OnMessage(bs *BaseCEXScraper, mt int, data []byte, lock *sync
 		return
 	}
 
-	// Subscription ack: {"success":true,"subscribe":"trade:ETH_USDT", ...}
+	// Subscription ack: {"success":true,"subscribe":"trade:ETHUSDT", ...}
 	if resp.Subscribe != "" {
 		if !resp.Success {
 			log.Errorf("BitMEX - subscription failed for %s.", resp.Subscribe)
@@ -129,8 +128,11 @@ func (bitMexHooks) OnMessage(bs *BaseCEXScraper, mt int, data []byte, lock *sync
 		return
 	}
 
-	// Trade push: both "partial" (snapshot on subscribe) and "insert" (live trades).
-	if resp.Table == "trade" && len(resp.Data) > 0 {
+	// Trade push: only act on "insert" (live trades). "partial" is a snapshot
+	// of recent historical trades that replays on every resubscribe (triggered
+	// routinely by the per-pair watchdog), so emitting it would re-inject stale
+	// trades and double-count in volume-weighted metafilters.
+	if resp.Table == "trade" && resp.Action == "insert" && len(resp.Data) > 0 {
 		processBitMexTrades(bs, lock, resp.Data)
 	}
 }
@@ -139,7 +141,7 @@ func (bitMexHooks) ReadLoop(ctx context.Context, bs *BaseCEXScraper, lock *sync.
 	return false // use BaseCEXScraper default ReadMessage loop
 }
 
-// TickerKeyFromForeign converts "ETH-USDT" -> "ETH_USDT" for tickerPairMap lookup.
+// TickerKeyFromForeign converts "ETH-USDT" -> "ETHUSDT" for tickerPairMap lookup.
 func (bitMexHooks) TickerKeyFromForeign(foreign string) string {
 	return bitMexNativeSymbol(foreign)
 }
@@ -152,7 +154,7 @@ func (bitMexHooks) LastTradeTimeKeyFromForeign(foreign string) string {
 // processBitMexTrades converts BitMEX spot trade rows to models.Trade and emits them.
 func processBitMexTrades(bs *BaseCEXScraper, lock *sync.RWMutex, trades []bitMexWSTrade) {
 	for _, d := range trades {
-		// Look up the pair via the native spot symbol key (e.g. "ETH_USDT").
+		// Look up the pair via the native spot symbol key (e.g. "ETHUSDT").
 		lock.RLock()
 		pair, ok := bs.tickerPairMap[d.Symbol]
 		lock.RUnlock()
