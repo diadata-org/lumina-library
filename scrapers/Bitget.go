@@ -63,7 +63,7 @@ func (bitgetHooks) WSURL() string       { return bitgetWSBaseURL }
 // (NOT a websocket control-frame ping) and replies with a string "pong".
 func (bitgetHooks) OnOpen(ctx context.Context, bs *BaseCEXScraper) {
 	pingPeriod, err := strconv.Atoi(utils.Getenv("BITGET_PING_PERIOD_SECONDS", strconv.Itoa(bitgetPingPeriodDefault)))
-	if err != nil {
+	if err != nil || pingPeriod <= 0 {
 		log.Errorf("BITGET - parse BITGET_PING_PERIOD_SECONDS: %v. Set to default %d.", err, bitgetPingPeriodDefault)
 		pingPeriod = bitgetPingPeriodDefault
 	}

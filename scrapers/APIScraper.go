@@ -96,12 +96,12 @@ func RunScraper(
 		ctx, cancel := context.WithCancel(context.Background())
 		scraper := NewBitgetScraper(ctx, pairs, branchMarketConfig, wg)
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("BITGET_WATCHDOG", "300"))
-		if err != nil {
-			log.Errorf("parse BITGET_WATCHDOG: %v.", err)
+		if err != nil || watchdogDelay <= 0 {
+			log.Errorf("parse BITGET_WATCHDOG: %v. Set to default 300.", err)
+			watchdogDelay = 300
 		}
 		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
 		lastTradeTime := time.Now()
-
 		for {
 			select {
 			case trade := <-scraper.TradesChannel():

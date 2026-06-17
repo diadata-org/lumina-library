@@ -25,8 +25,8 @@ func newBitgetTestScraper(tickerPairMap map[string]models.Pair) *BaseCEXScraper 
 // instId form "BTCUSDT" (TickerKeyFromForeign("BTC-USDT")).
 func btcusdtPair() (string, models.Pair) {
 	return "BTCUSDT", models.Pair{
-		BaseToken:  models.Asset{Symbol: "BTC"},
-		QuoteToken: models.Asset{Symbol: "USDT"},
+		BaseToken:  models.Asset{Symbol: "USDT"},
+		QuoteToken: models.Asset{Symbol: "BTC"},
 	}
 }
 
