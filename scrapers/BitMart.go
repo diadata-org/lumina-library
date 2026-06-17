@@ -5,6 +5,7 @@ import (
 	"compress/flate"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -16,9 +17,20 @@ import (
 	ws "github.com/gorilla/websocket"
 )
 
+// Bitmart public spot WebSocket (v2).
+//
+// There are two public endpoints:
+//   - wss://ws-manager-compress.bitmart.com/api?protocol=1.1  (server sends raw-deflate
+//     compressed binary frames; client sends "ping" / receives "pong")
+//   - wss://ws-manager-spot-pub-sg.bitmart.com/api?protocol=1.1 (plain text JSON frames)
+//
+// We default to the compressed endpoint and transparently inflate binary frames in
+// OnMessage. OnMessage also handles text frames, so switching to the plain endpoint
+// requires only changing bitmartWSBaseURL.
 const (
 	bitmartWSBaseURL = "wss://ws-manager-compress.bitmart.com/api?protocol=1.1"
 
+	// v2 spot public trade channel. Args are formatted as "spot/trade:BTC_USDT".
 	bitmartTradeChannel = "spot/trade"
 
 	bitmartPingMessage = "ping"
@@ -27,6 +39,10 @@ const (
 
 	// Bitmart expects a heartbeat roughly every 15s; closes idle connections after ~60s.
 	bitmartPingInterval = 15 * time.Second
+
+	// Ceiling on a single decompressed frame. Bitmart trade frames are far smaller than
+	// this; the bound guards against a decompression bomb from a malicious/faulty upstream.
+	bitmartMaxDecompressed = 8 << 20 // 8 MiB
 )
 
 // subscribe / unsubscribe request.
@@ -35,16 +51,19 @@ type bitmartWSRequest struct {
 	Args []string `json:"args"` // e.g. ["spot/trade:BTC_USDT"]
 }
 
+// bitmartTradeData is a single trade entry inside a spot/trade push.
+type bitmartTradeData struct {
+	Symbol       string `json:"symbol"` // e.g. "BTC_USDT"
+	Price        string `json:"price"`
+	Side         string `json:"side"` // "buy" / "sell"
+	Size         string `json:"size"`
+	TimestampSec int64  `json:"s_t"` // seconds
+}
+
 // trade push message.
 type bitmartWSTradeResponse struct {
-	Table string `json:"table"` // "spot/trade"
-	Data  []struct {
-		Symbol       string `json:"symbol"` // e.g. "BTC_USDT"
-		Price        string `json:"price"`
-		Side         string `json:"side"` // "buy" / "sell"
-		Size         string `json:"size"`
-		TimestampSec int64  `json:"s_t"` // seconds
-	} `json:"data"`
+	Table string             `json:"table"` // "spot/trade"
+	Data  []bitmartTradeData `json:"data"`
 	// error envelope fields (present only on errors)
 	ErrorMessage string `json:"errorMessage"`
 	ErrorCode    string `json:"errorCode"`
@@ -57,7 +76,7 @@ func (bitmartHooks) ExchangeKey() string { return BITMART_EXCHANGE }
 func (bitmartHooks) WSURL() string       { return bitmartWSBaseURL }
 
 // OnOpen starts the heartbeat. Bitmart's heartbeat is the literal text "ping"; the server
-// answers with the literal text "pong" (handled/ignored in OnMessage).
+// answers with the literal text "pong" (ignored in OnMessage).
 func (bitmartHooks) OnOpen(ctx context.Context, bs *BaseCEXScraper) {
 	go func() {
 		tick := time.NewTicker(bitmartPingInterval)
@@ -168,12 +187,17 @@ func (bitmartHooks) OnMessage(bs *BaseCEXScraper, messageType int, data []byte, 
 		}
 
 		trade := models.Trade{
-			Price:          price,
-			Volume:         volume,
-			Time:           timestamp,
-			Exchange:       Exchanges[BITMART_EXCHANGE],
-			BaseToken:      pair.BaseToken,
-			QuoteToken:     pair.QuoteToken,
+			Price:      price,
+			Volume:     volume,
+			Time:       timestamp,
+			Exchange:   Exchanges[BITMART_EXCHANGE],
+			BaseToken:  pair.BaseToken,
+			QuoteToken: pair.QuoteToken,
+			// ForeignTradeID is NOT guaranteed unique: Bitmart's spot/trade payload exposes
+			// only a second-granularity timestamp (s_t) and no trade id, so multiple trades
+			// on the same symbol within one second share an ID. Do not dedup on this field
+			// downstream. Prefer a finer field (ms timestamp / sequence) if the v2 payload
+			// exposes one.
 			ForeignTradeID: d.Symbol + "-" + strconv.FormatInt(d.TimestampSec, 10),
 		}
 
@@ -199,20 +223,30 @@ func (bitmartHooks) LastTradeTimeKeyFromForeign(foreign string) string {
 	return foreign
 }
 
+// bitmartInflate decompresses a raw-deflate (headerless) frame, bounded to
+// bitmartMaxDecompressed to prevent a decompression bomb from exhausting memory.
 func bitmartInflate(b []byte) ([]byte, error) {
 	r := flate.NewReader(bytes.NewReader(b))
 	defer r.Close()
-	return io.ReadAll(r)
+	// Read one byte past the ceiling so we can distinguish a legitimately large frame
+	// from an over-limit one instead of silently truncating (LimitReader truncates).
+	out, err := io.ReadAll(io.LimitReader(r, bitmartMaxDecompressed+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > bitmartMaxDecompressed {
+		return nil, fmt.Errorf("bitmart: decompressed frame exceeds %d bytes", bitmartMaxDecompressed)
+	}
+	return out, nil
 }
 
 // ---------------- multi-connection sharding ----------------
 
-// BitMart caps the number of
-// topics per connection (error 90006: "Subscribed total topic quantity exceeds
-// limit"), so a large pair list must be split across multiple connections.
+// BitMart caps the number of topics per connection (error 90006: "Subscribed total topic
+// quantity exceeds limit"), so a large pair list must be split across multiple connections.
 //
-// Each shard is a normal BaseCEXScraper using the same bitmartHooks, so all of
-// Base's read loop / watchdog / resubscribe / reconnect logic is reused as-is.
+// Each shard is a normal BaseCEXScraper using the same bitmartHooks, so all of Base's read
+// loop / watchdog / resubscribe / reconnect logic is reused as-is.
 type bitmartShardedScraper struct {
 	tradesChannel chan models.Trade
 	shards        []*BaseCEXScraper
@@ -257,10 +291,10 @@ func chunkPairs(pairs []models.ExchangePair, size int) [][]models.ExchangePair {
 	return out
 }
 
-// NewBitMartScraper creates one BaseCEXScraper per shard of pairs and fans the
-// shards' trade channels into one. Shard size is configurable via the
-// BITMART_SHARD_SIZE env var (default 70). With ~140 pairs and size 70 this
-// produces 2 connections, each well under BitMart's per-connection topic limit.
+// NewBitMartScraper creates one BaseCEXScraper per shard of pairs and fans the shards' trade
+// channels into one. Shard size is configurable via BITMART_SHARD_SIZE (default 70). With
+// ~140 pairs and size 70 this produces 2 connections, each well under Bitmart's per-connection
+// topic limit.
 func NewBitMartScraper(ctx context.Context, pairs []models.ExchangePair, branchMarketConfig string, wg *sync.WaitGroup) Scraper {
 	shardSize, err := strconv.Atoi(utils.Getenv("BITMART_SHARD_SIZE", "70"))
 	if err != nil || shardSize <= 0 {
@@ -277,21 +311,31 @@ func NewBitMartScraper(ctx context.Context, pairs []models.ExchangePair, branchM
 		cancels:       make([]context.CancelFunc, 0, len(chunks)),
 	}
 
-	// NewBaseCEXScraper runs `defer wg.Done()` once per call. The caller (RunScraper)
-	// already did wg.Add(1) for this exchange, so we account for the extra shards.
+	// No pairs -> no shard -> no NewBaseCEXScraper call -> nobody matches the caller's
+	// wg.Add(1) in Collector.go. Balance it here and return an empty (but valid) scraper,
+	// otherwise wg.Wait() hangs forever.
+	if len(chunks) == 0 {
+		log.Warnf("%s - no pairs to scrape; starting empty scraper.", BITMART_EXCHANGE)
+		wg.Done()
+		return s
+	}
+
+	// COUPLING: NewBaseCEXScraper runs `defer wg.Done()` exactly once per call, and the
+	// caller (Collector.go) already did wg.Add(1) for this exchange. We add the extra shards
+	// here so the total Add/Done balances. This depends on Base's wg lifecycle; if
+	// NewBaseCEXScraper's wg handling ever changes, update this accounting too.
 	if extra := len(chunks) - 1; extra > 0 {
 		wg.Add(extra)
 	}
 
 	for i, chunk := range chunks {
-		// Each shard gets its own cancelable context so Close can stop them
-		// independently, while still cascading from the parent ctx.
+		// Each shard gets its own cancelable context so Close can stop them independently,
+		// while still cascading from the parent ctx.
 		shardCtx, shardCancel := context.WithCancel(ctx)
 		s.cancels = append(s.cancels, shardCancel)
 
-		// BitMart allows only one new connection per IP per second. NewBaseCEXScraper
-		// connects synchronously, so creating shards serially with a >=1s gap
-		// respects that limit.
+		// Bitmart allows only one new connection per IP per second. NewBaseCEXScraper
+		// connects synchronously, so creating shards serially with a >=1s gap respects that.
 		if i > 0 {
 			time.Sleep(2 * time.Second)
 		}
