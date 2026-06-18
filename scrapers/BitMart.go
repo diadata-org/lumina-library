@@ -43,6 +43,8 @@ const (
 	// Ceiling on a single decompressed frame. Bitmart trade frames are far smaller than
 	// this; the bound guards against a decompression bomb from a malicious/faulty upstream.
 	bitmartMaxDecompressed = 8 << 20 // 8 MiB
+
+	bitmartDefaultShardSize = 70
 )
 
 // subscribe / unsubscribe request.
@@ -198,7 +200,7 @@ func (bitmartHooks) OnMessage(bs *BaseCEXScraper, messageType int, data []byte, 
 			// on the same symbol within one second share an ID. Do not dedup on this field
 			// downstream. Prefer a finer field (ms timestamp / sequence) if the v2 payload
 			// exposes one.
-			ForeignTradeID: d.Symbol + "-" + strconv.FormatInt(d.TimestampSec, 10),
+			ForeignTradeID: d.Symbol + "-" + strconv.FormatInt(timestamp.Unix(), 10),
 		}
 
 		log.Tracef("%s - got trade: %s -- %v -- %v.",
@@ -296,10 +298,13 @@ func chunkPairs(pairs []models.ExchangePair, size int) [][]models.ExchangePair {
 // ~140 pairs and size 70 this produces 2 connections, each well under Bitmart's per-connection
 // topic limit.
 func NewBitMartScraper(ctx context.Context, pairs []models.ExchangePair, branchMarketConfig string, wg *sync.WaitGroup) Scraper {
-	shardSize, err := strconv.Atoi(utils.Getenv("BITMART_SHARD_SIZE", "70"))
-	if err != nil || shardSize <= 0 {
-		log.Errorf("%s - parse BITMART_SHARD_SIZE: %v. Using default 70.", BITMART_EXCHANGE, err)
-		shardSize = 70
+	shardSize, err := strconv.Atoi(utils.Getenv("BITMART_SHARD_SIZE", strconv.Itoa(bitmartDefaultShardSize)))
+	if err != nil {
+		log.Errorf("%s - parse BITMART_SHARD_SIZE: %v. Using default %d.", BITMART_EXCHANGE, err, bitmartDefaultShardSize)
+		shardSize = bitmartDefaultShardSize
+	} else if shardSize <= 0 {
+		log.Warnf("%s - BITMART_SHARD_SIZE must be > 0 (got %d). Using default %d.", BITMART_EXCHANGE, shardSize, bitmartDefaultShardSize)
+		shardSize = bitmartDefaultShardSize
 	}
 
 	chunks := chunkPairs(pairs, shardSize)
