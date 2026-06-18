@@ -45,6 +45,8 @@ const (
 	bitmartMaxDecompressed = 8 << 20 // 8 MiB
 
 	bitmartDefaultShardSize = 70
+
+	bitmartDefaultShardWatchdogSec = 300
 )
 
 // subscribe / unsubscribe request.
@@ -77,8 +79,6 @@ type bitmartHooks struct{}
 func (bitmartHooks) ExchangeKey() string { return BITMART_EXCHANGE }
 func (bitmartHooks) WSURL() string       { return bitmartWSBaseURL }
 
-// OnOpen starts the heartbeat. Bitmart's heartbeat is the literal text "ping"; the server
-// answers with the literal text "pong" (ignored in OnMessage).
 func (bitmartHooks) OnOpen(ctx context.Context, bs *BaseCEXScraper) {
 	go func() {
 		tick := time.NewTicker(bitmartPingInterval)
@@ -249,14 +249,40 @@ func bitmartInflate(b []byte) ([]byte, error) {
 //
 // Each shard is a normal BaseCEXScraper using the same bitmartHooks, so all of Base's read
 // loop / watchdog / resubscribe / reconnect logic is reused as-is.
+//
+// PARTIAL-FAILURE DETECTION: BaseCEXScraper has no in-place reconnect, so recovery from a
+// dead connection relies on a top-level watchdog observing a stall and tripping failover.
+// The top-level watchdog in RunScraper only sees the MERGED channel, so if one shard dies
+// while another keeps producing, the merged stream never stalls and failover never fires --
+// the dead shard's pairs go permanently stale. To close that gap, the wrapper tracks each
+// shard's own last-trade time and trips StalenessChannel when ANY shard goes quiet, even if
+// the merged stream is still flowing. RunScraper selects on that signal and triggers the
+// normal Close()+failover for the whole exchange.
 type bitmartShardedScraper struct {
 	tradesChannel chan models.Trade
+	stalenessCh   chan string // shard staleness signal -> RunScraper trips failover
 	shards        []*BaseCEXScraper
 	cancels       []context.CancelFunc
-	closeOnce     sync.Once
+
+	shardWatchdog time.Duration
+
+	mu            sync.Mutex
+	lastTradeTime []time.Time // per-shard, indexed like shards
+
+	closeOnce sync.Once
 }
 
 func (s *bitmartShardedScraper) TradesChannel() chan models.Trade { return s.tradesChannel }
+
+// StalenessChannel emits the exchange key when any individual shard has produced no trade
+// within shardWatchdog. RunScraper selects on it to trip failover for the whole exchange.
+func (s *bitmartShardedScraper) StalenessChannel() <-chan string { return s.stalenessCh }
+
+func (s *bitmartShardedScraper) markTrade(shardIdx int, t time.Time) {
+	s.mu.Lock()
+	s.lastTradeTime[shardIdx] = t
+	s.mu.Unlock()
+}
 
 // Close cancels every shard. Safe to call multiple times.
 func (s *bitmartShardedScraper) Close(cancel context.CancelFunc) error {
@@ -300,11 +326,22 @@ func chunkPairs(pairs []models.ExchangePair, size int) [][]models.ExchangePair {
 func NewBitMartScraper(ctx context.Context, pairs []models.ExchangePair, branchMarketConfig string, wg *sync.WaitGroup) Scraper {
 	shardSize, err := strconv.Atoi(utils.Getenv("BITMART_SHARD_SIZE", strconv.Itoa(bitmartDefaultShardSize)))
 	if err != nil {
+		// Malformed value (not an integer): err carries the useful detail.
 		log.Errorf("%s - parse BITMART_SHARD_SIZE: %v. Using default %d.", BITMART_EXCHANGE, err, bitmartDefaultShardSize)
 		shardSize = bitmartDefaultShardSize
 	} else if shardSize <= 0 {
+		// Parsed fine but out of range: report the actual value, not a nil err.
 		log.Warnf("%s - BITMART_SHARD_SIZE must be > 0 (got %d). Using default %d.", BITMART_EXCHANGE, shardSize, bitmartDefaultShardSize)
 		shardSize = bitmartDefaultShardSize
+	}
+
+	shardWatchdogSec, err := strconv.Atoi(utils.Getenv("BITMART_SHARD_WATCHDOG", strconv.Itoa(bitmartDefaultShardWatchdogSec)))
+	if err != nil {
+		log.Errorf("%s - parse BITMART_SHARD_WATCHDOG: %v. Using default %d.", BITMART_EXCHANGE, err, bitmartDefaultShardWatchdogSec)
+		shardWatchdogSec = bitmartDefaultShardWatchdogSec
+	} else if shardWatchdogSec <= 0 {
+		log.Warnf("%s - BITMART_SHARD_WATCHDOG must be > 0 (got %d). Using default %d.", BITMART_EXCHANGE, shardWatchdogSec, bitmartDefaultShardWatchdogSec)
+		shardWatchdogSec = bitmartDefaultShardWatchdogSec
 	}
 
 	chunks := chunkPairs(pairs, shardSize)
@@ -312,8 +349,11 @@ func NewBitMartScraper(ctx context.Context, pairs []models.ExchangePair, branchM
 
 	s := &bitmartShardedScraper{
 		tradesChannel: merged,
+		stalenessCh:   make(chan string, 1),
 		shards:        make([]*BaseCEXScraper, 0, len(chunks)),
 		cancels:       make([]context.CancelFunc, 0, len(chunks)),
+		shardWatchdog: time.Duration(shardWatchdogSec) * time.Second,
+		lastTradeTime: make([]time.Time, len(chunks)),
 	}
 
 	// No pairs -> no shard -> no NewBaseCEXScraper call -> nobody matches the caller's
@@ -333,11 +373,13 @@ func NewBitMartScraper(ctx context.Context, pairs []models.ExchangePair, branchM
 		wg.Add(extra)
 	}
 
+	now := time.Now()
 	for i, chunk := range chunks {
 		// Each shard gets its own cancelable context so Close can stop them independently,
 		// while still cascading from the parent ctx.
 		shardCtx, shardCancel := context.WithCancel(ctx)
 		s.cancels = append(s.cancels, shardCancel)
+		s.lastTradeTime[i] = now // seed so a slow-starting shard is not flagged immediately
 
 		// Bitmart allows only one new connection per IP per second. NewBaseCEXScraper
 		// connects synchronously, so creating shards serially with a >=1s gap respects that.
@@ -348,8 +390,9 @@ func NewBitMartScraper(ctx context.Context, pairs []models.ExchangePair, branchM
 		shard := NewBaseCEXScraper(shardCtx, chunk, wg, bitmartHooks{}, branchMarketConfig)
 		s.shards = append(s.shards, shard)
 
-		// Fan-in: drain this shard's trades into the merged channel.
-		go func(src chan models.Trade) {
+		// Fan-in: drain this shard's trades into the merged channel, recording this shard's
+		// own last-trade time so the liveness watchdog can detect a single dead shard.
+		go func(shardIdx int, src chan models.Trade) {
 			for {
 				select {
 				case <-shardCtx.Done():
@@ -358,6 +401,7 @@ func NewBitMartScraper(ctx context.Context, pairs []models.ExchangePair, branchM
 					if !ok {
 						return
 					}
+					s.markTrade(shardIdx, time.Now())
 					select {
 					case merged <- t:
 					case <-shardCtx.Done():
@@ -365,10 +409,52 @@ func NewBitMartScraper(ctx context.Context, pairs []models.ExchangePair, branchM
 					}
 				}
 			}
-		}(shard.TradesChannel())
+		}(i, shard.TradesChannel())
 
 		log.Infof("%s - shard %d/%d started with %d pairs.", BITMART_EXCHANGE, i+1, len(chunks), len(chunk))
 	}
 
+	// Per-shard liveness watchdog: if any shard's own trade flow goes stale, signal failover
+	// even though the merged stream may still be flowing from the other shards.
+	go s.runShardLivenessWatchdog(ctx)
+
 	return s
+}
+
+func (s *bitmartShardedScraper) runShardLivenessWatchdog(ctx context.Context) {
+	// Check at a fraction of the timeout so detection latency is bounded.
+	interval := s.shardWatchdog / 3
+	if interval < time.Second {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			var staleIdx = -1
+			var staleFor time.Duration
+			for i, last := range s.lastTradeTime {
+				if d := time.Since(last); d > s.shardWatchdog {
+					staleIdx, staleFor = i, d
+					break
+				}
+			}
+			s.mu.Unlock()
+
+			if staleIdx >= 0 {
+				log.Warnf("%s - shard %d stale for %v (>%v); signaling failover.",
+					BITMART_EXCHANGE, staleIdx, staleFor, s.shardWatchdog)
+				select {
+				case s.stalenessCh <- BITMART_EXCHANGE:
+				default: // already signaled; RunScraper will Close+failover
+				}
+				return
+			}
+		}
+	}
 }

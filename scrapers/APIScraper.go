@@ -307,18 +307,37 @@ func RunScraper(
 	case BITMART_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
 		scraper := NewBitMartScraper(ctx, pairs, branchMarketConfig, wg)
+
+		// The sharded BitMart scraper exposes a per-shard liveness signal. The merged
+		// trades channel below can keep flowing while an individual shard is dead, so we
+		// also select on this staleness signal to trip failover for the whole exchange.
+		var shardStale <-chan string
+		if sharded, ok := scraper.(interface{ StalenessChannel() <-chan string }); ok {
+			shardStale = sharded.StalenessChannel()
+		}
+
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("BITMART_WATCHDOG", "300"))
 		if err != nil {
 			log.Errorf("parse BITMART_WATCHDOG: %v.", err)
 		}
 		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
 		lastTradeTime := time.Now()
+
 		for {
 			select {
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
 				tradesChannel <- trade
-		
+
+			case <-shardStale:
+				err := scraper.Close(cancel)
+				if err != nil {
+					log.Errorf("BitMart - Close(): %v.", err)
+				}
+				log.Warnf("Closed BitMart scraper: a shard went stale.")
+				failoverChannel <- BITMART_EXCHANGE
+				return
+
 			case <-watchdogTicker.C:
 				duration := time.Since(lastTradeTime)
 				if duration > time.Duration(watchdogDelay)*time.Second {
@@ -332,7 +351,6 @@ func RunScraper(
 				}
 			}
 		}
-
 	case UNISWAPV2_EXCHANGE:
 		NewUniswapV2Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	case UNISWAPV2_BASE_EXCHANGE:
