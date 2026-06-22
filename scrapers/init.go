@@ -8,7 +8,11 @@ import (
 
 const (
 	BINANCE_EXCHANGE      = "Binance"
+<<<<<<< HEAD
 	BITMART_EXCHANGE      = "BitMart"
+=======
+	BITMEX_EXCHANGE       = "BitMex"
+>>>>>>> add_bitmex
 	COINBASE_EXCHANGE     = "CoinBase"
 	BYBIT_EXCHANGE        = "ByBit"
 	CRYPTODOTCOM_EXCHANGE = "Crypto.com"
@@ -42,6 +46,7 @@ func init() {
 	Exchanges[BITMART_EXCHANGE] = models.Exchange{Name: BITMART_EXCHANGE, Centralized: true}
 	Exchanges[BINANCE_EXCHANGE] = models.Exchange{Name: BINANCE_EXCHANGE, Centralized: true}
 	Exchanges[BITGET_EXCHANGE] = models.Exchange{Name: BITGET_EXCHANGE, Centralized: true}
+	Exchanges[BITMEX_EXCHANGE] = models.Exchange{Name: BITMEX_EXCHANGE, Centralized: true}
 	Exchanges[COINBASE_EXCHANGE] = models.Exchange{Name: COINBASE_EXCHANGE, Centralized: true}
 	Exchanges[CRYPTODOTCOM_EXCHANGE] = models.Exchange{Name: CRYPTODOTCOM_EXCHANGE, Centralized: true}
 	Exchanges[GATEIO_EXCHANGE] = models.Exchange{Name: GATEIO_EXCHANGE, Centralized: true}
