@@ -208,7 +208,7 @@ func updateOracleMultiValues(
 
 	for i, value := range values {
 		// Create compressed argument with values/timestamps
-		cValue := value
+		cValue := new(big.Int).Set(value)
 		cValue = cValue.Lsh(cValue, 128)
 		cValue = cValue.Add(cValue, big.NewInt(timestamp))
 		cValues = append(cValues, cValue)
