@@ -8,11 +8,8 @@ import (
 
 const (
 	BINANCE_EXCHANGE      = "Binance"
-<<<<<<< HEAD
 	BITMART_EXCHANGE      = "BitMart"
-=======
 	BITMEX_EXCHANGE       = "BitMex"
->>>>>>> add_bitmex
 	COINBASE_EXCHANGE     = "CoinBase"
 	BYBIT_EXCHANGE        = "ByBit"
 	CRYPTODOTCOM_EXCHANGE = "Crypto.com"
