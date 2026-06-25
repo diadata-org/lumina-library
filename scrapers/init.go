@@ -8,6 +8,8 @@ import (
 
 const (
 	BINANCE_EXCHANGE      = "Binance"
+	BITMART_EXCHANGE      = "BitMart"
+	BITMEX_EXCHANGE       = "BitMex"
 	COINBASE_EXCHANGE     = "CoinBase"
 	BYBIT_EXCHANGE        = "ByBit"
 	CRYPTODOTCOM_EXCHANGE = "Crypto.com"
@@ -16,16 +18,19 @@ const (
 	KUCOIN_EXCHANGE       = "KuCoin"
 	OKEX_EXCHANGE         = "OKEx"
 	MEXC_EXCHANGE         = "MEXC"
-
+	BITGET_EXCHANGE       = "Bitget"
+	
 	CURVE_EXCHANGE               = "Curve"
 	UNISWAPV2_EXCHANGE           = "UniswapV2"
 	UNISWAPV2_BASE_EXCHANGE      = "UniswapV2_Base"
 	UNISWAPV3_EXCHANGE           = "UniswapV3"
 	UNISWAPV4_EXCHANGE           = "UniswapV4"
 	UNISWAPV3_BASE_EXCHANGE      = "UniswapV3_Base"
+	UNISWAPV4_BASE_EXCHANGE      = "UniswapV4_Base"
 	PANCAKESWAPV3_EXCHANGE       = "PancakeswapV3"
 	UNISWAP_SIMULATION           = "UniswapSimulation"
 	AERODROMESLIPSTREAM_EXCHANGE = "AerodromeSlipstream"
+	AERODROMEV1_EXCHANGE         = "AerodromeV1"
 )
 
 var (
@@ -36,7 +41,10 @@ var (
 func init() {
 
 	Exchanges[BYBIT_EXCHANGE] = models.Exchange{Name: BYBIT_EXCHANGE, Centralized: true}
+	Exchanges[BITMART_EXCHANGE] = models.Exchange{Name: BITMART_EXCHANGE, Centralized: true}
 	Exchanges[BINANCE_EXCHANGE] = models.Exchange{Name: BINANCE_EXCHANGE, Centralized: true}
+	Exchanges[BITGET_EXCHANGE] = models.Exchange{Name: BITGET_EXCHANGE, Centralized: true}
+	Exchanges[BITMEX_EXCHANGE] = models.Exchange{Name: BITMEX_EXCHANGE, Centralized: true}
 	Exchanges[COINBASE_EXCHANGE] = models.Exchange{Name: COINBASE_EXCHANGE, Centralized: true}
 	Exchanges[CRYPTODOTCOM_EXCHANGE] = models.Exchange{Name: CRYPTODOTCOM_EXCHANGE, Centralized: true}
 	Exchanges[GATEIO_EXCHANGE] = models.Exchange{Name: GATEIO_EXCHANGE, Centralized: true}
@@ -52,8 +60,10 @@ func init() {
 	Exchanges[UNISWAPV2_BASE_EXCHANGE] = models.Exchange{Name: UNISWAPV2_BASE_EXCHANGE, Centralized: false, Blockchain: utils.BASE}
 	Exchanges[UNISWAPV3_EXCHANGE] = models.Exchange{Name: UNISWAPV3_EXCHANGE, Centralized: false, Blockchain: utils.ETHEREUM}
 	Exchanges[UNISWAPV4_EXCHANGE] = models.Exchange{Name: UNISWAPV4_EXCHANGE, Centralized: false, Blockchain: utils.ETHEREUM}
+	Exchanges[UNISWAPV4_BASE_EXCHANGE] = models.Exchange{Name: UNISWAPV4_BASE_EXCHANGE, Centralized: false, Blockchain: utils.BASE}
 	Exchanges[UNISWAPV3_BASE_EXCHANGE] = models.Exchange{Name: UNISWAPV3_BASE_EXCHANGE, Centralized: false, Blockchain: utils.BASE}
 	Exchanges[AERODROMESLIPSTREAM_EXCHANGE] = models.Exchange{Name: AERODROMESLIPSTREAM_EXCHANGE, Centralized: false, Blockchain: utils.BASE}
+	Exchanges[AERODROMEV1_EXCHANGE] = models.Exchange{Name: AERODROMEV1_EXCHANGE, Centralized: false, Blockchain: utils.BASE}
 
 	log = logrus.New()
 	loglevel, err := logrus.ParseLevel(utils.Getenv("LOG_LEVEL_SCRAPERS", "info"))
