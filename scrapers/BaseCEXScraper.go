@@ -110,7 +110,7 @@ func NewBaseCEXScraper(
 		if err := hooks.Subscribe(bs, p, true, &lock); err != nil {
 			log.Errorf("%s - Failed to subscribe to %v: %v", key, p.ForeignName, err)
 		} else {
-			log.Infof("%s - Subscribed to %v", key, p.ForeignName)
+			log.Debugf("%s - Subscribed to %v", key, p.ForeignName)
 			bs.setLastTradeTime(&lock, hooks.LastTradeTimeKeyFromForeign(p.ForeignName), time.Now())
 		}
 	}
@@ -162,7 +162,7 @@ func (bs *BaseCEXScraper) connectWithRetry(ctx context.Context) bool {
 		conn, err := bs.dialOnce(ctx)
 		if err == nil {
 			bs.wsClient = conn
-			log.Infof("%s - WebSocket connected.", key)
+			log.Debugf("%s - WebSocket connected.", key)
 			return true
 		}
 
@@ -226,7 +226,7 @@ func (bs *BaseCEXScraper) runReadLoop(ctx context.Context, lock *sync.RWMutex) {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Infof("%s - Stopping WebSocket reader", strings.ToUpper(bs.hooks.ExchangeKey()))
+			log.Debugf("%s - Stopping WebSocket reader", strings.ToUpper(bs.hooks.ExchangeKey()))
 			return
 		default:
 			messageType, msg, err := bs.wsClient.ReadMessage()
@@ -273,7 +273,7 @@ func (bs *BaseCEXScraper) runProcessUnsubscribe(ctx context.Context, lock *sync.
 			if err := bs.hooks.Subscribe(bs, pair, false, lock); err != nil {
 				log.Errorf("%s - Unsubscribe pair %s: %v.", exKey, pair.ForeignName, err)
 			} else {
-				log.Infof("%s - Unsubscribed pair %s.", exKey, pair.ForeignName)
+				log.Debugf("%s - Unsubscribed pair %s.", exKey, pair.ForeignName)
 			}
 			// clean lastTradeTime, watchdog
 			bs.deleteLastTradeTime(lock, bs.hooks.LastTradeTimeKeyFromForeign(pair.ForeignName))
@@ -343,14 +343,14 @@ func (bs *BaseCEXScraper) applyConfigDiff(ctx context.Context, lock *sync.RWMute
 
 	// removed -> unsubscribe
 	for _, p := range removed {
-		log.Infof("%s - Removed pair %s.", strings.ToUpper(bs.hooks.ExchangeKey()), p)
+		log.Debugf("%s - Removed pair %s.", strings.ToUpper(bs.hooks.ExchangeKey()), p)
 		bs.unsubscribeChannel <- models.ExchangePair{ForeignName: p}
 	}
 
 	// added -> subscribe + watchdog + map initialize
 	for _, p := range added {
 		delay := current[p]
-		log.Infof("%s - Added pair %s with delay %v.", strings.ToUpper(bs.hooks.ExchangeKey()), p, delay)
+		log.Debugf("%s - Added pair %s with delay %v.", strings.ToUpper(bs.hooks.ExchangeKey()), p, delay)
 
 		ep, err := bs.getExchangePairInfo(p, delay, branchMarketConfig)
 		if err != nil {

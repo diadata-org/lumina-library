@@ -178,13 +178,13 @@ func (h *uniswapV3Hooks) StartStream(
 				select {
 				case rawSwap, ok := <-ch:
 					if !ok {
-						log.Infof("%s - swaps channel closed for %s", h.ExchangeName(), addr.Hex())
+						log.Debugf("%s - swaps channel closed for %s", h.ExchangeName(), addr.Hex())
 						return
 					}
 					s.processOneSwap(base, pair, addr, rawSwap, tradesChan, lock)
 
 				case <-ctx.Done():
-					log.Infof("%s - shutting down stream for %s", h.ExchangeName(), addr.Hex())
+					log.Debugf("%s - shutting down stream for %s", h.ExchangeName(), addr.Hex())
 					sub.Unsubscribe()
 					return
 				case err := <-sub.Err():
@@ -197,13 +197,13 @@ func (h *uniswapV3Hooks) StartStream(
 				select {
 				case rawSwap, ok := <-ch:
 					if !ok {
-						log.Infof("%s - swaps channel closed for %s", h.ExchangeName(), addr.Hex())
+						log.Debugf("%s - swaps channel closed for %s", h.ExchangeName(), addr.Hex())
 						return
 					}
 					s.processOneSwap(base, pair, addr, rawSwap, tradesChan, lock)
 
 				case <-ctx.Done():
-					log.Infof("%s - shutting down stream for %s", h.ExchangeName(), addr.Hex())
+					log.Debugf("%s - shutting down stream for %s", h.ExchangeName(), addr.Hex())
 					sub.Unsubscribe()
 					return
 

@@ -569,7 +569,7 @@ func (s *CurveScraper) watchSwaps(
 				return
 
 			case <-ctx.Done():
-				log.Infof("Curve - Shutting down watchSwaps for %s", address.Hex())
+				log.Debugf("Curve - Shutting down watchSwaps for %s", address.Hex())
 				return
 			}
 		}

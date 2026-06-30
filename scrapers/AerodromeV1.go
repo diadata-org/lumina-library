@@ -228,7 +228,7 @@ func (s *AerodromeV1Scraper) watchSwaps(
 				base.SubscribeChannel() <- address
 				return
 			case <-ctx.Done():
-				log.Infof("AerodromeV1 - shutting down watchSwaps for %s", address.Hex())
+				log.Debugf("AerodromeV1 - shutting down watchSwaps for %s", address.Hex())
 				sub.Unsubscribe()
 				return
 			}

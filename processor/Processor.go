@@ -68,7 +68,7 @@ func Processor(
 					continue
 				}
 
-				log.Infof(
+				log.Debugf(
 					"Processor - Atomic filter value for market %s with %v trades: %v.",
 					tb.Trades[0].Exchange.Name+":"+tb.Trades[0].QuoteToken.Symbol+"-"+tb.Trades[0].BaseToken.Symbol,
 					len(tb.Trades),
@@ -106,7 +106,7 @@ func Processor(
 		case string(METAFILTER_MEDIAN):
 			filterPointsAggregated = metafilters.Median(filterPoints)
 			for _, fpm := range filterPointsAggregated {
-				log.Infof("Processor - filter %s for %s: %v.", fpm.Name, fpm.Pair.QuoteToken.Symbol, fpm.Value)
+				log.Debugf("Processor - filter %s for %s: %v.", fpm.Name, fpm.Pair.QuoteToken.Symbol, fpm.Value)
 			}
 		}
 

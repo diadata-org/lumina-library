@@ -89,7 +89,7 @@ func OracleUpdateExecutor(
 		var keys []string
 		var values []*big.Int
 		for _, fp := range filterPoints {
-			log.Infof(
+			log.Debugf(
 				"updater - filterPoint received at %v: %s: %s-%s -- %v -- %v.",
 				time.Unix(timestamp, 0),
 				fp.Pair.QuoteToken.Symbol,

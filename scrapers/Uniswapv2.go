@@ -238,7 +238,7 @@ func (s *UniswapV2Scraper) watchSwaps(
 				base.SubscribeChannel() <- address
 				return
 			case <-ctx.Done():
-				log.Infof("UniswapV2 - shutting down watchSwaps for %s", address.Hex())
+				log.Debugf("UniswapV2 - shutting down watchSwaps for %s", address.Hex())
 				sub.Unsubscribe()
 				return
 			}

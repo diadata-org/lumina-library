@@ -22,7 +22,7 @@ func watchdog(
 	subscribeChannel chan models.ExchangePair,
 	lock *sync.RWMutex,
 ) {
-	log.Infof("%s - start watching %s with watchdog %v.", pair.Exchange, pair.ForeignName, watchdogDelay)
+	log.Debugf("%s - start watching %s with watchdog %v.", pair.Exchange, pair.ForeignName, watchdogDelay)
 	for {
 		select {
 		case <-ticker.C:
@@ -94,7 +94,7 @@ func watchdogPool(
 	subscribeChannel chan common.Address,
 	lock *sync.RWMutex,
 ) {
-	log.Infof("%s - start watching %s with watchdog %v.", exchange, pool.Hex(), watchdogDelay)
+	log.Debugf("%s - start watching %s with watchdog %v.", exchange, pool.Hex(), watchdogDelay)
 	for {
 		select {
 		case <-ticker.C:
