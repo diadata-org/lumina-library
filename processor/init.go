@@ -20,8 +20,8 @@ const (
 var (
 	toleranceSeconds int64
 	log              *logrus.Logger
-	filterType       = utils.Getenv("FILTER_TYPE", string(FILTER_VWAP))
-	metaFilterType   = utils.Getenv("METAFILTER_TYPE", string(METAFILTER_VWAP))
+	filterType       = utils.Getenv("FILTER_TYPE", string(FILTER_LAST_PRICE))
+	metaFilterType   = utils.Getenv("METAFILTER_TYPE", string(METAFILTER_MEDIAN))
 )
 
 func init() {
