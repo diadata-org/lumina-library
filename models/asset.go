@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	luminametacontract "github.com/diadata-org/lumina-library/contracts/lumina/metacontract"
@@ -190,7 +190,7 @@ func (a *Asset) GetBalance(poolAddress common.Address, client *ethclient.Client)
 // and base normalization is handled separately via basePrice.
 // Returns "" if Symbol is empty.
 func (a *Asset) GetOracleKey() string {
-	symbol := strings.ToUpper(strings.TrimSpace(a.Symbol))
+	symbol := a.Symbol
 	if symbol == "" {
 		return ""
 	}
