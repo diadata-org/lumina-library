@@ -17,6 +17,8 @@ var (
 	metaFilterType   = utils.Getenv("METAFILTER_TYPE", string(METAFILTER_MEDIAN))
 
 	FILTER_LAST_PRICE = models.FilterType("LastPrice")
+	FILTER_EMA        = models.FilterType("EMA")
+	FILTER_VWAP       = models.FilterType("VWAP")
 	METAFILTER_MEDIAN = models.MetafilterType("Median")
 )
 
