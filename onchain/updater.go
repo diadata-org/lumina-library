@@ -46,14 +46,14 @@ func OracleUpdateExecutorSimulation(
 		var keys []string
 		var values []*big.Int
 		for _, fp := range filterPoints {
-			log.Infof(
+			log.Debugf(
 				"updater - filterPoint received at %v: %v -- %v -- %v.",
 				time.Unix(timestamp, 0),
 				fp.Pair.QuoteToken.Symbol,
 				fp.Value,
 				fp.Time,
 			)
-			log.Infof("updater -- filterPoint received at unix timestamp (now) %v vs fp.Time %v", timestamp, fp.Time.Unix())
+			log.Debugf("updater -- filterPoint received at unix timestamp (now) %v vs fp.Time %v", timestamp, fp.Time.Unix())
 			key := models.GetOracleKeySimulation(fp.Pair)
 			keys = append(keys, key)
 			values = append(values, utils.ScaleFloat(fp.Value, decimals))
@@ -227,7 +227,7 @@ func updateOracleMultiValues(
 		return err
 	}
 
-	log.Infof("updater - Tx To -- Gas price -- nonce: %s -- %d - %d.", tx.To().String(), tx.GasPrice(), tx.Nonce())
+	log.Infof("updater - Tx To -- Gas price -- nonce: %s -- %d -- %d.", tx.To().String(), tx.GasPrice(), tx.Nonce())
 	log.Infof("updater - Tx Hash: 0x%x.", tx.Hash())
 	return nil
 }
