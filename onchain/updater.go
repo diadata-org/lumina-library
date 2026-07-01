@@ -227,10 +227,7 @@ func updateOracleMultiValues(
 		return err
 	}
 
-	log.Infof("updater - Gas price: %d.", tx.GasPrice())
-	// log.Printf("Data: %x\n", tx.Data())
-	log.Infof("updater - Nonce: %d.", tx.Nonce())
-	log.Infof("updater - Tx To: %s.", tx.To().String())
+	log.Infof("updater - Tx To -- Gas price -- nonce: %s -- %d - %d.", tx.To().String(), tx.GasPrice(), tx.Nonce())
 	log.Infof("updater - Tx Hash: 0x%x.", tx.Hash())
 	return nil
 }
