@@ -5,6 +5,13 @@ import (
 	"sort"
 )
 
+// MinSizeForTrimming is the minimum number of trades required before volume-outlier
+// trimming is applied. With this threshold, trimming only fires when there are at
+// least 5 trades, ensuring a minimum of 3 survive after removing the lowest and
+// highest-volume observations — giving VWAP meaningful input rather than collapsing
+// to a single-trade signal.
+const MinSizeForTrimming = 5
+
 func Median(samples []float64) (median float64) {
 	var length = len(samples)
 	if length > 0 {
@@ -107,4 +114,74 @@ func max(samples []float64) (maximum float64, index int) {
 		}
 	}
 	return
+}
+
+type TradeVolume struct {
+	Price  float64
+	Volume float64 // volume may be negative (sell-side); VWAP takes absolute value
+}
+
+// VWAP computes the volume-weighted average price from @trades.
+//
+//	VWAP = Σ(Price_i × Volume_i) / Σ(Volume_i)
+//
+// Volumes are treated as unsigned: DEX trades may carry signed volume
+// (negative = sell), but buys and sells both contribute to liquidity and
+// price discovery, so we take the absolute value here.
+// Trades with zero Volume are ignored.
+func VWAP(trades []TradeVolume) float64 {
+	var sumPriceVolume, sumVolume float64
+	for _, t := range trades {
+		absVol := math.Abs(t.Volume)
+		if absVol == 0 {
+			continue
+		}
+		sumPriceVolume += t.Price * absVol
+		sumVolume += absVol
+	}
+	if sumVolume == 0 {
+		return 0
+	}
+	return sumPriceVolume / sumVolume
+}
+
+// VWAPWithVolume computes the volume-weighted average price from @trades and also
+// returns the total absolute volume used in the calculation.
+// This is used when the caller needs to propagate volume for a subsequent
+// cross-source VWAP aggregation (e.g. the VWAP metafilter).
+func VWAPWithVolume(trades []TradeVolume) (vwap float64, totalVolume float64) {
+	var sumPriceVolume float64
+	for _, t := range trades {
+		absVol := math.Abs(t.Volume)
+		if absVol == 0 {
+			continue
+		}
+		sumPriceVolume += t.Price * absVol
+		totalVolume += absVol
+	}
+	if totalVolume == 0 {
+		return 0, 0
+	}
+	return sumPriceVolume / totalVolume, totalVolume
+}
+
+func SortByVolume(trades []TradeVolume) []TradeVolume {
+	sorted := make([]TradeVolume, len(trades))
+	copy(sorted, trades)
+	sort.Slice(sorted, func(i, j int) bool {
+		return math.Abs(sorted[i].Volume) < math.Abs(sorted[j].Volume)
+	})
+	return sorted
+}
+
+// TrimVolumeOutliers removes the single lowest- and highest-volume trade from a
+// sorted slice to reduce the impact of outliers on the VWAP calculation.
+// Trimming is skipped entirely for slices smaller than MinSizeForTrimming (5),
+// ensuring that at least 3 trades always survive and VWAP retains meaningful
+// volume-weighted semantics rather than collapsing to a single-trade signal.
+func TrimVolumeOutliers(trades []TradeVolume) []TradeVolume {
+	if len(trades) < MinSizeForTrimming {
+		return trades
+	}
+	return trades[1 : len(trades)-1]
 }

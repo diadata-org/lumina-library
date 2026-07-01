@@ -30,6 +30,7 @@ func Processor(
 ) {
 
 	log.Info("Processor - Start......")
+
 	// Collector starts collecting trades in the background and sends atomic tradesblocks to @tradesblockChannel.
 	go scrapers.Collector(exchangePairs, pools, tradesblockChannel, triggerChannel, failoverChannel, branchMarketConfig, wg)
 
@@ -52,13 +53,19 @@ func Processor(
 				continue
 			}
 
-			// filter switch, for instance LastPrice, Median, Average, Minimum, etc.
+			// All blocks from Collector are atomic (single source). SourceType is always available.
 			sourceType, err := tb.GetSourceType()
 			if err != nil {
-				log.Warn(err)
+				log.Warnf("Processor - GetSourceType for pair %s-%s: %v, skipping.",
+					tb.Pair.QuoteToken.Symbol,
+					tb.Pair.BaseToken.Symbol,
+					err,
+				)
+				continue
 			}
 
 			var atomicFilterValue float64
+			var atomicVolume float64
 
 			switch filterType {
 			case string(FILTER_LAST_PRICE):
@@ -74,12 +81,34 @@ func Processor(
 					len(tb.Trades),
 					atomicFilterValue,
 				)
+			case string(FILTER_VWAP):
+				atomicFilterValue, atomicVolume, _, err = filters.VWAPFilter(tb, basePrice, toleranceSeconds)
+				if err != nil {
+					log.Warn("VWAP filter: ", err)
+					continue
+				}
+				log.Infof(
+					"Processor - VWAP filter value for pair %s-%s [%s] with %v trades: %v (volume: %v).",
+					tb.Pair.QuoteToken.Symbol,
+					tb.Pair.BaseToken.Symbol,
+					tb.Trades[0].Exchange.Name,
+					len(tb.Trades),
+					atomicFilterValue,
+					atomicVolume,
+				)
+			default:
+				log.Warnf("Processor - unknown filterType %q for pair %s-%s, skipping.",
+					filterType,
+					tb.Pair.QuoteToken.Symbol,
+					tb.Pair.BaseToken.Symbol,
+				)
+				continue
 			}
 
-			// Identify @Pair and @SourceType from atomic tradesblock.
 			filterPoint := models.FilterPointPair{
 				Pair:       tb.Pair,
 				Value:      atomicFilterValue,
+				Volume:     atomicVolume,
 				Time:       tb.EndTime,
 				SourceType: sourceType,
 			}
@@ -108,6 +137,14 @@ func Processor(
 			for _, fpm := range filterPointsAggregated {
 				log.Infof("Processor - filter %s for %s: %v.", fpm.Name, fpm.Pair.QuoteToken.Symbol, fpm.Value)
 			}
+		case string(METAFILTER_VWAP):
+			filterPointsAggregated = metafilters.VWAPMeta(filterPoints)
+			for _, fpm := range filterPointsAggregated {
+				log.Infof("Processor - meta VWAP for %s: %v.", fpm.Pair.QuoteToken.Symbol, fpm.Value)
+			}
+		default:
+			log.Warnf("Processor - no metafilter matched for metaFilterType=%q, skipping update", metaFilterType)
+			continue
 		}
 
 		filtersChannel <- filterPointsAggregated
