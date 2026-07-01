@@ -92,6 +92,34 @@ func RunScraper(
 				}
 			}
 		}
+	case BITGET_EXCHANGE:
+		ctx, cancel := context.WithCancel(context.Background())
+		scraper := NewBitgetScraper(ctx, pairs, branchMarketConfig, wg)
+		watchdogDelay, err := strconv.Atoi(utils.Getenv("BITGET_WATCHDOG", "300"))
+		if err != nil || watchdogDelay <= 0 {
+			log.Errorf("parse BITGET_WATCHDOG: %v. Set to default 300.", err)
+			watchdogDelay = 300
+		}
+		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
+		lastTradeTime := time.Now()
+		for {
+			select {
+			case trade := <-scraper.TradesChannel():
+				lastTradeTime = time.Now()
+				tradesChannel <- trade
+			case <-watchdogTicker.C:
+				duration := time.Since(lastTradeTime)
+				if duration > time.Duration(watchdogDelay)*time.Second {
+					err := scraper.Close(cancel)
+					if err != nil {
+						log.Errorf("Bitget - Close(): %v.", err)
+					}
+					log.Warnf("Closed Bitget scraper as duration since last trade is %v.", duration)
+					failoverChannel <- BITGET_EXCHANGE
+					return
+				}
+			}
+		}
 	case BYBIT_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
 		scraper := NewByBitScraper(ctx, pairs, branchMarketConfig, wg)
@@ -303,7 +331,85 @@ func RunScraper(
 				}
 			}
 		}
+		
+	case BITMEX_EXCHANGE:
+		ctx, cancel := context.WithCancel(context.Background())
+		scraper := NewBitMexScraper(ctx, pairs, branchMarketConfig, wg)
+ 
+		watchdogDelay, err := strconv.Atoi(utils.Getenv("BITMEX_WATCHDOG", "300"))
+		if err != nil {
+			log.Errorf("parse BITMEX_WATCHDOG: %v.", err)
+		}
+		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
+		lastTradeTime := time.Now()
+ 
+		for {
+			select {
+			case trade := <-scraper.TradesChannel():
+				lastTradeTime = time.Now()
+				tradesChannel <- trade
+ 
+			case <-watchdogTicker.C:
+				duration := time.Since(lastTradeTime)
+				if duration > time.Duration(watchdogDelay)*time.Second {
+					err := scraper.Close(cancel)
+					if err != nil {
+						log.Errorf("BitMex - Close(): %v.", err)
+					}
+					log.Warnf("Closed BitMex scraper as duration since last trade is %v.", duration)
+					failoverChannel <- BITMEX_EXCHANGE
+					return
+				}
+			}
+		}
 
+	case BITMART_EXCHANGE:
+		ctx, cancel := context.WithCancel(context.Background())
+		scraper := NewBitMartScraper(ctx, pairs, branchMarketConfig, wg)
+
+		// The sharded BitMart scraper exposes a per-shard liveness signal. The merged
+		// trades channel below can keep flowing while an individual shard is dead, so we
+		// also select on this staleness signal to trip failover for the whole exchange.
+		var shardStale <-chan string
+		if sharded, ok := scraper.(interface{ StalenessChannel() <-chan string }); ok {
+			shardStale = sharded.StalenessChannel()
+		}
+
+		watchdogDelay, err := strconv.Atoi(utils.Getenv("BITMART_WATCHDOG", "300"))
+		if err != nil {
+			log.Errorf("parse BITMART_WATCHDOG: %v.", err)
+		}
+		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
+		lastTradeTime := time.Now()
+
+		for {
+			select {
+			case trade := <-scraper.TradesChannel():
+				lastTradeTime = time.Now()
+				tradesChannel <- trade
+
+			case <-shardStale:
+				err := scraper.Close(cancel)
+				if err != nil {
+					log.Errorf("BitMart - Close(): %v.", err)
+				}
+				log.Warnf("Closed BitMart scraper: a shard went stale.")
+				failoverChannel <- BITMART_EXCHANGE
+				return
+
+			case <-watchdogTicker.C:
+				duration := time.Since(lastTradeTime)
+				if duration > time.Duration(watchdogDelay)*time.Second {
+					err := scraper.Close(cancel)
+					if err != nil {
+						log.Errorf("BitMart - Close(): %v.", err)
+					}
+					log.Warnf("Closed BitMart scraper as duration since last trade is %v.", duration)
+					failoverChannel <- BITMART_EXCHANGE
+					return
+				}
+			}
+		}
 	case UNISWAPV2_EXCHANGE:
 		NewUniswapV2Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	case UNISWAPV2_BASE_EXCHANGE:
@@ -316,10 +422,14 @@ func RunScraper(
 		NewUniswapV3Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	case UNISWAPV4_EXCHANGE:
 		NewUniswapV4Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
+	case UNISWAPV4_BASE_EXCHANGE:
+		NewUniswapV4Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	case CURVE_EXCHANGE:
 		NewCurveScraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	case AERODROMESLIPSTREAM_EXCHANGE:
 		NewUniswapV3Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
+	case AERODROMEV1_EXCHANGE:
+		NewAerodromeV1Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	}
 }
 
