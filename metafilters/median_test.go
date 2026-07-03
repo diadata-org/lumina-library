@@ -103,7 +103,8 @@ func TestMedian(t *testing.T) {
 	}
 
 	for i, c := range cases {
-		medianizedFilterPoints := Median(c.filterPoints)
+		filterAssetMap := models.GroupFiltersByAsset(c.filterPoints)
+		medianizedFilterPoints := Median(filterAssetMap)
 
 		// Make maps from slices in order to deep compare.
 		if !reflect.DeepEqual(models.GroupFiltersByAsset(medianizedFilterPoints), models.GroupFiltersByAsset(c.medianizedFilterPoints)) {

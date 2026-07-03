@@ -97,18 +97,19 @@ func Processor(
 		// --------------------------------------------------------------------------------------------
 
 		// TO DO: Set flag for metafilter switch. For instance Median, Average, Minimum, etc.
+		filterAssetMap := models.GroupFiltersByAsset(filterPoints)
 
 		switch metaFilterType {
 		// TO DO: Add methodology for metafilters of simulated data.
 		case "Median":
-			filterPointsMedianized := metafilters.Median(filterPoints)
+			filterPointsMedianized := metafilters.Median(filterAssetMap)
 			filtersChannel <- filterPointsMedianized
 			for _, fpm := range filterPointsMedianized {
 				log.Infof("Processor - filter %s for %s: %v.", fpm.Name, fpm.Pair.QuoteToken.Symbol, fpm.Value)
 			}
 		case "MedianWithPriceFilter":
 			filterPoints = models.RemoveLargeDeviationPrices(filterPoints)
-			filterPointsMedianized := metafilters.Median(filterPoints)
+			filterPointsMedianized := metafilters.Median(filterAssetMap)
 			filtersChannel <- filterPointsMedianized
 			for _, fpm := range filterPointsMedianized {
 				log.Infof("Processor - filter %s for %s: %v.", fpm.Name, fpm.Pair.QuoteToken.Symbol, fpm.Value)

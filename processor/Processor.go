@@ -18,6 +18,7 @@ import (
 func Processor(
 	exchangePairs []models.ExchangePair,
 	pools []models.Pool,
+	feedsMap map[models.AssetKey]models.Feed,
 	tradesblockChannel chan map[string]models.TradesBlock,
 	filtersChannel chan []models.FilterPointPair,
 	triggerChannel chan time.Time,
@@ -26,6 +27,7 @@ func Processor(
 	metacontractAddress string,
 	metacontractPrecision int,
 	branchMarketConfig string,
+	branchFeedConfig string,
 	wg *sync.WaitGroup,
 ) {
 
@@ -34,8 +36,32 @@ func Processor(
 	// Collector starts collecting trades in the background and sends atomic tradesblocks to @tradesblockChannel.
 	go scrapers.Collector(exchangePairs, pools, tradesblockChannel, triggerChannel, failoverChannel, branchMarketConfig, wg)
 
+	// Periodically check for filters set per feed.
+	feedsReloadTicker := time.NewTicker(time.Duration(watchFeedConfigSeconds) * time.Second)
+	defer feedsReloadTicker.Stop()
+	var feedsMu sync.RWMutex
+	go func() {
+		for range feedsReloadTicker.C {
+			newFeedsMap, err := models.FeedsFromConfigFile(branchFeedConfig)
+			if err != nil {
+				log.Warnf("Processor - FeedsFromConfigFile reload failed, keeping previous feedsMap: %v", err)
+				continue
+			}
+			feedsMu.Lock()
+			feedsMap = newFeedsMap
+			feedsMu.Unlock()
+
+			log.Infof("Processor - feedsMap reloaded (%d entries).", len(feedsMap))
+		}
+	}()
+
 	// As soon as the trigger channel receives input a processing step is initiated.
 	for tradesblocks := range tradesblockChannel {
+
+		// Snapshot feeds map once per processing iteration (safe + consistent view).
+		feedsMu.RLock()
+		currentFeeds := feedsMap
+		feedsMu.RUnlock()
 
 		var filterPoints []models.FilterPointPair
 		// Renew the price cache in each iteration. Could be refined by adjusting to the frequency of the source.
@@ -67,27 +93,14 @@ func Processor(
 			var atomicFilterValue float64
 			var atomicVolume float64
 
-			switch filterType {
-			case string(FILTER_LAST_PRICE):
-				atomicFilterValue, _, err = filters.LastPrice(tb, basePrice)
-				if err != nil {
-					log.Warn("last price filter: ", err)
-					continue
-				}
-
-				log.Infof(
-					"Processor - Atomic filter value for market %s with %v trades: %v.",
-					tb.Trades[0].Exchange.Name+":"+tb.Trades[0].QuoteToken.Symbol+"-"+tb.Trades[0].BaseToken.Symbol,
-					len(tb.Trades),
-					atomicFilterValue,
-				)
+			switch string(currentFeeds[tb.Pair.QuoteToken.Asset2Key()].Filter) {
 			case string(FILTER_VWAP):
 				atomicFilterValue, atomicVolume, _, err = filters.VWAPFilter(tb, basePrice, toleranceSeconds)
 				if err != nil {
 					log.Warn("VWAP filter: ", err)
 					continue
 				}
-				log.Infof(
+				log.Debugf(
 					"Processor - VWAP filter value for pair %s-%s [%s] with %v trades: %v (volume: %v).",
 					tb.Pair.QuoteToken.Symbol,
 					tb.Pair.BaseToken.Symbol,
@@ -97,12 +110,19 @@ func Processor(
 					atomicVolume,
 				)
 			default:
-				log.Warnf("Processor - unknown filterType %q for pair %s-%s, skipping.",
-					filterType,
-					tb.Pair.QuoteToken.Symbol,
-					tb.Pair.BaseToken.Symbol,
+				// LastPrice is the default filter.
+				atomicFilterValue, _, err = filters.LastPrice(tb, basePrice)
+				if err != nil {
+					log.Warn("last price filter: ", err)
+					continue
+				}
+
+				log.Debugf(
+					"Processor - Atomic filter value for market %s with %v trades: %v.",
+					tb.Trades[0].Exchange.Name+":"+tb.Trades[0].QuoteToken.Symbol+"-"+tb.Trades[0].BaseToken.Symbol+"--"+tb.Trades[0].QuoteToken.Name,
+					len(tb.Trades),
+					atomicFilterValue,
 				)
-				continue
 			}
 
 			filterPoint := models.FilterPointPair{
@@ -130,22 +150,32 @@ func Processor(
 
 		// metafilter set by environment variable. For instance Median, Average, Minimum, etc.
 		var filterPointsAggregated []models.FilterPointPair
+		filterAssetMap := models.GroupFiltersByAsset(filterPoints)
 
-		switch metaFilterType {
-		case string(METAFILTER_MEDIAN):
-			filterPointsAggregated = metafilters.Median(filterPoints)
-			for _, fpm := range filterPointsAggregated {
-				log.Infof("Processor - filter %s for %s: %v.", fpm.Name, fpm.Pair.QuoteToken.Symbol, fpm.Value)
+		for assetKey, filters := range filterAssetMap {
+			switch string(currentFeeds[assetKey].MetaFilter) {
+			case string(METAFILTER_VWAP):
+				filterPointsAggregated = append(filterPointsAggregated, metafilters.VWAPFilters(assetKey, filters))
+			default:
+				filterPointsAggregated = append(filterPointsAggregated, metafilters.MedianFilters(assetKey, filters))
 			}
-		case string(METAFILTER_VWAP):
-			filterPointsAggregated = metafilters.VWAPMeta(filterPoints)
-			for _, fpm := range filterPointsAggregated {
-				log.Infof("Processor - meta VWAP for %s: %v.", fpm.Pair.QuoteToken.Symbol, fpm.Value)
-			}
-		default:
-			log.Warnf("Processor - no metafilter matched for metaFilterType=%q, skipping update", metaFilterType)
-			continue
 		}
+
+		// switch metaFilterType {
+		// case string(METAFILTER_MEDIAN):
+		// 	filterPointsAggregated = metafilters.Median(filterAssetMap)
+		// 	for _, fpm := range filterPointsAggregated {
+		// 		log.Infof("Processor - filter %s for %s: %v.", fpm.Name, fpm.Pair.QuoteToken.Symbol, fpm.Value)
+		// 	}
+		// case string(METAFILTER_VWAP):
+		// 	filterPointsAggregated = metafilters.VWAPMeta(filterAssetMap)
+		// 	for _, fpm := range filterPointsAggregated {
+		// 		log.Infof("Processor - meta VWAP for %s: %v.", fpm.Pair.QuoteToken.Symbol, fpm.Value)
+		// 	}
+		// default:
+		// 	log.Warnf("Processor - no metafilter matched for metaFilterType=%q, skipping update", metaFilterType)
+		// 	continue
+		// }
 
 		filtersChannel <- filterPointsAggregated
 	}

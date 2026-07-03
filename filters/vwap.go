@@ -36,9 +36,9 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64, toleranceSeco
 	tradeVolumes := make([]utils.TradeVolume, 0, len(tradesblock.Trades))
 	var latestTime time.Time
 
-	// Cutoff is relative to the block's EndTime rather than wall-clock time,
+	// Cutoff is relative to the block's StartTime rather than wall-clock time,
 	// so the observation window is consistent regardless of when the trigger fires.
-	cutoff := tradesblock.EndTime.Add(-time.Duration(toleranceSeconds) * time.Second)
+	cutoff := tradesblock.StartTime.Add(-time.Duration(toleranceSeconds) * time.Second)
 	exchangeSet := make(map[string]struct{})
 	for _, t := range tradesblock.Trades {
 		if t.Time.Before(cutoff) {
@@ -109,7 +109,7 @@ func VWAPFilter(tradesblock models.TradesBlock, basePrice float64, toleranceSeco
 		)
 	}
 
-	log.Infof(
+	log.Debugf(
 		"VWAPFilter: %s-%s [%s] → %.6f USD (basePrice=%.6f, totalVolume=%.6f, %d/%d trades used)",
 		tradesblock.Pair.QuoteToken.Symbol,
 		tradesblock.Pair.BaseToken.Symbol,

@@ -197,8 +197,9 @@ func TestVWAPMeta(t *testing.T) {
 	}
 
 	for _, tc := range tests {
+		filterAssetMap := models.GroupFiltersByAsset(tc.filterPoints)
 		t.Run(tc.name, func(t *testing.T) {
-			got := VWAPMeta(tc.filterPoints)
+			got := VWAPMeta(filterAssetMap)
 			checkVWAPMetaResults(t, got, tc.want)
 		})
 	}
@@ -218,7 +219,8 @@ func TestVWAPMetaTimestamp(t *testing.T) {
 		{Pair: models.Pair{QuoteToken: ETH, BaseToken: USDC}, Value: 2100.0, Volume: 1.0, Time: later},
 	}
 
-	got := VWAPMeta(filterPoints)
+	filterAssetMap := models.GroupFiltersByAsset(filterPoints)
+	got := VWAPMeta(filterAssetMap)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(got))
 	}
@@ -244,10 +246,11 @@ func TestVWAPMetaOrdering(t *testing.T) {
 		{Pair: models.Pair{QuoteToken: A, BaseToken: USDC}, Value: 100.0, Volume: 1.0, Time: now},
 		{Pair: models.Pair{QuoteToken: B, BaseToken: USDC}, Value: 200.0, Volume: 1.0, Time: now},
 	}
+	filterAssetMap := models.GroupFiltersByAsset(filterPoints)
 
 	// Run multiple times to surface any non-determinism from map iteration.
 	for i := 0; i < 20; i++ {
-		got := VWAPMeta(filterPoints)
+		got := VWAPMeta(filterAssetMap)
 		if len(got) != 3 {
 			t.Fatalf("run %d: expected 3 results, got %d", i, len(got))
 		}

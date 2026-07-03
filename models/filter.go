@@ -20,9 +20,9 @@ type FilterPoint struct {
 }
 
 type FilterPointPair struct {
-	Pool       Pool
-	Pair       Pair
-	Value      float64
+	Pool  Pool
+	Pair  Pair
+	Value float64
 	// Volume holds the total absolute trade volume used to compute Value.
 	// Populated by the VWAP filter; used by the VWAP metafilter to weight
 	// per-source filter points in the cross-source aggregation.
@@ -34,11 +34,11 @@ type FilterPointPair struct {
 	SourceType SourceType
 }
 
-// GroupFilterByAsset returns @fpMap which maps an asset on all filter points contained in @filterPoints.
-func GroupFiltersByAsset(filterPoints []FilterPointPair) (fpMap map[Asset][]FilterPointPair) {
-	fpMap = make(map[Asset][]FilterPointPair)
+// GroupFilterByAsset returns @fpMap which maps an assetKey on all filter points contained in @filterPoints.
+func GroupFiltersByAsset(filterPoints []FilterPointPair) (fpMap map[AssetKey][]FilterPointPair) {
+	fpMap = make(map[AssetKey][]FilterPointPair)
 	for _, fp := range filterPoints {
-		fpMap[fp.Pair.QuoteToken] = append(fpMap[fp.Pair.QuoteToken], fp)
+		fpMap[fp.Pair.QuoteToken.Asset2Key()] = append(fpMap[fp.Pair.QuoteToken.Asset2Key()], fp)
 	}
 	return
 }

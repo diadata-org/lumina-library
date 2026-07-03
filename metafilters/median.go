@@ -11,19 +11,30 @@ const (
 
 // Median returns the median value for all filter points that share the same quote asset.
 // The input @filterPoints still consists of "atomic" filter points.
-func Median(filterPoints []models.FilterPointPair) (medianizedFilterPoints []models.FilterPointPair) {
-	filterAssetMap := models.GroupFiltersByAsset(filterPoints)
+func MedianFilters(assetKey models.AssetKey, filters []models.FilterPointPair) (fp models.FilterPointPair) {
 
-	for asset, filters := range filterAssetMap {
+	filterValue := utils.Median(models.GetValuesFromFilterPoints(filters))
+
+	fp.Value = filterValue
+	fp.Pair.QuoteToken = assetKey.Key2Asset()
+	fp.Name = medianFilterName
+	fp.Time = models.GetLatestTimestampFromFilterPoints(filters)
+
+	return
+}
+
+// Median returns the median value for all filter points that share the same quote asset.
+// The input @filterPoints still consists of "atomic" filter points.
+func Median(filterAssetMap map[models.AssetKey][]models.FilterPointPair) (medianizedFilterPoints []models.FilterPointPair) {
+
+	for assetKey, filters := range filterAssetMap {
 		filterValue := utils.Median(models.GetValuesFromFilterPoints(filters))
 		var fp models.FilterPointPair
 		fp.Value = filterValue
-		fp.Pair.QuoteToken = asset
+		fp.Pair.QuoteToken = assetKey.Key2Asset()
 		fp.Name = medianFilterName
 		fp.Time = models.GetLatestTimestampFromFilterPoints(filters)
-		if len(filters) > 0 {
-			fp.SourceType = filters[0].SourceType
-		}
+
 		medianizedFilterPoints = append(medianizedFilterPoints, fp)
 	}
 

@@ -43,11 +43,16 @@ func Collector(
 	// We call these blocks "atomic" tradesblocks.
 	// TO DO: Make a dedicated type for atomic tradesblocks?
 	tradesblockMap := make(map[string]models.TradesBlock)
+	var starttime time.Time
 
 	go func() {
 		for {
 			select {
 			case trade := <-tradesChannelIn:
+				// Initialize block's starttime
+				if starttime.Equal(time.Time{}) {
+					starttime = time.Now()
+				}
 
 				// Determine exchangepair and the corresponding identifier in order to assign the tradesBlockMap.
 				exchangepair := models.Pair{QuoteToken: trade.QuoteToken, BaseToken: trade.BaseToken}
@@ -70,9 +75,13 @@ func Collector(
 				for id := range tradesblockMap {
 					tb := tradesblockMap[id]
 					tb.Atomic = true
+					tb.StartTime = starttime
 					tb.EndTime = timestamp
 					tradesblockMap[id] = tb
 				}
+
+				// set starttime for next block.
+				starttime = timestamp
 
 				tradesblockChannel <- tradesblockMap
 				log.Infof("Collector - number of tradesblocks at %v: %v.", time.Now(), len(tradesblockMap))

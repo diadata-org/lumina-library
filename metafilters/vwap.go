@@ -9,6 +9,37 @@ import (
 
 const vwapMetaFilterName = "vwap"
 
+func VWAPFilters(assetKey models.AssetKey, fps []models.FilterPointPair) (fp models.FilterPointPair) {
+
+	var totalVolume float64
+	for _, fp := range fps {
+		totalVolume += fp.Volume
+	}
+	asset := assetKey.Key2Asset()
+
+	var value float64
+	if totalVolume == 0 {
+		// Fallback: equal-weight average when no volume information is available.
+		// This typically means the upstream filter type does not produce volume
+		// (e.g. LastPrice). Operators should alarm on this log line.
+		log.Warnf("VWAPMeta: zero volume for asset %s, falling back to equal-weight average", asset.Symbol)
+		value = utils.Average(models.GetValuesFromFilterPoints(fps))
+	} else {
+		for _, fp := range fps {
+			value += fp.Value * (fp.Volume / totalVolume)
+		}
+	}
+
+	fp = models.FilterPointPair{
+		Pair:  models.Pair{QuoteToken: asset},
+		Value: value,
+		Name:  vwapMetaFilterName,
+		Time:  models.GetLatestTimestampFromFilterPoints(fps),
+	}
+
+	return
+}
+
 // VWAPMeta aggregates per-source VWAP filter points into a single cross-source
 // VWAP value for each quote asset.
 //
@@ -21,14 +52,14 @@ const vwapMetaFilterName = "vwap"
 // If all input filter points for a given asset have zero volume (e.g. because
 // the filter type was not VWAP), the function falls back to a simple equal-weight
 // average so the metafilter degrades gracefully rather than returning zero.
-func VWAPMeta(filterPoints []models.FilterPointPair) (result []models.FilterPointPair) {
-	filterAssetMap := models.GroupFiltersByAsset(filterPoints)
+func VWAPMeta(filterAssetMap map[models.AssetKey][]models.FilterPointPair) (result []models.FilterPointPair) {
 
-	for asset, fps := range filterAssetMap {
+	for assetKey, fps := range filterAssetMap {
 		var totalVolume float64
 		for _, fp := range fps {
 			totalVolume += fp.Volume
 		}
+		asset := assetKey.Key2Asset()
 
 		var value float64
 		if totalVolume == 0 {
@@ -43,23 +74,11 @@ func VWAPMeta(filterPoints []models.FilterPointPair) (result []models.FilterPoin
 			}
 		}
 
-		// Propagate SourceType from the first input filter point so that
-		// downstream consumers (e.g. onchain/updater.go calling GetOracleKey)
-		// can correctly apply source-specific key prefixes.
-		// Note: SIMULATION_SOURCE data is handled by a separate pipeline and
-		// is never expected to flow through VWAPMeta. This propagation is
-		// defensive in case that assumption changes in the future.
-		var sourceType models.SourceType
-		if len(fps) > 0 {
-			sourceType = fps[0].SourceType
-		}
-
 		result = append(result, models.FilterPointPair{
-			Pair:       models.Pair{QuoteToken: asset},
-			Value:      value,
-			Name:       vwapMetaFilterName,
-			Time:       models.GetLatestTimestampFromFilterPoints(fps),
-			SourceType: sourceType,
+			Pair:  models.Pair{QuoteToken: asset},
+			Value: value,
+			Name:  vwapMetaFilterName,
+			Time:  models.GetLatestTimestampFromFilterPoints(fps),
 		})
 	}
 
