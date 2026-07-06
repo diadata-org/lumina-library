@@ -66,7 +66,7 @@ func (bitstampHooks) WSURL() string {
 }
 
 func (bitstampHooks) OnOpen(ctx context.Context, bs *BaseCEXScraper) {
-	// Bitstamp's heartbeat is server-initiated 
+	// Bitstamp's heartbeat is server-initiated
 }
 
 // Subscribe/unsubscribe to a pair's live_trades channel.
@@ -123,11 +123,11 @@ func (bitstampHooks) OnMessage(bs *BaseCEXScraper, mt int, data []byte, lock *sy
 	case "bts:heartbeat":
 		var hb bitstampWSHeartbeatData
 		if err := json.Unmarshal(resp.Data, &hb); err != nil {
-			log.Warnf("Bitstamp - unmarshal heartbeat: %v", err)
+			log.Debugf("Bitstamp - unmarshal heartbeat: %v", err)
 			return
 		}
 		if hb.Status != "success" {
-			log.Warnf("Bitstamp - heartbeat status: %s", hb.Status)
+			log.Debugf("Bitstamp - heartbeat status: %s", hb.Status)
 		}
 		return
 
@@ -163,12 +163,19 @@ func bitstampHandleTrade(bs *BaseCEXScraper, resp bitstampWSResponse, lock *sync
 		return
 	}
 
+	// tickerPairMap (models.MakeTickerPairMap) is keyed by symbols[0]+symbols[1]
+	// from ForeignName WITHOUT case-normalization, i.e. it does not call our
+	// TickerKeyFromForeign hook. The configured ForeignName symbols are upper-case
+	// by convention, so upper-casing the channel-derived url_symbol reproduces the
+	// same key. If a config entry were lower/mixed-case this lookup would miss, so
+	// we log the miss rather than dropping the trade silently.
 	tickerKey := strings.ToUpper(foreignName)
 
 	lock.RLock()
 	pair, ok := bs.tickerPairMap[tickerKey]
 	lock.RUnlock()
 	if !ok {
+		log.Warnf("Bitstamp - no tickerPairMap entry for %q (from channel %q); dropping trade.", tickerKey, resp.Channel)
 		return
 	}
 	trade.QuoteToken = pair.QuoteToken

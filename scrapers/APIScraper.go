@@ -424,8 +424,6 @@ func RunScraper(
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
 				tradesChannel <- trade
-			}
-		}
 			case <-watchdogTicker.C:
 				duration := time.Since(lastTradeTime)
 				if duration > time.Duration(watchdogDelay)*time.Second {
