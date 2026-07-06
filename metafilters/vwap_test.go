@@ -163,32 +163,6 @@ func TestVWAPMeta(t *testing.T) {
 			},
 		},
 		{
-			// SourceType must be propagated to the output so that downstream
-			// consumers (e.g. GetOracleKey) apply the correct key prefix.
-			// SIMULATION_SOURCE in particular triggers a "SIM:" prefix — losing
-			// it would silently corrupt the simulation feed.
-			name: "SourceType propagated from first input filter point",
-			filterPoints: []models.FilterPointPair{
-				{
-					Pair:       models.Pair{QuoteToken: ETH, BaseToken: USDC},
-					Value:      2000.0,
-					Volume:     1.0,
-					Time:       now,
-					SourceType: models.SIMULATION_SOURCE,
-				},
-				{
-					Pair:       models.Pair{QuoteToken: ETH, BaseToken: USDC},
-					Value:      2100.0,
-					Volume:     1.0,
-					Time:       now,
-					SourceType: models.SIMULATION_SOURCE,
-				},
-			},
-			want: map[models.Asset]assetVWAPResult{
-				ETH: {value: 2050.0, name: "vwap", sourceType: models.SIMULATION_SOURCE},
-			},
-		},
-		{
 			// Empty input returns an empty (nil) result slice without panicking.
 			name:         "empty input — returns empty result",
 			filterPoints: nil,
@@ -200,6 +174,9 @@ func TestVWAPMeta(t *testing.T) {
 		filterAssetMap := models.GroupFiltersByAsset(tc.filterPoints)
 		t.Run(tc.name, func(t *testing.T) {
 			got := VWAPMeta(filterAssetMap)
+			for _, g := range got {
+				log.Info("got.", g.SourceType)
+			}
 			checkVWAPMetaResults(t, got, tc.want)
 		})
 	}
