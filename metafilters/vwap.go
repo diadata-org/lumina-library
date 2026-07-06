@@ -75,10 +75,11 @@ func VWAPMeta(filterAssetMap map[models.AssetKey][]models.FilterPointPair) (resu
 		}
 
 		result = append(result, models.FilterPointPair{
-			Pair:  models.Pair{QuoteToken: asset},
-			Value: value,
-			Name:  vwapMetaFilterName,
-			Time:  models.GetLatestTimestampFromFilterPoints(fps),
+			Pair:   models.Pair{QuoteToken: asset},
+			Value:  value,
+			Name:   vwapMetaFilterName,
+			Time:   models.GetLatestTimestampFromFilterPoints(fps),
+			Volume: totalVolume,
 		})
 	}
 

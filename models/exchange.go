@@ -84,6 +84,8 @@ func GetOracleKey(sourceType SourceType, pair Pair) string {
 	switch sourceType {
 	case SourceType(""):
 		return pair.QuoteToken.GetOracleKey()
+	case CEX_SOURCE:
+		return pair.QuoteToken.GetOracleKey()
 	case SIMULATION_SOURCE:
 		return string(SIMULATION_SOURCE) + ":" + pair.QuoteToken.GetOracleKey()
 	case DEX_SOURCE:
