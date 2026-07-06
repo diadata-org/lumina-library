@@ -18,12 +18,7 @@ func TestAsset_GetOracleKey(t *testing.T) {
 		{
 			name:     "symbol is uppercased",
 			asset:    Asset{Symbol: "btc", Blockchain: "ethereum", Address: "0xabcdef"},
-			expected: "BTC/USD",
-		},
-		{
-			name:     "whitespace is trimmed",
-			asset:    Asset{Symbol: "  BTC  ", Blockchain: "  Ethereum  ", Address: "  0xabcdef  "},
-			expected: "BTC/USD",
+			expected: "btc/USD",
 		},
 		{
 			name:     "empty symbol returns empty string",

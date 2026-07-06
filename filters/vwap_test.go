@@ -10,6 +10,7 @@ import (
 
 // baseTime is a fixed reference point; all trade timestamps are derived from it.
 var baseTime = time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+var startTime = baseTime.Add(-1 * time.Hour)
 
 // makeBlock constructs a TradesBlock with EndTime = baseTime and StartTime = baseTime - 1h.
 func makeBlock(trades []models.Trade) models.TradesBlock {
@@ -19,7 +20,7 @@ func makeBlock(trades []models.Trade) models.TradesBlock {
 			BaseToken:  models.Asset{Symbol: "USDT"},
 		},
 		Trades:    trades,
-		StartTime: baseTime.Add(-1 * time.Hour),
+		StartTime: startTime,
 		EndTime:   baseTime,
 	}
 }
@@ -39,7 +40,7 @@ func staleTrade(price, volume float64, exchangeName string, toleranceSeconds int
 	return models.Trade{
 		Price:    price,
 		Volume:   volume,
-		Time:     baseTime.Add(-time.Duration(toleranceSeconds+60) * time.Second),
+		Time:     startTime.Add(-time.Duration(toleranceSeconds+60) * time.Second),
 		Exchange: models.Exchange{Name: exchangeName},
 	}
 }
