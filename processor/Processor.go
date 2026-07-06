@@ -94,7 +94,7 @@ func Processor(
 			var atomicVolume float64
 
 			switch string(currentFeeds[tb.Pair.QuoteToken.Asset2Key()].Filter) {
-			case string(FILTER_VWAP):
+			case string(models.FILTER_VWAP):
 				atomicFilterValue, atomicVolume, _, err = filters.VWAPFilter(tb, basePrice, toleranceSeconds)
 				if err != nil {
 					log.Warn("VWAP filter: ", err)
@@ -154,7 +154,7 @@ func Processor(
 
 		for assetKey, filters := range filterAssetMap {
 			switch string(currentFeeds[assetKey].MetaFilter) {
-			case string(METAFILTER_VWAP):
+			case string(models.METAFILTER_VWAP):
 				filterPointsAggregated = append(filterPointsAggregated, metafilters.VWAPFilters(assetKey, filters))
 			default:
 				filterPointsAggregated = append(filterPointsAggregated, metafilters.MedianFilters(assetKey, filters))

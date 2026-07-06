@@ -50,6 +50,15 @@ func FeedsFromConfigFile(branchMarketConfig string) (map[AssetKey]Feed, error) {
 		}
 
 		assetKey := AssetKey{Symbol: feed.Symbol, Address: feed.Address, Blockchain: feed.Blockchain}
+		if feed.Filter == string(FILTER_LAST_PRICE) && feed.MetaFilter == string(METAFILTER_VWAP) {
+			log.Errorf(
+				"invalid configuration: FILTER_TYPE=%s is incompatible with METAFILTER_TYPE=%s — "+
+					"LastPrice produces no volume data so VWAP weighting cannot be applied. "+
+					"Use METAFILTER_TYPE=%s or change FILTER_TYPE to %s.",
+				feed.Filter, feed.MetaFilter, METAFILTER_MEDIAN, FILTER_VWAP,
+			)
+			continue
+		}
 		feedMap[assetKey] = Feed{Asset: assetKey.Key2Asset(), Filter: FilterType(feed.Filter), MetaFilter: FilterType(feed.MetaFilter)}
 
 	}

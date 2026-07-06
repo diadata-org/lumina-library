@@ -5,6 +5,13 @@ import (
 	"time"
 )
 
+const (
+	FILTER_LAST_PRICE = FilterType("LastPrice")
+	FILTER_VWAP       = FilterType("VWAP")
+	METAFILTER_MEDIAN = MetafilterType("Median")
+	METAFILTER_VWAP   = MetafilterType("VWAP")
+)
+
 type FilterType string
 
 type MetafilterType string

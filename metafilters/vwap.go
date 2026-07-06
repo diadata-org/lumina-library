@@ -1,8 +1,6 @@
 package metafilters
 
 import (
-	"sort"
-
 	"github.com/diadata-org/lumina-library/models"
 	"github.com/diadata-org/lumina-library/utils"
 )
@@ -82,19 +80,6 @@ func VWAPMeta(filterAssetMap map[models.AssetKey][]models.FilterPointPair) (resu
 			Volume: totalVolume,
 		})
 	}
-
-	// Sort by (Blockchain, Address) for deterministic output ordering.
-	// VWAPMeta ranges over a map internally, so without this sort the result
-	// slice order varies run-to-run, which affects oracle batch write order.
-	// Blockchain is the primary key to handle assets that share the same address
-	// across chains (e.g. 0x0000... used as a native-asset sentinel).
-	sort.Slice(result, func(i, j int) bool {
-		a, b := result[i].Pair.QuoteToken, result[j].Pair.QuoteToken
-		if a.Blockchain != b.Blockchain {
-			return a.Blockchain < b.Blockchain
-		}
-		return a.Address < b.Address
-	})
 
 	return
 }
