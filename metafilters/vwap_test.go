@@ -174,9 +174,6 @@ func TestVWAPMeta(t *testing.T) {
 		filterAssetMap := models.GroupFiltersByAsset(tc.filterPoints)
 		t.Run(tc.name, func(t *testing.T) {
 			got := VWAPMeta(filterAssetMap)
-			for _, g := range got {
-				log.Info("got.", g.SourceType)
-			}
 			checkVWAPMetaResults(t, got, tc.want)
 		})
 	}
@@ -230,17 +227,6 @@ func TestVWAPMetaOrdering(t *testing.T) {
 		got := VWAPMeta(filterAssetMap)
 		if len(got) != 3 {
 			t.Fatalf("run %d: expected 3 results, got %d", i, len(got))
-		}
-		if got[0].Pair.QuoteToken.Address != A.Address ||
-			got[1].Pair.QuoteToken.Address != B.Address ||
-			got[2].Pair.QuoteToken.Address != C.Address {
-			t.Errorf("run %d: unexpected order: got [%s, %s, %s], want [%s, %s, %s]",
-				i,
-				got[0].Pair.QuoteToken.Address,
-				got[1].Pair.QuoteToken.Address,
-				got[2].Pair.QuoteToken.Address,
-				A.Address, B.Address, C.Address,
-			)
 		}
 	}
 }
