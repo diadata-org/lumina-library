@@ -16,19 +16,37 @@ import (
 // ---------- Fake wsConn for Bitstamp tests ----------
 
 type fakeWSConnBitstamp struct {
+	mu             sync.Mutex
 	writeJSONCount int
 	lastWritten    interface{}
+	writtenEvents  []string
 }
 
-func (f *fakeWSConnBitstamp) ReadMessage() (int, []byte, error)              { return 0, nil, nil }
+func (f *fakeWSConnBitstamp) ReadMessage() (int, []byte, error)               { return 0, nil, nil }
 func (f *fakeWSConnBitstamp) WriteMessage(messageType int, data []byte) error { return nil }
 func (f *fakeWSConnBitstamp) ReadJSON(v interface{}) error                    { return nil }
 func (f *fakeWSConnBitstamp) WriteJSON(v interface{}) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.writeJSONCount++
 	f.lastWritten = v
+	if m, ok := v.(bitstampWSSubscribeMessage); ok {
+		f.writtenEvents = append(f.writtenEvents, m.Event)
+	}
+	if m, ok := v.(bitstampWSPingMessage); ok {
+		f.writtenEvents = append(f.writtenEvents, m.Event)
+	}
 	return nil
 }
 func (f *fakeWSConnBitstamp) Close() error { return nil }
+
+func (f *fakeWSConnBitstamp) snapshot() (int, []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	evs := make([]string, len(f.writtenEvents))
+	copy(evs, f.writtenEvents)
+	return f.writeJSONCount, evs
+}
 
 func ensureBitstampExchangeMap() {
 	if Exchanges == nil {
@@ -36,6 +54,14 @@ func ensureBitstampExchangeMap() {
 	}
 	if _, ok := Exchanges[BITSTAMP_EXCHANGE]; !ok {
 		Exchanges[BITSTAMP_EXCHANGE] = models.Exchange{}
+	}
+}
+
+func newBitstampTestScraper() *BaseCEXScraper {
+	return &BaseCEXScraper{
+		tradesChannel:    make(chan models.Trade, 4),
+		tickerPairMap:    make(map[string]models.Pair),
+		lastTradeTimeMap: make(map[string]time.Time),
 	}
 }
 
@@ -96,9 +122,9 @@ func TestBitstampHooks_TickerAndLastTradeKeys(t *testing.T) {
 	}
 }
 
-// TestBitstampTickerKeyMatchesMakeTickerPairMap locks in the invariant called out
-// in review #3: the key handleTrade derives (strings.ToUpper(url_symbol)) must be
-// the exact key models.MakeTickerPairMap produces for the same pair.
+// TestBitstampTickerKeyMatchesMakeTickerPairMap locks in the invariant that the
+// key handleTrade derives (strings.ToUpper(url_symbol)) is exactly the key
+// models.MakeTickerPairMap produces for the same pair.
 func TestBitstampTickerKeyMatchesMakeTickerPairMap(t *testing.T) {
 	foreign := "BTC-USD"
 	ep := models.ExchangePair{
@@ -110,7 +136,6 @@ func TestBitstampTickerKeyMatchesMakeTickerPairMap(t *testing.T) {
 	}
 	m := models.MakeTickerPairMap([]models.ExchangePair{ep})
 
-	// Key as derived on the inbound-trade path in bitstampHandleTrade.
 	urlSymbol := bitstampForeignToURLSymbol(foreign) // "btcusd"
 	handleTradeKey := strings.ToUpper(urlSymbol)     // "BTCUSD"
 
@@ -132,8 +157,9 @@ func TestBitstampHooks_SubscribeAndUnsubscribe(t *testing.T) {
 	if err := h.Subscribe(bs, pair, true, &lock); err != nil {
 		t.Fatalf("Subscribe(true) error: %v", err)
 	}
-	if fc.writeJSONCount != 1 {
-		t.Fatalf("expected 1 WriteJSON call, got %d", fc.writeJSONCount)
+	count, _ := fc.snapshot()
+	if count != 1 {
+		t.Fatalf("expected 1 WriteJSON call, got %d", count)
 	}
 	msg, ok := fc.lastWritten.(bitstampWSSubscribeMessage)
 	if !ok {
@@ -149,8 +175,9 @@ func TestBitstampHooks_SubscribeAndUnsubscribe(t *testing.T) {
 	if err := h.Subscribe(bs, pair, false, &lock); err != nil {
 		t.Fatalf("Subscribe(false) error: %v", err)
 	}
-	if fc.writeJSONCount != 2 {
-		t.Fatalf("expected 2 WriteJSON calls, got %d", fc.writeJSONCount)
+	count, _ = fc.snapshot()
+	if count != 2 {
+		t.Fatalf("expected 2 WriteJSON calls, got %d", count)
 	}
 	msg, _ = fc.lastWritten.(bitstampWSSubscribeMessage)
 	if msg.Event != "bts:unsubscribe" {
@@ -177,24 +204,69 @@ func TestBitstampParseTrade(t *testing.T) {
 		wantTimeNS int64
 	}{
 		{
-			name:       "buy positive volume",
-			in:         bitstampWSTradeData{ID: 42, Amount: 0.5, Price: 30000.5, Type: 0, Microtimestamp: strconv.FormatInt(micro, 10)},
+			name: "buy uses price_str/amount_str",
+			in: bitstampWSTradeData{
+				ID: 42, Type: 0,
+				Amount: 0.4, AmountStr: "0.5", // str differs from float to prove str wins
+				Price: 30000.4, PriceStr: "30000.5",
+				Microtimestamp: strconv.FormatInt(micro, 10),
+			},
 			wantVolume: 0.5,
 			wantPrice:  30000.5,
 			wantID:     "42",
 			wantTimeNS: micro * 1000,
 		},
 		{
-			name:       "sell negative volume",
-			in:         bitstampWSTradeData{ID: 7, Amount: 2.0, Price: 100.5, Type: 1, Microtimestamp: strconv.FormatInt(micro, 10)},
+			name: "sell negative volume from amount_str",
+			in: bitstampWSTradeData{
+				ID: 7, Type: 1,
+				Amount: 0, AmountStr: "2.0",
+				Price: 0, PriceStr: "100.5",
+				Microtimestamp: strconv.FormatInt(micro, 10),
+			},
 			wantVolume: -2.0,
 			wantPrice:  100.5,
 			wantID:     "7",
 			wantTimeNS: micro * 1000,
 		},
 		{
-			name:    "malformed microtimestamp errors",
-			in:      bitstampWSTradeData{ID: 1, Amount: 1, Price: 1, Type: 0, Microtimestamp: "not-a-number"},
+			name: "falls back to float64 when str fields empty",
+			in: bitstampWSTradeData{
+				ID: 9, Type: 0,
+				Amount: 1.25, AmountStr: "",
+				Price: 55.5, PriceStr: "",
+				Microtimestamp: strconv.FormatInt(micro, 10),
+			},
+			wantVolume: 1.25,
+			wantPrice:  55.5,
+			wantID:     "9",
+			wantTimeNS: micro * 1000,
+		},
+		{
+			name: "malformed price_str errors",
+			in: bitstampWSTradeData{
+				ID: 1, Type: 0,
+				PriceStr: "not-a-number", AmountStr: "1",
+				Microtimestamp: strconv.FormatInt(micro, 10),
+			},
+			wantErr: true,
+		},
+		{
+			name: "malformed amount_str errors",
+			in: bitstampWSTradeData{
+				ID: 1, Type: 0,
+				PriceStr: "1", AmountStr: "bad",
+				Microtimestamp: strconv.FormatInt(micro, 10),
+			},
+			wantErr: true,
+		},
+		{
+			name: "malformed microtimestamp errors",
+			in: bitstampWSTradeData{
+				ID: 1, Type: 0,
+				PriceStr: "1", AmountStr: "1",
+				Microtimestamp: "not-a-number",
+			},
 			wantErr: true,
 		},
 	}
@@ -226,15 +298,7 @@ func TestBitstampParseTrade(t *testing.T) {
 	}
 }
 
-// ---------- OnMessage routing ----------
-
-func newBitstampTestScraper() *BaseCEXScraper {
-	return &BaseCEXScraper{
-		tradesChannel:    make(chan models.Trade, 4),
-		tickerPairMap:    make(map[string]models.Pair),
-		lastTradeTimeMap: make(map[string]time.Time),
-	}
-}
+// ---------- OnMessage: trade routing ----------
 
 func TestBitstampOnMessage_Trade(t *testing.T) {
 	ensureBitstampExchangeMap()
@@ -247,7 +311,11 @@ func TestBitstampOnMessage_Trade(t *testing.T) {
 	var lock sync.RWMutex
 
 	micro := time.Now().UnixNano() / int64(time.Microsecond)
-	td := bitstampWSTradeData{ID: 123, Amount: 0.1, Price: 30000.5, Type: 0, Microtimestamp: strconv.FormatInt(micro, 10)}
+	td := bitstampWSTradeData{
+		ID: 123, Type: 0,
+		PriceStr: "30000.5", AmountStr: "0.1",
+		Microtimestamp: strconv.FormatInt(micro, 10),
+	}
 	dataRaw, _ := json.Marshal(td)
 	raw, _ := json.Marshal(bitstampWSResponse{Event: "trade", Channel: "live_trades_btcusd", Data: dataRaw})
 
@@ -272,6 +340,53 @@ func TestBitstampOnMessage_Trade(t *testing.T) {
 	}
 }
 
+// TestBitstampOnMessage_StaleTradeRefreshesLiveness verifies the decoupling of
+// liveness tracking from the freshness filter: a stale trade must NOT be
+// forwarded to the channel, but MUST still refresh lastTradeTime so the
+// watchdog does not falsely fail over during clock skew.
+func TestBitstampOnMessage_StaleTradeRefreshesLiveness(t *testing.T) {
+	ensureBitstampExchangeMap()
+	bs := newBitstampTestScraper()
+	bs.tickerPairMap["BTCUSD"] = models.Pair{
+		QuoteToken: models.Asset{Symbol: "BTC"},
+		BaseToken:  models.Asset{Symbol: "USD"},
+	}
+	h := bitstampHooks{}
+	var lock sync.RWMutex
+
+	before := time.Now()
+	staleMicro := time.Now().Add(-time.Duration(bitstampTradeTimeoutSeconds+60)*time.Second).UnixNano() / int64(time.Microsecond)
+	td := bitstampWSTradeData{
+		ID: 9, Type: 0,
+		PriceStr: "1", AmountStr: "1",
+		Microtimestamp: strconv.FormatInt(staleMicro, 10),
+	}
+	dataRaw, _ := json.Marshal(td)
+	raw, _ := json.Marshal(bitstampWSResponse{Event: "trade", Channel: "live_trades_btcusd", Data: dataRaw})
+
+	h.OnMessage(bs, ws.TextMessage, raw, &lock)
+
+	// Not forwarded.
+	select {
+	case <-bs.tradesChannel:
+		t.Fatalf("stale trade must not be forwarded to the channel")
+	default:
+	}
+
+	// But liveness refreshed with wall-clock now (not the stale trade time).
+	lock.RLock()
+	ts, ok := bs.lastTradeTimeMap["BTC-USD"]
+	lock.RUnlock()
+	if !ok {
+		t.Fatalf("expected lastTradeTimeMap[BTC-USD] to be set even for stale trade")
+	}
+	if ts.Before(before) {
+		t.Fatalf("expected lastTradeTime to be refreshed to wall-clock now, got stale %v", ts)
+	}
+}
+
+// ---------- OnMessage: control / non-trade events ----------
+
 func TestBitstampOnMessage_ControlEvents(t *testing.T) {
 	bs := newBitstampTestScraper()
 	h := bitstampHooks{}
@@ -281,6 +396,7 @@ func TestBitstampOnMessage_ControlEvents(t *testing.T) {
 		{Event: "bts:subscription_succeeded", Channel: "live_trades_btcusd"},
 		{Event: "bts:unsubscription_succeeded", Channel: "live_trades_btcusd"},
 		{Event: "bts:request_reconnect", Channel: "live_trades_btcusd"},
+		{Event: "bts:pong"},
 		{Event: "bts:heartbeat", Data: json.RawMessage(`{"status":"success"}`)},
 		{Event: "bts:heartbeat", Data: json.RawMessage(`{"status":"failure"}`)},
 		{Event: "some_unknown_event", Channel: "live_trades_btcusd"},
@@ -309,7 +425,7 @@ func TestBitstampOnMessage_IgnoresNonTextOrInvalid(t *testing.T) {
 
 	// Trade for an unknown pair is dropped (no tickerPairMap entry).
 	micro := time.Now().UnixNano() / int64(time.Microsecond)
-	td := bitstampWSTradeData{ID: 1, Amount: 1, Price: 1, Type: 0, Microtimestamp: strconv.FormatInt(micro, 10)}
+	td := bitstampWSTradeData{ID: 1, Type: 0, PriceStr: "1", AmountStr: "1", Microtimestamp: strconv.FormatInt(micro, 10)}
 	dataRaw, _ := json.Marshal(td)
 	raw, _ := json.Marshal(bitstampWSResponse{Event: "trade", Channel: "live_trades_unknown", Data: dataRaw})
 	h.OnMessage(bs, ws.TextMessage, raw, &lock)
@@ -317,30 +433,6 @@ func TestBitstampOnMessage_IgnoresNonTextOrInvalid(t *testing.T) {
 	select {
 	case <-bs.tradesChannel:
 		t.Fatalf("expected no trade")
-	default:
-	}
-}
-
-func TestBitstampOnMessage_StaleTradeDropped(t *testing.T) {
-	ensureBitstampExchangeMap()
-	bs := newBitstampTestScraper()
-	bs.tickerPairMap["BTCUSD"] = models.Pair{
-		QuoteToken: models.Asset{Symbol: "BTC"},
-		BaseToken:  models.Asset{Symbol: "USD"},
-	}
-	h := bitstampHooks{}
-	var lock sync.RWMutex
-
-	staleMicro := time.Now().Add(-time.Duration(bitstampTradeTimeoutSeconds+60)*time.Second).UnixNano() / int64(time.Microsecond)
-	td := bitstampWSTradeData{ID: 9, Amount: 1, Price: 1, Type: 0, Microtimestamp: strconv.FormatInt(staleMicro, 10)}
-	dataRaw, _ := json.Marshal(td)
-	raw, _ := json.Marshal(bitstampWSResponse{Event: "trade", Channel: "live_trades_btcusd", Data: dataRaw})
-
-	h.OnMessage(bs, ws.TextMessage, raw, &lock)
-
-	select {
-	case <-bs.tradesChannel:
-		t.Fatalf("expected stale trade to be dropped")
 	default:
 	}
 }
@@ -356,7 +448,83 @@ func TestBitstampHooks_ReadLoopHandledFalse(t *testing.T) {
 	}
 }
 
-// ---------- small test-local helper ----------
+// ---------- Client ping loop ----------
+
+// TestBitstampPingLoop_SendsPing verifies the keepalive goroutine writes a
+// bts:ping when the interval elapses.
+func TestBitstampPingLoop_SendsPing(t *testing.T) {
+	fc := &fakeWSConnBitstamp{}
+	bs := &BaseCEXScraper{wsClient: fc}
+
+	// Shrink the interval for the test and restore afterwards.
+	orig := bitstampPingInterval
+	bitstampPingInterval = 10 * time.Millisecond
+	defer func() { bitstampPingInterval = orig }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		bitstampPingLoop(ctx, bs)
+		close(done)
+	}()
+
+	// Wait long enough for at least one tick.
+	time.Sleep(40 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("pingLoop did not exit after ctx cancel (possible goroutine leak)")
+	}
+
+	count, events := fc.snapshot()
+	if count == 0 {
+		t.Fatalf("expected at least one ping write")
+	}
+	foundPing := false
+	for _, e := range events {
+		if e == "bts:ping" {
+			foundPing = true
+			break
+		}
+	}
+	if !foundPing {
+		t.Fatalf("expected a bts:ping event, got %v", events)
+	}
+}
+
+// TestBitstampPingLoop_ExitsOnCancel verifies the goroutine returns promptly
+// when ctx is canceled before any tick (no leak, no send).
+func TestBitstampPingLoop_ExitsOnCancel(t *testing.T) {
+	fc := &fakeWSConnBitstamp{}
+	bs := &BaseCEXScraper{wsClient: fc}
+
+	orig := bitstampPingInterval
+	bitstampPingInterval = time.Hour // ensure no tick fires
+	defer func() { bitstampPingInterval = orig }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		bitstampPingLoop(ctx, bs)
+		close(done)
+	}()
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("pingLoop did not exit promptly on ctx cancel")
+	}
+
+	if count, _ := fc.snapshot(); count != 0 {
+		t.Fatalf("expected no ping writes before first tick, got %d", count)
+	}
+}
+
+// ---------- test-local helper ----------
 
 func keysOf(m map[string]models.Pair) []string {
 	out := make([]string, 0, len(m))

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	models "github.com/diadata-org/lumina-library/models"
+	"github.com/diadata-org/lumina-library/utils"
 	ws "github.com/gorilla/websocket"
 )
 
@@ -24,6 +25,10 @@ type bitstampWSSubscribeMessage struct {
 
 type bitstampWSChannelParam struct {
 	Channel string `json:"channel"`
+}
+
+type bitstampWSPingMessage struct {
+	Event string `json:"event"`
 }
 
 type bitstampWSResponse struct {
@@ -50,10 +55,11 @@ type bitstampWSHeartbeatData struct {
 	Status string `json:"status"`
 }
 
-var (
-	bitstampWSBaseString        = "wss://ws.bitstamp.net"
-	bitstampTradeTimeoutSeconds = 120
-)
+const bitstampWSBaseString = "wss://ws.bitstamp.net"
+
+var bitstampPingInterval = 20 * time.Second
+
+var bitstampTradeTimeoutSeconds = 120
 
 type bitstampHooks struct{}
 
@@ -66,7 +72,25 @@ func (bitstampHooks) WSURL() string {
 }
 
 func (bitstampHooks) OnOpen(ctx context.Context, bs *BaseCEXScraper) {
-	// Bitstamp's heartbeat is server-initiated
+	go bitstampPingLoop(ctx, bs)
+}
+
+func bitstampPingLoop(ctx context.Context, bs *BaseCEXScraper) {
+	ticker := time.NewTicker(bitstampPingInterval)
+	defer ticker.Stop()
+
+	ping := bitstampWSPingMessage{Event: "bts:ping"}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := bs.SafeWriteJSON(ping); err != nil {
+				log.Debugf("Bitstamp - ping write failed: %v", err)
+			}
+		}
+	}
 }
 
 // Subscribe/unsubscribe to a pair's live_trades channel.
@@ -120,14 +144,17 @@ func (bitstampHooks) OnMessage(bs *BaseCEXScraper, mt int, data []byte, lock *sy
 		log.Warnf("Bitstamp - server requested reconnect on %s", resp.Channel)
 		return
 
+	case "bts:pong":
+		return
+
 	case "bts:heartbeat":
 		var hb bitstampWSHeartbeatData
 		if err := json.Unmarshal(resp.Data, &hb); err != nil {
-			log.Debugf("Bitstamp - unmarshal heartbeat: %v", err)
+			log.Warnf("Bitstamp - unmarshal heartbeat: %v", err)
 			return
 		}
 		if hb.Status != "success" {
-			log.Debugf("Bitstamp - heartbeat status: %s", hb.Status)
+			log.Warnf("Bitstamp - heartbeat status: %s", hb.Status)
 		}
 		return
 
@@ -158,17 +185,6 @@ func bitstampHandleTrade(bs *BaseCEXScraper, resp bitstampWSResponse, lock *sync
 		return
 	}
 
-	// Discard trades that are too old.
-	if trade.Time.Before(time.Now().Add(-time.Duration(bitstampTradeTimeoutSeconds) * time.Second)) {
-		return
-	}
-
-	// tickerPairMap (models.MakeTickerPairMap) is keyed by symbols[0]+symbols[1]
-	// from ForeignName WITHOUT case-normalization, i.e. it does not call our
-	// TickerKeyFromForeign hook. The configured ForeignName symbols are upper-case
-	// by convention, so upper-casing the channel-derived url_symbol reproduces the
-	// same key. If a config entry were lower/mixed-case this lookup would miss, so
-	// we log the miss rather than dropping the trade silently.
 	tickerKey := strings.ToUpper(foreignName)
 
 	lock.RLock()
@@ -183,6 +199,13 @@ func bitstampHandleTrade(bs *BaseCEXScraper, resp bitstampWSResponse, lock *sync
 
 	foreignKey := pair.QuoteToken.Symbol + "-" + pair.BaseToken.Symbol
 
+	bs.setLastTradeTime(lock, foreignKey, time.Now())
+
+	if trade.Time.Before(time.Now().Add(-time.Duration(bitstampTradeTimeoutSeconds) * time.Second)) {
+		log.Debugf("Bitstamp - dropping stale trade on %s (age > %ds).", foreignKey, bitstampTradeTimeoutSeconds)
+		return
+	}
+
 	log.Tracef(
 		"Bitstamp - got trade: %v -- %s -- %v -- %v -- %s.",
 		trade.Time,
@@ -192,14 +215,30 @@ func bitstampHandleTrade(bs *BaseCEXScraper, resp bitstampWSResponse, lock *sync
 		trade.ForeignTradeID,
 	)
 
-	bs.setLastTradeTime(lock, foreignKey, trade.Time)
-
 	bs.tradesChannel <- trade
 }
 
 // Sell trades (type == 1) get a negative volume
 func bitstampParseTrade(td bitstampWSTradeData) (models.Trade, error) {
-	volume := td.Amount
+	price := td.Price
+	if td.PriceStr != "" {
+		p, err := strconv.ParseFloat(td.PriceStr, 64)
+		if err != nil {
+			return models.Trade{}, err
+		}
+		price = p
+	}
+
+	amount := td.Amount
+	if td.AmountStr != "" {
+		a, err := strconv.ParseFloat(td.AmountStr, 64)
+		if err != nil {
+			return models.Trade{}, err
+		}
+		amount = a
+	}
+
+	volume := amount
 	if td.Type == 1 {
 		volume *= -1
 	}
@@ -210,7 +249,7 @@ func bitstampParseTrade(td bitstampWSTradeData) (models.Trade, error) {
 	}
 
 	return models.Trade{
-		Price:          td.Price,
+		Price:          price,
 		Volume:         volume,
 		Time:           time.Unix(0, microts*int64(time.Microsecond)),
 		Exchange:       Exchanges[BITSTAMP_EXCHANGE],
@@ -248,5 +287,10 @@ func NewBitstampScraper(
 	branchMarketConfig string,
 	wg *sync.WaitGroup,
 ) Scraper {
+	if v, err := strconv.Atoi(utils.Getenv("BITSTAMP_TRADE_TIMEOUT", "120")); err != nil {
+		log.Errorf("Bitstamp - parse BITSTAMP_TRADE_TIMEOUT: %v.", err)
+	} else {
+		bitstampTradeTimeoutSeconds = v
+	}
 	return NewBaseCEXScraper(ctx, pairs, wg, bitstampHooks{}, branchMarketConfig)
 }
