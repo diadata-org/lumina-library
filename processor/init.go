@@ -37,7 +37,7 @@ func init() {
 
 	watchFeedConfigSeconds, err = strconv.ParseInt(utils.Getenv("WATCH_FEED_CONFIG_INTERVAL", "60"), 10, 64)
 	if err != nil {
-		log.Errorf("Parse TOLERANCE_SECONDS environment variable: %v.", err)
+		log.Errorf("Parse WATCH_FEED_CONFIG_INTERVAL environment variable: %v.", err)
 	}
 
 	// FILTER_TYPE=LastPrice does not produce volume data, so pairing it with

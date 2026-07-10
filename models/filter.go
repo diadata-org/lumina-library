@@ -38,6 +38,7 @@ type FilterPointPair struct {
 	// Zero for filter types that do not track volume (e.g. LastPrice).
 	Volume         float64
 	Name           string
+	Type           string
 	Time           time.Time
 	Source         Exchange
 	SourceType     SourceType

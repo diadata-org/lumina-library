@@ -65,7 +65,7 @@ func TestGetOracleKey(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			got := GetOracleKey(c.filterPoint)
 			if got != c.expected {
-				t.Errorf("GetOracleKey(%q) = %q, want %q", c.filterPoint, got, c.expected)
+				t.Errorf("GetOracleKey(%v) = %q, want %q", c.filterPoint, got, c.expected)
 			}
 		})
 	}

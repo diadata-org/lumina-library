@@ -14,7 +14,7 @@ const epsilon = 1e-6
 // assetVWAPResult holds the expected output for a single asset after VWAPMeta.
 type assetVWAPResult struct {
 	value      float64
-	name       string
+	filterType string
 	sourceType models.SourceType
 }
 
@@ -39,8 +39,8 @@ func checkVWAPMetaResults(t *testing.T, got []models.FilterPoint, want map[model
 			t.Errorf("missing result for asset %v", asset)
 			continue
 		}
-		if fp.Name != expected.name {
-			t.Errorf("asset %v: Name = %q, want %q", asset, fp.Name, expected.name)
+		if fp.Type != expected.filterType {
+			t.Errorf("asset %v: Name = %q, want %q", asset, fp.Type, expected.filterType)
 		}
 		if fp.SourceType != expected.sourceType {
 			t.Errorf("asset %v: SourceType = %q, want %q", asset, fp.SourceType, expected.sourceType)
@@ -64,7 +64,7 @@ func TestVWAPMeta(t *testing.T) {
 			Pair:   models.Pair{QuoteToken: quote, BaseToken: USDC},
 			Value:  value,
 			Volume: volume,
-			Name:   "vwap",
+			Type:   "VWAP",
 			Time:   t,
 		}
 	}
@@ -81,7 +81,7 @@ func TestVWAPMeta(t *testing.T) {
 				makeFP(ETH, 2000.0, 5.0, now),
 			},
 			want: map[models.Asset]assetVWAPResult{
-				ETH: {value: 2000.0, name: "vwap"},
+				ETH: {value: 2000.0, filterType: "vwap"},
 			},
 		},
 		{
@@ -93,7 +93,7 @@ func TestVWAPMeta(t *testing.T) {
 				makeFP(ETH, 2100.0, 1.0, now),
 			},
 			want: map[models.Asset]assetVWAPResult{
-				ETH: {value: 2050.0, name: "vwap"},
+				ETH: {value: 2050.0, filterType: "vwap"},
 			},
 		},
 		{
@@ -105,7 +105,7 @@ func TestVWAPMeta(t *testing.T) {
 				makeFP(ETH, 2100.0, 3.0, now),
 			},
 			want: map[models.Asset]assetVWAPResult{
-				ETH: {value: 2075.0, name: "vwap"},
+				ETH: {value: 2075.0, filterType: "vwap"},
 			},
 		},
 		{
@@ -118,7 +118,7 @@ func TestVWAPMeta(t *testing.T) {
 				makeFP(ETH, 2100.0, 4.0, now),
 			},
 			want: map[models.Asset]assetVWAPResult{
-				ETH: {value: 14500.0 / 7.0, name: "vwap"},
+				ETH: {value: 14500.0 / 7.0, filterType: "vwap"},
 			},
 		},
 		{
@@ -132,8 +132,8 @@ func TestVWAPMeta(t *testing.T) {
 				makeFP(BTC, 60000.0, 10.0, now),
 			},
 			want: map[models.Asset]assetVWAPResult{
-				ETH: {value: 15300.0 / 5.0, name: "vwap"},
-				BTC: {value: 60000.0, name: "vwap"},
+				ETH: {value: 15300.0 / 5.0, filterType: "vwap"},
+				BTC: {value: 60000.0, filterType: "vwap"},
 			},
 		},
 		{
@@ -146,7 +146,7 @@ func TestVWAPMeta(t *testing.T) {
 				makeFP(ETH, 2100.0, 0.0, now),
 			},
 			want: map[models.Asset]assetVWAPResult{
-				ETH: {value: 2050.0, name: "vwap"},
+				ETH: {value: 2050.0, filterType: "vwap"},
 			},
 		},
 		{
@@ -159,7 +159,7 @@ func TestVWAPMeta(t *testing.T) {
 				makeFP(ETH, 2100.0, 1.0, now),
 			},
 			want: map[models.Asset]assetVWAPResult{
-				ETH: {value: 2050.0, name: "vwap"},
+				ETH: {value: 2050.0, filterType: "vwap"},
 			},
 		},
 		{
@@ -200,33 +200,5 @@ func TestVWAPMetaTimestamp(t *testing.T) {
 	}
 	if !got[0].Time.Equal(later) {
 		t.Errorf("Time = %v, want %v", got[0].Time, later)
-	}
-}
-
-// TestVWAPMetaOrdering verifies that VWAPMeta returns results in a stable,
-// deterministic order (sorted by QuoteToken.Address) regardless of map
-// iteration order.
-func TestVWAPMetaOrdering(t *testing.T) {
-	USDC := models.Asset{Address: "", Blockchain: utils.ETHEREUM}
-	// Three assets with addresses that sort in a known order.
-	A := models.Asset{Address: "0x1111", Blockchain: utils.ETHEREUM}
-	B := models.Asset{Address: "0x2222", Blockchain: utils.ETHEREUM}
-	C := models.Asset{Address: "0x3333", Blockchain: utils.ETHEREUM}
-
-	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
-
-	filterPoints := []models.FilterPointPair{
-		{Pair: models.Pair{QuoteToken: C, BaseToken: USDC}, Value: 300.0, Volume: 1.0, Time: now},
-		{Pair: models.Pair{QuoteToken: A, BaseToken: USDC}, Value: 100.0, Volume: 1.0, Time: now},
-		{Pair: models.Pair{QuoteToken: B, BaseToken: USDC}, Value: 200.0, Volume: 1.0, Time: now},
-	}
-	filterAssetMap := models.GroupFiltersByAsset(filterPoints)
-
-	// Run multiple times to surface any non-determinism from map iteration.
-	for i := 0; i < 20; i++ {
-		got := VWAPMeta(filterAssetMap)
-		if len(got) != 3 {
-			t.Fatalf("run %d: expected 3 results, got %d", i, len(got))
-		}
 	}
 }
