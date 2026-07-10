@@ -423,6 +423,7 @@ func (bs *BaseCEXScraper) startWatchdogForPair(ctx context.Context, lock *sync.R
 		ctx, lock, pair,
 		bs.watchdogCancel,
 		bs.lastTradeTimeMap,
+		bs.hooks.LastTradeTimeKeyFromForeign(pair.ForeignName),
 		bs.subscribeChannel,
 	)
 }

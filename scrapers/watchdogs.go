@@ -18,6 +18,7 @@ func watchdog(
 	pair models.ExchangePair,
 	ticker *time.Ticker,
 	lastTradeTimeMap map[string]time.Time,
+	lastTradeTimeKey string,
 	watchdogDelay int64,
 	subscribeChannel chan models.ExchangePair,
 	lock *sync.RWMutex,
@@ -30,7 +31,7 @@ func watchdog(
 
 			// Make read lock for lastTradeTimeMap.
 			lock.RLock()
-			duration := time.Since(lastTradeTimeMap[pair.ForeignName])
+			duration := time.Since(lastTradeTimeMap[lastTradeTimeKey])
 			log.Debugf("%s - duration for %s: %v. Threshold: %v.", pair.Exchange, pair.ForeignName, duration, watchdogDelay)
 			lock.RUnlock()
 			if duration > time.Duration(watchdogDelay)*time.Second {
@@ -51,6 +52,7 @@ func StartWatchdogForPair(
 	pair models.ExchangePair,
 	watchdogCancel map[string]context.CancelFunc,
 	lastTradeTimeMap map[string]time.Time,
+	lastTradeTimeKey string,
 	subscribeCh chan models.ExchangePair,
 ) {
 	lock.Lock()
@@ -64,7 +66,7 @@ func StartWatchdogForPair(
 	lock.Unlock()
 
 	ticker := time.NewTicker(time.Duration(pair.WatchDogDelay) * time.Second)
-	go watchdog(wdCtx, pair, ticker, lastTradeTimeMap, pair.WatchDogDelay, subscribeCh, lock)
+	go watchdog(wdCtx, pair, ticker, lastTradeTimeMap, lastTradeTimeKey, pair.WatchDogDelay, subscribeCh, lock)
 }
 
 func StopWatchdogForPair(

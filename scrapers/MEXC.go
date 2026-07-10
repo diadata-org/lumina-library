@@ -275,6 +275,7 @@ func (scraper *MEXCScraper) startWatchdogForPair(ctx context.Context, lock *sync
 		ctx, lock, pair,
 		scraper.watchdogCancel,
 		scraper.lastTradeTimeMap,
+		pair.ForeignName,
 		scraper.subscribeChannel,
 	)
 }
