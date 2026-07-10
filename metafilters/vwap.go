@@ -7,20 +7,19 @@ import (
 
 const vwapMetaFilterName = "vwap"
 
-func VWAPFilters(assetKey models.AssetKey, fps []models.FilterPointPair) (fp models.FilterPointPair) {
+func VWAPFilters(fps []models.FilterPoint) (fp models.FilterPoint) {
 
 	var totalVolume float64
 	for _, fp := range fps {
 		totalVolume += fp.Volume
 	}
-	asset := assetKey.Key2Asset()
 
 	var value float64
 	if totalVolume == 0 {
 		// Fallback: equal-weight average when no volume information is available.
 		// This typically means the upstream filter type does not produce volume
 		// (e.g. LastPrice). Operators should alarm on this log line.
-		log.Warnf("VWAPMeta: zero volume for asset %s, falling back to equal-weight average", asset.Symbol)
+		log.Debugf("VWAPMeta: zero volume, falling back to equal-weight average")
 		value = utils.Average(models.GetValuesFromFilterPoints(fps))
 	} else {
 		for _, fp := range fps {
@@ -28,11 +27,11 @@ func VWAPFilters(assetKey models.AssetKey, fps []models.FilterPointPair) (fp mod
 		}
 	}
 
-	fp = models.FilterPointPair{
-		Pair:  models.Pair{QuoteToken: asset},
-		Value: value,
-		Name:  vwapMetaFilterName,
-		Time:  models.GetLatestTimestampFromFilterPoints(fps),
+	fp = models.FilterPoint{
+		Value:  value,
+		Volume: totalVolume,
+		Type:   vwapMetaFilterName,
+		Time:   models.GetLatestTimestampFromFilterPoints(fps),
 	}
 
 	return
@@ -50,7 +49,7 @@ func VWAPFilters(assetKey models.AssetKey, fps []models.FilterPointPair) (fp mod
 // If all input filter points for a given asset have zero volume (e.g. because
 // the filter type was not VWAP), the function falls back to a simple equal-weight
 // average so the metafilter degrades gracefully rather than returning zero.
-func VWAPMeta(filterAssetMap map[models.AssetKey][]models.FilterPointPair) (result []models.FilterPointPair) {
+func VWAPMeta(filterAssetMap map[models.AssetKey][]models.FilterPoint) (result []models.FilterPoint) {
 
 	for assetKey, fps := range filterAssetMap {
 		var totalVolume float64
@@ -72,10 +71,10 @@ func VWAPMeta(filterAssetMap map[models.AssetKey][]models.FilterPointPair) (resu
 			}
 		}
 
-		result = append(result, models.FilterPointPair{
-			Pair:   models.Pair{QuoteToken: asset},
+		result = append(result, models.FilterPoint{
+			Asset:  asset,
 			Value:  value,
-			Name:   vwapMetaFilterName,
+			Type:   vwapMetaFilterName,
 			Time:   models.GetLatestTimestampFromFilterPoints(fps),
 			Volume: totalVolume,
 		})

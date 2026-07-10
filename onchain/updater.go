@@ -38,7 +38,7 @@ func OracleUpdateExecutorSimulation(
 	connBackup *ethclient.Client,
 	chainId int64,
 	decimals int,
-	filtersChannel <-chan []models.FilterPointPair,
+	filtersChannel <-chan []models.FilterPoint,
 ) {
 
 	for filterPoints := range filtersChannel {
@@ -49,14 +49,14 @@ func OracleUpdateExecutorSimulation(
 			log.Infof(
 				"updater - filterPoint received at %v: %v -- %v -- %v.",
 				time.Unix(timestamp, 0),
-				fp.Pair.QuoteToken.Symbol,
+				fp.Asset.Symbol,
 				fp.Value,
 				fp.Time,
 			)
 			log.Infof("updater -- filterPoint received at unix timestamp (now) %v vs fp.Time %v", timestamp, fp.Time.Unix())
-			key := models.GetOracleKey(fp.SourceType, fp.Pair)
+			key := models.GetOracleKey(fp)
 			if key == "" {
-				log.Warnf("updater - skipping filter point with empty oracle key for asset %s", fp.Pair.QuoteToken.Symbol)
+				log.Warnf("updater - skipping filter point with empty oracle key for asset %s", fp.Asset.Symbol)
 				continue
 			}
 			keys = append(keys, key)
@@ -83,7 +83,7 @@ func OracleUpdateExecutor(
 	chainId int64,
 	decimals int,
 	batchSize int,
-	filtersChannel <-chan []models.FilterPointPair,
+	filtersChannel <-chan []models.FilterPoint,
 ) {
 
 	for filterPoints := range filtersChannel {
@@ -94,17 +94,18 @@ func OracleUpdateExecutor(
 		var values []*big.Int
 		for _, fp := range filterPoints {
 			log.Infof(
-				"updater - filterPoint received at %v: %s: %s-%s -- %v -- %v.",
+				"updater - filterPoint received at %v: (%s) %s: %s-%s -- %v -- %v.",
 				time.Unix(timestamp, 0),
-				fp.Pair.QuoteToken.Symbol,
-				fp.Pair.QuoteToken.Blockchain,
-				fp.Pair.QuoteToken.Address,
+				fp.Name,
+				fp.Asset.Symbol,
+				fp.Asset.Blockchain,
+				fp.Asset.Address,
 				fp.Value,
 				fp.Time,
 			)
-			key := models.GetOracleKey(fp.SourceType, fp.Pair)
+			key := models.GetOracleKey(fp)
 			if key == "" {
-				log.Warnf("updater - skipping filter point with empty oracle key for asset %s", fp.Pair.QuoteToken.Symbol)
+				log.Warnf("updater - skipping filter point with empty oracle key for asset %s", fp.Asset.Symbol)
 				continue
 			}
 

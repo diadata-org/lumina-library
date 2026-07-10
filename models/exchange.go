@@ -80,17 +80,9 @@ func GetSourceType(exchange Exchange) SourceType {
 
 // GetOracleKey returns a key for an asset (or a pair) that can be used for calling the
 // corresponding value in an oracle.
-func GetOracleKey(sourceType SourceType, pair Pair) string {
-	switch sourceType {
-	case SourceType(""):
-		return pair.QuoteToken.GetOracleKey()
-	case CEX_SOURCE:
-		return pair.QuoteToken.GetOracleKey()
-	case SIMULATION_SOURCE:
-		return string(SIMULATION_SOURCE) + ":" + pair.QuoteToken.GetOracleKey()
-	case DEX_SOURCE:
-		return string(DEX_SOURCE) + ":" + pair.QuoteToken.GetOracleKey()
-	default:
-		return ""
+func GetOracleKey(fp FilterPoint) string {
+	if fp.Name != "" {
+		return fp.Name
 	}
+	return fp.Asset.GetOracleKey()
 }

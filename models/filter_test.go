@@ -33,6 +33,25 @@ var (
 	}
 
 	fpe22 = FilterPointPair{Pair: Pair{QuoteToken: BTC, BaseToken: USDC}, Value: 63199.11, Time: time.Unix(0, 0)}
+
+	fp1 = []FilterPoint{
+		{
+			Asset: ETH,
+			Value: 3388.34,
+			Time:  time.Unix(1657961611, 0),
+		},
+		{
+			Asset: ETH,
+			Value: 3381.11,
+			Time:  time.Unix(1689497611, 0),
+		},
+		{
+			Asset: ETH,
+			Value: 3179.78,
+			Time:  time.Unix(1706846011, 0),
+		},
+	}
+	fp22 = FilterPoint{Asset: BTC, Value: 63199.11, Time: time.Unix(0, 0)}
 )
 
 func testGroupFilterByAsset(t *testing.T) {
@@ -72,19 +91,19 @@ func testGroupFilterByAsset(t *testing.T) {
 
 func testGetValuesFromFilterPoints(t *testing.T) {
 
-	fpe2 := fpe1
-	fpe2 = append(fpe2, fpe22)
+	fp2 := fp1
+	fp2 = append(fp2, fp22)
 
 	cases := []struct {
-		filterPoints []FilterPointPair
+		filterPoints []FilterPoint
 		filterValues []float64
 	}{
 		{
-			fpe1,
+			fp1,
 			[]float64{3388.34, 3381.11, 3179.78},
 		},
 		{
-			fpe2,
+			fp2,
 			[]float64{3388.34, 3381.11, 3179.78, 63199.11},
 		},
 	}
@@ -100,15 +119,15 @@ func testGetValuesFromFilterPoints(t *testing.T) {
 
 func testGetLatestTimestampFromFilterPoints(t *testing.T) {
 	cases := []struct {
-		filterPoints []FilterPointPair
+		filterPoints []FilterPoint
 		timestamp    time.Time
 	}{
 		{
-			fpe1,
+			fp1,
 			time.Unix(1706846011, 0),
 		},
 		{
-			[]FilterPointPair{fpe22},
+			[]FilterPoint{fp22},
 			time.Unix(0, 0),
 		},
 	}

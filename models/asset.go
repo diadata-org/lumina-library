@@ -33,16 +33,26 @@ type Asset struct {
 	Blockchain string `json:"Blockchain"`
 }
 
-// AssetKey contains the fields uniquely defining an asset.
-// Symbol is still needed for the oracle key generation.
+// AssetKey contains the fields uniquely defining an asset plus
+// symbol which is still needed for the oracle key generation.
 type AssetKey struct {
 	Blockchain string
 	Address    string
 	Symbol     string
 }
 
+// AssetMinimal contains the fields uniquely defining an asset.
+type AssetMinimal struct {
+	Blockchain string
+	Address    string
+}
+
 func (a *Asset) AssetIdentifier() string {
 	return a.Blockchain + asset_ident_separator + a.Address
+}
+
+func (a *Asset) MinimalAsset() AssetMinimal {
+	return AssetMinimal{Blockchain: a.Blockchain, Address: a.Address}
 }
 
 func (a *Asset) Asset2Key() AssetKey {

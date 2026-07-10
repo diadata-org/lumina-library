@@ -36,6 +36,7 @@ type TradesBlock struct {
 	// Add field for Asset? So far, we only consider atomic tradesblocks.
 	// Asset Asset
 	Pair      Pair
+	Pool      Pool
 	Trades    []Trade
 	StartTime time.Time
 	EndTime   time.Time
@@ -72,6 +73,20 @@ func (tb TradesBlock) IsAtomic() bool {
 		}
 	}
 	return true
+}
+
+func (tb TradesBlock) ForeignName() string {
+	if len(tb.Trades) > 0 {
+		return tb.Trades[0].QuoteToken.Symbol + PAIR_TICKER_SEPARATOR + tb.Trades[0].BaseToken.Symbol
+	}
+	return ""
+}
+
+func (tb TradesBlock) Exchange() Exchange {
+	if len(tb.Trades) > 0 {
+		return tb.Trades[0].Exchange
+	}
+	return Exchange{}
 }
 
 func (tb TradesBlock) GetSourceType() (SourceType, error) {

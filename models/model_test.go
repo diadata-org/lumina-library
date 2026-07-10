@@ -38,42 +38,34 @@ func TestAsset_GetOracleKey(t *testing.T) {
 }
 
 func TestGetOracleKey(t *testing.T) {
-	btc := Asset{Symbol: "BTC", Blockchain: "Ethereum", Address: "0xabcdef"}
-	usdt := Asset{Symbol: "USDT", Blockchain: "Ethereum", Address: "0x123456"}
-	pair := Pair{QuoteToken: btc, BaseToken: usdt}
 
 	cases := []struct {
-		name       string
-		sourceType SourceType
-		expected   string
+		name        string
+		filterPoint FilterPoint
+		expected    string
 	}{
 		{
-			name:       "empty source type (CEX/DEX) returns SYMBOL/USD",
-			sourceType: SourceType(""),
-			expected:   "BTC/USD",
+			name:        "regular BTC feed",
+			filterPoint: FilterPoint{Name: "", Asset: Asset{Symbol: "BTC"}},
+			expected:    "BTC/USD",
 		},
 		{
-			name:       "SIMULATION source adds SIM: prefix",
-			sourceType: SIMULATION_SOURCE,
-			expected:   "SIM:BTC/USD",
+			name:        "custom feed with given asset",
+			filterPoint: FilterPoint{Name: "customFeed", Asset: Asset{Symbol: "BTC"}},
+			expected:    "customFeed",
 		},
 		{
-			name:       "DEX source adds DEX: prefix",
-			sourceType: DEX_SOURCE,
-			expected:   "DEX:BTC/USD",
-		},
-		{
-			name:       "unknown source type returns empty string",
-			sourceType: SourceType("UNKNOWN"),
-			expected:   "",
+			name:        "custom feed without asset",
+			filterPoint: FilterPoint{Name: "customFeed"},
+			expected:    "customFeed",
 		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := GetOracleKey(c.sourceType, pair)
+			got := GetOracleKey(c.filterPoint)
 			if got != c.expected {
-				t.Errorf("GetOracleKey(%q, pair) = %q, want %q", c.sourceType, got, c.expected)
+				t.Errorf("GetOracleKey(%q) = %q, want %q", c.filterPoint, got, c.expected)
 			}
 		})
 	}

@@ -20,7 +20,7 @@ type assetVWAPResult struct {
 
 // checkVWAPMetaResults verifies that the output of VWAPMeta matches the
 // expected per-asset results, regardless of slice ordering.
-func checkVWAPMetaResults(t *testing.T, got []models.FilterPointPair, want map[models.Asset]assetVWAPResult) {
+func checkVWAPMetaResults(t *testing.T, got []models.FilterPoint, want map[models.Asset]assetVWAPResult) {
 	t.Helper()
 
 	if len(got) != len(want) {
@@ -28,9 +28,9 @@ func checkVWAPMetaResults(t *testing.T, got []models.FilterPointPair, want map[m
 	}
 
 	// Index results by QuoteToken asset for order-independent comparison.
-	gotMap := make(map[models.Asset]models.FilterPointPair, len(got))
+	gotMap := make(map[models.Asset]models.FilterPoint, len(got))
 	for _, fp := range got {
-		gotMap[fp.Pair.QuoteToken] = fp
+		gotMap[fp.Asset] = fp
 	}
 
 	for asset, expected := range want {

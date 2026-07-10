@@ -54,19 +54,33 @@ func Collector(
 					starttime = time.Now()
 				}
 
-				// Determine exchangepair and the corresponding identifier in order to assign the tradesBlockMap.
-				exchangepair := models.Pair{QuoteToken: trade.QuoteToken, BaseToken: trade.BaseToken}
-				exchangepairIdentifier := exchangepair.ExchangePairIdentifier(trade.Exchange.Name)
-
-				if _, ok := tradesblockMap[exchangepairIdentifier]; !ok {
-					tradesblockMap[exchangepairIdentifier] = models.TradesBlock{
-						Trades: []models.Trade{trade},
-						Pair:   exchangepair,
+				if trade.PoolAddress == "" {
+					// Determine exchangepair and the corresponding identifier in order to assign the tradesBlockMap.
+					exchangepair := models.Pair{QuoteToken: trade.QuoteToken, BaseToken: trade.BaseToken}
+					exchangepairIdentifier := exchangepair.ExchangePairIdentifier(trade.Exchange.Name)
+					if _, ok := tradesblockMap[exchangepairIdentifier]; !ok {
+						tradesblockMap[exchangepairIdentifier] = models.TradesBlock{
+							Trades: []models.Trade{trade},
+							Pair:   exchangepair,
+						}
+					} else {
+						tradesblock := tradesblockMap[exchangepairIdentifier]
+						tradesblock.Trades = append(tradesblock.Trades, trade)
+						tradesblockMap[exchangepairIdentifier] = tradesblock
 					}
 				} else {
-					tradesblock := tradesblockMap[exchangepairIdentifier]
-					tradesblock.Trades = append(tradesblock.Trades, trade)
-					tradesblockMap[exchangepairIdentifier] = tradesblock
+					poolIdentifier := trade.Exchange.Blockchain + "-" + trade.PoolAddress
+					if _, ok := tradesblockMap[poolIdentifier]; !ok {
+						tradesblockMap[poolIdentifier] = models.TradesBlock{
+							Trades: []models.Trade{trade},
+							Pool:   models.Pool{Address: trade.PoolAddress, Blockchain: models.Blockchain{Name: trade.Exchange.Blockchain}},
+							Pair:   models.Pair{QuoteToken: trade.QuoteToken, BaseToken: trade.BaseToken},
+						}
+					} else {
+						tradesblock := tradesblockMap[poolIdentifier]
+						tradesblock.Trades = append(tradesblock.Trades, trade)
+						tradesblockMap[poolIdentifier] = tradesblock
+					}
 				}
 
 			case timestamp := <-triggerChannel:

@@ -20,7 +20,9 @@ type MetafilterType string
 type FilterPoint struct {
 	Asset      Asset
 	Value      float64
+	Volume     float64
 	Name       string
+	Type       string
 	Time       time.Time
 	Source     Exchange
 	SourceType SourceType
@@ -34,24 +36,45 @@ type FilterPointPair struct {
 	// Populated by the VWAP filter; used by the VWAP metafilter to weight
 	// per-source filter points in the cross-source aggregation.
 	// Zero for filter types that do not track volume (e.g. LastPrice).
-	Volume     float64
-	Name       string
-	Time       time.Time
-	Source     Exchange
-	SourceType SourceType
+	Volume         float64
+	Name           string
+	Time           time.Time
+	Source         Exchange
+	SourceType     SourceType
+	CustomFeedName string
+}
+
+func (fpp *FilterPointPair) FilterPointPair2FilterPoint() FilterPoint {
+	return FilterPoint{
+		Asset:      fpp.Pair.QuoteToken,
+		Value:      fpp.Value,
+		Volume:     fpp.Volume,
+		Name:       fpp.Name,
+		Time:       fpp.Time,
+		Source:     fpp.Source,
+		SourceType: fpp.SourceType,
+	}
 }
 
 // GroupFilterByAsset returns @fpMap which maps an assetKey on all filter points contained in @filterPoints.
-func GroupFiltersByAsset(filterPoints []FilterPointPair) (fpMap map[AssetKey][]FilterPointPair) {
-	fpMap = make(map[AssetKey][]FilterPointPair)
+func GroupFiltersByAsset(filterPoints []FilterPointPair) (fpMap map[AssetKey][]FilterPoint) {
+	fpMap = make(map[AssetKey][]FilterPoint)
 	for _, fp := range filterPoints {
-		fpMap[fp.Pair.QuoteToken.Asset2Key()] = append(fpMap[fp.Pair.QuoteToken.Asset2Key()], fp)
+		fpMap[fp.Pair.QuoteToken.Asset2Key()] = append(fpMap[fp.Pair.QuoteToken.Asset2Key()], fp.FilterPointPair2FilterPoint())
+	}
+	return
+}
+
+func GroupSimpleFiltersByAsset(filterPoints []FilterPoint) (fpMap map[AssetKey][]FilterPoint) {
+	fpMap = make(map[AssetKey][]FilterPoint)
+	for _, fp := range filterPoints {
+		fpMap[fp.Asset.Asset2Key()] = append(fpMap[fp.Asset.Asset2Key()], fp)
 	}
 	return
 }
 
 // GetValuesFromFilterPoints returns a slice containing just the values from @filterPoints.
-func GetValuesFromFilterPoints(filterPoints []FilterPointPair) (filterValues []float64) {
+func GetValuesFromFilterPoints(filterPoints []FilterPoint) (filterValues []float64) {
 	for _, fp := range filterPoints {
 		filterValues = append(filterValues, fp.Value)
 	}
@@ -59,7 +82,7 @@ func GetValuesFromFilterPoints(filterPoints []FilterPointPair) (filterValues []f
 }
 
 // GetLatestTimestampFromFilterPoints returns the latest timstamp among all @filterPoints.
-func GetLatestTimestampFromFilterPoints(filterPoints []FilterPointPair) (timestamp time.Time) {
+func GetLatestTimestampFromFilterPoints(filterPoints []FilterPoint) (timestamp time.Time) {
 	for _, fp := range filterPoints {
 		if fp.Time.After(timestamp) {
 			timestamp = fp.Time
@@ -71,6 +94,19 @@ func GetLatestTimestampFromFilterPoints(filterPoints []FilterPointPair) (timesta
 // RemoveOldFilters removes all filter points from @filterPoints whith timestamp more than
 // @toleranceSeconds before @timestamp.
 func RemoveOldFilters(filterPoints []FilterPointPair, toleranceSeconds int64, timestamp time.Time) (cleanedFilterPoints []FilterPointPair, removedFilters int) {
+	for _, fp := range filterPoints {
+		if fp.Time.After(timestamp.Add(-time.Duration(toleranceSeconds) * time.Second)) {
+			cleanedFilterPoints = append(cleanedFilterPoints, fp)
+		} else {
+			removedFilters++
+		}
+	}
+	return
+}
+
+// RemoveOldFilters removes all filter points from @filterPoints whith timestamp more than
+// @toleranceSeconds before @timestamp.
+func RemoveOldFiltersFp(filterPoints []FilterPoint, toleranceSeconds int64, timestamp time.Time) (cleanedFilterPoints []FilterPoint, removedFilters int) {
 	for _, fp := range filterPoints {
 		if fp.Time.After(timestamp.Add(-time.Duration(toleranceSeconds) * time.Second)) {
 			cleanedFilterPoints = append(cleanedFilterPoints, fp)

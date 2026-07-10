@@ -114,6 +114,11 @@ func (coinbaseHooks) OnMessage(bs *BaseCEXScraper, mt int, data []byte, lock *sy
 
 	bs.setLastTradeTime(lock, parts[0]+"-"+parts[1], trade.Time)
 
+	log.Tracef("CoinBase - got trade %s -- %v -- %v -- %v.",
+		trade.QuoteToken.Symbol+"-"+trade.BaseToken.Symbol,
+		trade.Price, trade.Volume, trade.ForeignTradeID,
+	)
+
 	bs.tradesChannel <- trade
 }
 

@@ -107,7 +107,7 @@ func TestMedian(t *testing.T) {
 		medianizedFilterPoints := Median(filterAssetMap)
 
 		// Make maps from slices in order to deep compare.
-		if !reflect.DeepEqual(models.GroupFiltersByAsset(medianizedFilterPoints), models.GroupFiltersByAsset(c.medianizedFilterPoints)) {
+		if !reflect.DeepEqual(models.GroupSimpleFiltersByAsset(medianizedFilterPoints), models.GroupFiltersByAsset(c.medianizedFilterPoints)) {
 			t.Errorf("Median was incorrect, got: %v, expected: %v for set:%d", medianizedFilterPoints, c.medianizedFilterPoints, i)
 		}
 
