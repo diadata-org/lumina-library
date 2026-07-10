@@ -52,14 +52,7 @@ func startCustomFeedsReloader(
 					continue
 				}
 
-				auxFeeds := make([]models.CustomFeed, 0, len(newFeeds))
-				for _, cf := range newFeeds {
-					if !cf.Admissible(exchangePairs) {
-						log.Errorf("feed %v is not admissible.", cf.Symbol)
-						continue
-					}
-					auxFeeds = append(auxFeeds, cf)
-				}
+				auxFeeds := FilterAdmissibleCustomFeeds(newFeeds, exchangePairs)
 
 				state.Replace(auxFeeds)
 				log.Infof("Processor - customFeeds reloaded (%d entries).", len(auxFeeds))
@@ -68,4 +61,19 @@ func startCustomFeedsReloader(
 	}()
 
 	return func() { close(done) }
+}
+
+func FilterAdmissibleCustomFeeds(
+	feeds []models.CustomFeed,
+	exchangePairs []models.ExchangePair,
+) []models.CustomFeed {
+	out := make([]models.CustomFeed, 0, len(feeds))
+	for _, cf := range feeds {
+		if !cf.Admissible(exchangePairs) {
+			log.Errorf("feed %v is not admissible.", cf.Symbol)
+			continue
+		}
+		out = append(out, cf)
+	}
+	return out
 }
