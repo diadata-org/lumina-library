@@ -56,9 +56,9 @@ func (cf *CustomFeed) Admissible(eps []ExchangePair) bool {
 	return true
 }
 
-func FeedsFromConfigFile(branchMarketConfig string) ([]CustomFeed, error) {
+func FeedsFromConfigFile(branchFeedConfig string) ([]CustomFeed, error) {
 
-	jsonFile, err := utils.GetConfig("feeds", "feeds", branchMarketConfig)
+	jsonFile, err := utils.GetConfig("feeds", "feeds", branchFeedConfig)
 	if err != nil {
 		return nil, fmt.Errorf("GetConfig(feeds): %v", err)
 	}

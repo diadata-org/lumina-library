@@ -12,7 +12,7 @@ func computeAtomicFilterValue(tb models.TradesBlock, filterType models.FilterTyp
 	case models.FILTER_VWAP:
 		atomicFilterValue, atomicVolume, _, err = filters.VWAPFilter(tb, basePrice, toleranceSeconds)
 		if err != nil {
-			err = fmt.Errorf("VWAP filter: %v", err)
+			err = fmt.Errorf("VWAP filter: %w", err)
 			return
 		}
 		log.Debugf(
@@ -27,7 +27,7 @@ func computeAtomicFilterValue(tb models.TradesBlock, filterType models.FilterTyp
 	case models.FILTER_LAST_PRICE:
 		atomicFilterValue, _, err = filters.LastPrice(tb, basePrice)
 		if err != nil {
-			err = fmt.Errorf("LastPrice filter: %v", err)
+			err = fmt.Errorf("LastPrice filter: %w", err)
 			return
 		}
 		log.Debugf(
@@ -37,7 +37,7 @@ func computeAtomicFilterValue(tb models.TradesBlock, filterType models.FilterTyp
 			atomicFilterValue,
 		)
 	default:
-		err = fmt.Errorf("Processor - no filter matched for filterType=%q, skipping update", filterTypeGlobal)
+		err = fmt.Errorf("Processor - no filter matched for filterType=%q, skipping update", filterType)
 		return
 	}
 	return

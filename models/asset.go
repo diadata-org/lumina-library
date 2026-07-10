@@ -211,11 +211,7 @@ func (a *Asset) GetBalance(poolAddress common.Address, client *ethclient.Client)
 	return balance, nil
 }
 
-// GetOracleKey returns the canonical oracle key for this asset in the form
-// "SYMBOL/USD", where SYMBOL is upper-cased and whitespace is trimmed.
-// BaseToken is intentionally ignored — the oracle publishes quote/USD prices
-// and base normalization is handled separately via basePrice.
-// Returns "" if Symbol is empty.
+// GetOracleKey returns the oracle key for an asset.
 func (a *Asset) GetOracleKey() string {
 	symbol := a.Symbol
 	if symbol == "" {
