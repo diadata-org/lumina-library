@@ -411,7 +411,7 @@ func NewBitMartScraper(ctx context.Context, pairs []models.ExchangePair, branchM
 			}
 		}(i, shard.TradesChannel())
 
-		log.Infof("%s - shard %d/%d started with %d pairs.", BITMART_EXCHANGE, i+1, len(chunks), len(chunk))
+		log.Debugf("%s - shard %d/%d started with %d pairs.", BITMART_EXCHANGE, i+1, len(chunks), len(chunk))
 	}
 
 	// Per-shard liveness watchdog: if any shard's own trade flow goes stale, signal failover
