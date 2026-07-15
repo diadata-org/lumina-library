@@ -74,7 +74,7 @@ func Collector(
 						tradesblockMap[exchangepairIdentifier] = tradesblock
 					}
 				} else {
-					poolIdentifier := trade.Exchange.Blockchain + "-" + trade.PoolAddress
+					poolIdentifier := models.PoolPairIdentifier(trade.Exchange.Blockchain, trade.PoolAddress, trade.QuoteToken.Symbol, trade.BaseToken.Symbol)
 					if _, ok := tradesblockMap[poolIdentifier]; !ok {
 						tradesblockMap[poolIdentifier] = models.TradesBlock{
 							Trades: []models.Trade{trade},

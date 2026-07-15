@@ -29,6 +29,10 @@ type AssetVolume struct {
 	Index  uint8   `json:"Index"`
 }
 
+func PoolPairIdentifier(blockchain string, address string, quoteSymbol string, baseSymbol string) string {
+	return quoteSymbol + baseSymbol + blockchain + "-" + address
+}
+
 // MakePoolMap maps an exchange name on the underlying slice of pool structs.
 func MakePoolMap(pools []Pool) map[string][]Pool {
 	poolMap := make(map[string][]Pool)
