@@ -76,7 +76,9 @@ func PushMetricsToPushgateway(m *Metrics, startTime time.Time, conn *ethclient.C
 			Collector(m.gasBalance).
 			Collector(m.lastUpdateTime).
 			Collector(m.chainID).
-			Collector(m.imageVersion)
+			Collector(m.imageVersion).
+			Collector(TradesTotal).
+			Collector(WatchdogFailoversTotal)
 
 		if err := pushCollector.
 			BasicAuth(m.authUser, m.authPassword).

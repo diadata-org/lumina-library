@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/diadata-org/lumina-library/metrics"
 	models "github.com/diadata-org/lumina-library/models"
 )
 
@@ -53,6 +54,10 @@ func Collector(
 				if starttime.Equal(time.Time{}) {
 					starttime = time.Now()
 				}
+
+				metrics.TradesTotal.WithLabelValues(
+					trade.Exchange.Name + ":" + trade.QuoteToken.Symbol + "-" + trade.BaseToken.Symbol,
+				).Inc()
 
 				if trade.PoolAddress == "" {
 					// Determine exchangepair and the corresponding identifier in order to assign the tradesBlockMap.

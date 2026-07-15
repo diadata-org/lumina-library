@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/diadata-org/lumina-library/metrics"
 	models "github.com/diadata-org/lumina-library/models"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -36,6 +37,7 @@ func watchdog(
 			lock.RUnlock()
 			if duration > time.Duration(watchdogDelay)*time.Second {
 				log.Errorf("%s - watchdogTicker failover for %s.", pair.Exchange, pair.ForeignName)
+				metrics.WatchdogFailoversTotal.WithLabelValues(pair.Exchange + ":" + pair.ForeignName).Inc()
 				subscribeChannel <- pair
 			}
 		case <-ctx.Done():

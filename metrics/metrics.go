@@ -13,6 +13,30 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// TradesTotal counts trades received per market ("Exchange:QUOTE-BASE").
+// The longest stretch without increase is a market's max quiet gap, used to
+// tune per-pair watchdog delays. Package-level so the collector can increment
+// it without a reference to the Metrics object.
+var TradesTotal = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		Namespace: "feeder",
+		Name:      "trades_total",
+		Help:      "Number of trades received per market (Exchange:QUOTE-BASE).",
+	},
+	[]string{"market"},
+)
+
+// WatchdogFailoversTotal counts watchdog-triggered resubscriptions per market,
+// i.e. the re-subscribe noise that watchdog tuning aims to reduce.
+var WatchdogFailoversTotal = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		Namespace: "feeder",
+		Name:      "watchdog_failovers_total",
+		Help:      "Number of watchdog-triggered resubscriptions per market (Exchange:QUOTE-BASE).",
+	},
+	[]string{"market"},
+)
+
 type Metrics struct {
 	uptime         prometheus.Gauge
 	cpuUsage       prometheus.Gauge
@@ -99,6 +123,8 @@ func NewMetrics(reg *prometheus.Registry, pushGatewayURL, jobName, authUser, aut
 	reg.MustRegister(m.lastUpdateTime)
 	reg.MustRegister(m.chainID)
 	reg.MustRegister(m.imageVersion)
+	reg.MustRegister(TradesTotal)
+	reg.MustRegister(WatchdogFailoversTotal)
 
 	m.chainID.Set(float64(chainID))
 	m.imageVersion.WithLabelValues(imageVersion).Set(1)
@@ -122,6 +148,8 @@ func StartPrometheusServer(m *Metrics, port string) {
 	prometheus.DefaultRegisterer.MustRegister(m.lastUpdateTime)
 	prometheus.DefaultRegisterer.MustRegister(m.chainID)
 	prometheus.DefaultRegisterer.MustRegister(m.imageVersion)
+	prometheus.DefaultRegisterer.MustRegister(TradesTotal)
+	prometheus.DefaultRegisterer.MustRegister(WatchdogFailoversTotal)
 
 	log.Printf("Starting metrics server on :%s", port)
 	http.Handle("/metrics", promhttp.Handler())
