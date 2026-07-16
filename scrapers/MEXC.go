@@ -116,10 +116,10 @@ func (scraper *MEXCScraper) pingServer() {
 				log.Errorf("MEXC - ping error for connection %v: %v", i, err)
 				continue
 			}
-			log.Infof("MEXC - Sent Ping to connection %v.", i)
+			log.Debugf("MEXC - Sent Ping to connection %v.", i)
 		}
 		scraper.mu.Unlock()
-		log.Infof("MEXC - Sent Pings")
+		log.Debugf("MEXC - Sent Pings")
 	}
 
 }
@@ -166,7 +166,7 @@ func (scraper *MEXCScraper) processUnsubscribe(ctx context.Context, lock *sync.R
 			if err := scraper.subscribe(pair, false); err != nil {
 				log.Errorf("MEXC - Unsubscribe pair %s: %v.", pair.ForeignName, err)
 			} else {
-				log.Infof("MEXC - Unsubscribed pair %s.", pair.ForeignName)
+				log.Debugf("MEXC - Unsubscribed pair %s.", pair.ForeignName)
 			}
 			// Delete last trade time for this pair.
 			lock.Lock()
@@ -198,7 +198,7 @@ func (scraper *MEXCScraper) applyConfigDiff(
 
 	// Unsubscribe from removed pairs.
 	for _, p := range removed {
-		log.Infof("MEXC - Removed pair %s.", p)
+		log.Debugf("MEXC - Removed pair %s.", p)
 		scraper.unsubscribeChannel <- models.ExchangePair{
 			ForeignName: p,
 		}
@@ -207,7 +207,7 @@ func (scraper *MEXCScraper) applyConfigDiff(
 	for _, p := range added {
 		// Get the delay for this pair.
 		delay := current[p]
-		log.Infof("MEXC - Added pair %s with delay %v.", p, delay)
+		log.Debugf("MEXC - Added pair %s with delay %v.", p, delay)
 
 		ep, err := scraper.getExchangePairInfo(p, delay, branchMarketConfig)
 		if err != nil {
@@ -234,7 +234,7 @@ func (scraper *MEXCScraper) applyConfigDiff(
 	// Resubscribe to changed pairs.
 	for _, p := range changed {
 		newDelay := current[p]
-		log.Infof("MEXC - Changed pair %s with delay %v.", p, newDelay)
+		log.Debugf("MEXC - Changed pair %s with delay %v.", p, newDelay)
 		scraper.restartWatchdogForPair(ctx, lock, p, newDelay, branchMarketConfig)
 	}
 }
@@ -275,6 +275,7 @@ func (scraper *MEXCScraper) startWatchdogForPair(ctx context.Context, lock *sync
 		ctx, lock, pair,
 		scraper.watchdogCancel,
 		scraper.lastTradeTimeMap,
+		pair.ForeignName,
 		scraper.subscribeChannel,
 	)
 }
@@ -293,7 +294,7 @@ func (scraper *MEXCScraper) Close(cancel context.CancelFunc) error {
 			if err != nil {
 				log.Errorf("MEXC - failed to close connection %d: %v", i, err)
 			} else {
-				log.Infof("MEXC - closed connection %d", i)
+				log.Debugf("MEXC - closed connection %d", i)
 			}
 		}
 	}
@@ -475,7 +476,7 @@ func (s *MEXCScraper) subscribe(pair models.ExchangePair, subscribe bool) error 
 		s.connections[connID].numSubscriptions--
 		delete(s.pairConnIndex, pair.ForeignName)
 		s.mu.Unlock()
-		log.Infof("MEXC - Unsubscribed from %s on connection %d", pair.ForeignName, connID)
+		log.Debugf("MEXC - Unsubscribed from %s on connection %d", pair.ForeignName, connID)
 	}
 
 	return nil

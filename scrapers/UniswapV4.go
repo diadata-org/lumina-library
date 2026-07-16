@@ -193,7 +193,7 @@ func (h *uniswapV4Hooks) StartStream(
 			select {
 			case rawSwap, ok := <-sink:
 				if !ok {
-					log.Infof("%s - swaps channel closed for %s", h.ExchangeName(), addrKey.Hex())
+					log.Debugf("%s - swaps channel closed for %s", h.ExchangeName(), addrKey.Hex())
 					return
 				}
 
@@ -236,7 +236,7 @@ func (h *uniswapV4Hooks) StartStream(
 				return
 
 			case <-ctx.Done():
-				log.Infof("%s - shutting down stream for %s ", h.ExchangeName(), pair.PoolHex)
+				log.Debugf("%s - shutting down stream for %s ", h.ExchangeName(), pair.PoolHex)
 				sub.Unsubscribe()
 				return
 			}

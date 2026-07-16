@@ -38,7 +38,7 @@ func OracleUpdateExecutorSimulation(
 	connBackup *ethclient.Client,
 	chainId int64,
 	decimals int,
-	filtersChannel <-chan []models.FilterPointPair,
+	filtersChannel <-chan []models.FilterPoint,
 ) {
 
 	for filterPoints := range filtersChannel {
@@ -46,15 +46,19 @@ func OracleUpdateExecutorSimulation(
 		var keys []string
 		var values []*big.Int
 		for _, fp := range filterPoints {
-			log.Infof(
+			log.Debugf(
 				"updater - filterPoint received at %v: %v -- %v -- %v.",
 				time.Unix(timestamp, 0),
-				fp.Pair.QuoteToken.Symbol,
+				fp.Asset.Symbol,
 				fp.Value,
 				fp.Time,
 			)
-			log.Infof("updater -- filterPoint received at unix timestamp (now) %v vs fp.Time %v", timestamp, fp.Time.Unix())
-			key := models.GetOracleKeySimulation(fp.Pair)
+			log.Debugf("updater -- filterPoint received at unix timestamp (now) %v vs fp.Time %v", timestamp, fp.Time.Unix())
+			key := models.GetOracleKey(fp)
+			if key == "" {
+				log.Warnf("updater - skipping filter point with empty oracle key for asset %s", fp.Asset.Symbol)
+				continue
+			}
 			keys = append(keys, key)
 			values = append(values, utils.ScaleFloat(fp.Value, decimals))
 		}
@@ -79,7 +83,7 @@ func OracleUpdateExecutor(
 	chainId int64,
 	decimals int,
 	batchSize int,
-	filtersChannel <-chan []models.FilterPointPair,
+	filtersChannel <-chan []models.FilterPoint,
 ) {
 
 	for filterPoints := range filtersChannel {
@@ -90,17 +94,21 @@ func OracleUpdateExecutor(
 		var values []*big.Int
 		for _, fp := range filterPoints {
 			log.Infof(
-				"updater - filterPoint received at %v: %s: %s-%s -- %v -- %v.",
+				"updater - filterPoint received at %v: (%s) %s: %s-%s -- %v -- %v.",
 				time.Unix(timestamp, 0),
-				fp.Pair.QuoteToken.Symbol,
-				fp.Pair.QuoteToken.Blockchain,
-				fp.Pair.QuoteToken.Address,
+				fp.Name,
+				fp.Asset.Symbol,
+				fp.Asset.Blockchain,
+				fp.Asset.Address,
 				fp.Value,
 				fp.Time,
 			)
-			key := models.GetOracleKey(fp.SourceType, fp.Pair)
+			key := models.GetOracleKey(fp)
+			if key == "" {
+				log.Warnf("updater - skipping filter point with empty oracle key for asset %s", fp.Asset.Symbol)
+				continue
+			}
 
-			// TO DO: amend this check once we switch to blockchain-address identifier!!
 			if _, ok := keysMap[key]; !ok {
 				keys = append(keys, key)
 				values = append(values, utils.ScaleFloat(fp.Value, decimals))
@@ -227,10 +235,7 @@ func updateOracleMultiValues(
 		return err
 	}
 
-	log.Infof("updater - Gas price: %d.", tx.GasPrice())
-	// log.Printf("Data: %x\n", tx.Data())
-	log.Infof("updater - Nonce: %d.", tx.Nonce())
-	log.Infof("updater - Tx To: %s.", tx.To().String())
+	log.Infof("updater - Tx To -- Gas price -- nonce: %s -- %d -- %d.", tx.To().String(), tx.GasPrice(), tx.Nonce())
 	log.Infof("updater - Tx Hash: 0x%x.", tx.Hash())
 	return nil
 }

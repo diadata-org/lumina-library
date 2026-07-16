@@ -19,7 +19,7 @@ import (
 func Processor(
 	exchangePairs []models.ExchangePair,
 	tradesblockChannel chan map[string]models.SimulatedTradesBlock,
-	filtersChannel chan []models.FilterPointPair,
+	filtersChannel chan []models.FilterPoint,
 	triggerChannel chan time.Time,
 	metacontractClient *ethclient.Client,
 	metacontractAddress string,
@@ -97,21 +97,22 @@ func Processor(
 		// --------------------------------------------------------------------------------------------
 
 		// TO DO: Set flag for metafilter switch. For instance Median, Average, Minimum, etc.
+		filterAssetMap := models.GroupFiltersByAsset(filterPoints)
 
 		switch metaFilterType {
 		// TO DO: Add methodology for metafilters of simulated data.
 		case "Median":
-			filterPointsMedianized := metafilters.Median(filterPoints)
+			filterPointsMedianized := metafilters.Median(filterAssetMap)
 			filtersChannel <- filterPointsMedianized
 			for _, fpm := range filterPointsMedianized {
-				log.Infof("Processor - filter %s for %s: %v.", fpm.Name, fpm.Pair.QuoteToken.Symbol, fpm.Value)
+				log.Infof("Processor - filter %s for %s: %v.", fpm.Name, fpm.Asset.Symbol, fpm.Value)
 			}
 		case "MedianWithPriceFilter":
 			filterPoints = models.RemoveLargeDeviationPrices(filterPoints)
-			filterPointsMedianized := metafilters.Median(filterPoints)
+			filterPointsMedianized := metafilters.Median(filterAssetMap)
 			filtersChannel <- filterPointsMedianized
 			for _, fpm := range filterPointsMedianized {
-				log.Infof("Processor - filter %s for %s: %v.", fpm.Name, fpm.Pair.QuoteToken.Symbol, fpm.Value)
+				log.Infof("Processor - filter %s for %s: %v.", fpm.Name, fpm.Asset.Symbol, fpm.Value)
 			}
 		}
 

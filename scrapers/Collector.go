@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/diadata-org/lumina-library/metrics"
 	models "github.com/diadata-org/lumina-library/models"
 )
 
@@ -43,25 +44,48 @@ func Collector(
 	// We call these blocks "atomic" tradesblocks.
 	// TO DO: Make a dedicated type for atomic tradesblocks?
 	tradesblockMap := make(map[string]models.TradesBlock)
+	var starttime time.Time
 
 	go func() {
 		for {
 			select {
 			case trade := <-tradesChannelIn:
+				// Initialize block's starttime
+				if starttime.Equal(time.Time{}) {
+					starttime = time.Now()
+				}
 
-				// Determine exchangepair and the corresponding identifier in order to assign the tradesBlockMap.
-				exchangepair := models.Pair{QuoteToken: trade.QuoteToken, BaseToken: trade.BaseToken}
-				exchangepairIdentifier := exchangepair.ExchangePairIdentifier(trade.Exchange.Name)
+				metrics.TradesTotal.WithLabelValues(
+					trade.Exchange.Name + ":" + trade.QuoteToken.Symbol + "-" + trade.BaseToken.Symbol,
+				).Inc()
 
-				if _, ok := tradesblockMap[exchangepairIdentifier]; !ok {
-					tradesblockMap[exchangepairIdentifier] = models.TradesBlock{
-						Trades: []models.Trade{trade},
-						Pair:   exchangepair,
+				if trade.PoolAddress == "" {
+					// Determine exchangepair and the corresponding identifier in order to assign the tradesBlockMap.
+					exchangepair := models.Pair{QuoteToken: trade.QuoteToken, BaseToken: trade.BaseToken}
+					exchangepairIdentifier := exchangepair.ExchangePairIdentifier(trade.Exchange.Name)
+					if _, ok := tradesblockMap[exchangepairIdentifier]; !ok {
+						tradesblockMap[exchangepairIdentifier] = models.TradesBlock{
+							Trades: []models.Trade{trade},
+							Pair:   exchangepair,
+						}
+					} else {
+						tradesblock := tradesblockMap[exchangepairIdentifier]
+						tradesblock.Trades = append(tradesblock.Trades, trade)
+						tradesblockMap[exchangepairIdentifier] = tradesblock
 					}
 				} else {
-					tradesblock := tradesblockMap[exchangepairIdentifier]
-					tradesblock.Trades = append(tradesblock.Trades, trade)
-					tradesblockMap[exchangepairIdentifier] = tradesblock
+					poolIdentifier := models.PoolPairIdentifier(trade.Exchange.Blockchain, trade.PoolAddress, trade.QuoteToken.Symbol, trade.BaseToken.Symbol)
+					if _, ok := tradesblockMap[poolIdentifier]; !ok {
+						tradesblockMap[poolIdentifier] = models.TradesBlock{
+							Trades: []models.Trade{trade},
+							Pool:   models.Pool{Address: trade.PoolAddress, Blockchain: models.Blockchain{Name: trade.Exchange.Blockchain}},
+							Pair:   models.Pair{QuoteToken: trade.QuoteToken, BaseToken: trade.BaseToken},
+						}
+					} else {
+						tradesblock := tradesblockMap[poolIdentifier]
+						tradesblock.Trades = append(tradesblock.Trades, trade)
+						tradesblockMap[poolIdentifier] = tradesblock
+					}
 				}
 
 			case timestamp := <-triggerChannel:
@@ -70,9 +94,13 @@ func Collector(
 				for id := range tradesblockMap {
 					tb := tradesblockMap[id]
 					tb.Atomic = true
+					tb.StartTime = starttime
 					tb.EndTime = timestamp
 					tradesblockMap[id] = tb
 				}
+
+				// set starttime for next block.
+				starttime = timestamp
 
 				tradesblockChannel <- tradesblockMap
 				log.Infof("Collector - number of tradesblocks at %v: %v.", time.Now(), len(tradesblockMap))

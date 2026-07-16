@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/diadata-org/lumina-library/metrics"
 	models "github.com/diadata-org/lumina-library/models"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -18,11 +19,12 @@ func watchdog(
 	pair models.ExchangePair,
 	ticker *time.Ticker,
 	lastTradeTimeMap map[string]time.Time,
+	lastTradeTimeKey string,
 	watchdogDelay int64,
 	subscribeChannel chan models.ExchangePair,
 	lock *sync.RWMutex,
 ) {
-	log.Infof("%s - start watching %s with watchdog %v.", pair.Exchange, pair.ForeignName, watchdogDelay)
+	log.Debugf("%s - start watching %s with watchdog %v.", pair.Exchange, pair.ForeignName, watchdogDelay)
 	for {
 		select {
 		case <-ticker.C:
@@ -30,11 +32,12 @@ func watchdog(
 
 			// Make read lock for lastTradeTimeMap.
 			lock.RLock()
-			duration := time.Since(lastTradeTimeMap[pair.ForeignName])
+			duration := time.Since(lastTradeTimeMap[lastTradeTimeKey])
 			log.Debugf("%s - duration for %s: %v. Threshold: %v.", pair.Exchange, pair.ForeignName, duration, watchdogDelay)
 			lock.RUnlock()
 			if duration > time.Duration(watchdogDelay)*time.Second {
 				log.Errorf("%s - watchdogTicker failover for %s.", pair.Exchange, pair.ForeignName)
+				metrics.WatchdogFailoversTotal.WithLabelValues(pair.Exchange + ":" + pair.ForeignName).Inc()
 				subscribeChannel <- pair
 			}
 		case <-ctx.Done():
@@ -51,6 +54,7 @@ func StartWatchdogForPair(
 	pair models.ExchangePair,
 	watchdogCancel map[string]context.CancelFunc,
 	lastTradeTimeMap map[string]time.Time,
+	lastTradeTimeKey string,
 	subscribeCh chan models.ExchangePair,
 ) {
 	lock.Lock()
@@ -64,7 +68,7 @@ func StartWatchdogForPair(
 	lock.Unlock()
 
 	ticker := time.NewTicker(time.Duration(pair.WatchDogDelay) * time.Second)
-	go watchdog(wdCtx, pair, ticker, lastTradeTimeMap, pair.WatchDogDelay, subscribeCh, lock)
+	go watchdog(wdCtx, pair, ticker, lastTradeTimeMap, lastTradeTimeKey, pair.WatchDogDelay, subscribeCh, lock)
 }
 
 func StopWatchdogForPair(
@@ -94,7 +98,7 @@ func watchdogPool(
 	subscribeChannel chan common.Address,
 	lock *sync.RWMutex,
 ) {
-	log.Infof("%s - start watching %s with watchdog %v.", exchange, pool.Hex(), watchdogDelay)
+	log.Debugf("%s - start watching %s with watchdog %v.", exchange, pool.Hex(), watchdogDelay)
 	for {
 		select {
 		case <-ticker.C:
