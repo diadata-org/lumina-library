@@ -142,7 +142,7 @@ func Processor(
 				if len(tb.Trades) == 0 {
 					continue
 				}
-				if !customFeed.MatchingBlock(tb, false) {
+				if !customFeed.MatchingBlock(tb, true) {
 					continue
 				}
 

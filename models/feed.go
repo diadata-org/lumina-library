@@ -9,7 +9,7 @@ import (
 
 type CustomFeed struct {
 	Symbol     string         `json:"Symbol"`
-	Asset      Asset          `json:"Asset,omitempty"`
+	Asset      Asset          `json:"Asset"`
 	Filter     FilterType     `json:"Filter"`
 	MetaFilter MetafilterType `json:"Metafilter"`
 	Markets    []ExchangePair `json:"Markets"`
@@ -41,6 +41,16 @@ func (cf *CustomFeed) MatchingBlock(tb TradesBlock, matchAsset bool) bool {
 
 // @Admissible checks whether all markets within the custom feed are available.
 func (cf *CustomFeed) Admissible(eps []ExchangePair) bool {
+
+	if cf.Asset.Blockchain == "" {
+		log.Warnf("asset chain empty. Please add to config %s", cf.Symbol)
+		return false
+	}
+	if cf.Asset.Address == "" {
+		log.Warnf("asset address empty. Please add to config %s", cf.Symbol)
+		return false
+	}
+
 	for _, market := range cf.Markets {
 		var marketExists bool
 		for _, ep := range eps {
@@ -68,7 +78,8 @@ func FeedsFromConfigFile(branchFeedConfig string) ([]CustomFeed, error) {
 		return nil, err
 	}
 
-	// TO DO: Assign assets to pair tokens using existing ExchangePairs and Pools?
+	// TO DO: quote asset must be defined in the config file.
+	// Should we assign an asset to base tokens using existing ExchangePairs and Pools?
 
 	return cfg, nil
 
