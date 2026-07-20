@@ -9,7 +9,7 @@ import (
 
 type CustomFeed struct {
 	Symbol     string         `json:"Symbol"`
-	Asset      Asset          `json:"Asset,omitempty"`
+	Asset      Asset          `json:"Asset"`
 	Filter     FilterType     `json:"Filter"`
 	MetaFilter MetafilterType `json:"Metafilter"`
 	Markets    []ExchangePair `json:"Markets"`
@@ -68,7 +68,7 @@ func FeedsFromConfigFile(branchFeedConfig string) ([]CustomFeed, error) {
 		return nil, err
 	}
 
-	// TO DO: Assign assets to pair tokens using existing ExchangePairs and Pools?
+	// TO DO: Assign asset to base tokens using existing ExchangePairs and Pools?
 
 	return cfg, nil
 
