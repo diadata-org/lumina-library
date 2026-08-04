@@ -23,20 +23,32 @@ import (
 // running a full streaming scraper. Implementations are stateless: they only
 // need an RPC client and the pool config. The pool's blockchain is looked up
 // from the Exchanges registry (init.go) by pool.Exchange.Name, so callers don't
-// pass it. This lets a consumer (e.g. the indexer's asset scraper) fill its
-// asset table pool by pool without spinning up the DEX streaming machinery.
+// pass it.
 //
 // Each DEX gets the two token addresses its own way (on-chain token0/token1,
 // config, or Curve coin indices) and then resolves them via models.GetAsset.
+//
+// A resolver's GetAsset calls use a bare bind.CallOpts internally (see
+// models.GetAsset), so cancellation/deadlines on ctx are only partially
+// honoured -- the on-chain address-discovery calls (token0/token1, coin
+// index lookups, StateView reads) respect ctx, the symbol/name/decimals
+// lookups inside GetAsset do not.
 type PoolAssetResolver interface {
 	PoolAssets(ctx context.Context, client *ethclient.Client, pool models.Pool) (models.Pair, error)
 
 	// PoolLiquidity returns how much of each underlying token the pool holds,
-	// normalized by decimals. It is a coarse "is this pool basically empty"
-	// signal (e.g. to deprecate a pool once liquidity drops below a threshold),
-	// NOT exact active liquidity: it reads the pool's ERC20 balances, which for
-	// Uniswap V3 include out-of-range positions. Uniswap V4 is not supported yet
-	// (tokens are custodied by the singleton pool manager, not per pool).
+	// normalized by decimals, as a coarse "is this pool basically empty" signal
+	// -- NOT exact active liquidity, and NOT comparable across DEX families:
+	//   - V2 / AerodromeV1: full ERC20 reserves (~ TVL).
+	//   - V3 / PancakeswapV3 / AerodromeSlipstream / Curve: full ERC20 balance
+	//     held by the pool, which includes out-of-range positions and
+	//     uncollected fees, so it overstates tradeable depth.
+	//   - V4: active liquidity at the current tick only, expressed as virtual
+	//     reserves. This is a fundamentally smaller number than the ERC20
+	//     balance a V2 pool with the same TVL would report.
+	// A single "liquidity < threshold" rule across families will misjudge
+	// pools -- threshold per family (or per metric kind) rather than pooling
+	// the numbers together.
 	PoolLiquidity(ctx context.Context, client *ethclient.Client, pool models.Pool) ([]models.AssetVolume, error)
 }
 
@@ -72,15 +84,37 @@ func blockchainForPool(pool models.Pool) (string, error) {
 	return ex.Blockchain, nil
 }
 
-// pairFromAddrs is the shared last step across all DEXs: turn two token
-// addresses into a fully-populated pair (symbol/decimals/blockchain via
-// GetAsset). Quote is the first address, base the second.
+// parseAddress validates and parses a hex address string. Unlike
+// common.HexToAddress (which never errors -- a truncated or typo'd string is
+// silently left-padded into a different, valid-looking address), this fails
+// closed on malformed input from config/env instead of quietly reading the
+// wrong contract or a balance of 0 from an unrelated address.
+func parseAddress(label, s string) (common.Address, error) {
+	if !common.IsHexAddress(s) {
+		return common.Address{}, fmt.Errorf("%s is not a valid hex address: %q", label, s)
+	}
+	return common.HexToAddress(s), nil
+}
+
+// pairFromAddrs is the shared last step across all DEXs: resolve both legs via
+// GetAsset into a fully-populated pair.
+//
+// Curve pools can represent native ETH with a sentinel address rather than a
+// real ERC20 contract (see Curve.go's NativeETHSentinel); GetAsset would fail
+// calling symbol()/decimals() on it, so it's special-cased here to the chain's
+// native asset, matching the streaming scraper's isNative/nativeAsset handling.
 func pairFromAddrs(client *ethclient.Client, blockchain string, quoteAddr, baseAddr common.Address) (models.Pair, error) {
-	quote, err := models.GetAsset(quoteAddr, blockchain, client)
+	resolve := func(addr common.Address) (models.Asset, error) {
+		if isNative(addr) {
+			return nativeAsset(blockchain), nil
+		}
+		return models.GetAsset(addr, blockchain, client)
+	}
+	quote, err := resolve(quoteAddr)
 	if err != nil {
 		return models.Pair{}, fmt.Errorf("resolve quote asset %s: %w", quoteAddr.Hex(), err)
 	}
-	base, err := models.GetAsset(baseAddr, blockchain, client)
+	base, err := resolve(baseAddr)
 	if err != nil {
 		return models.Pair{}, fmt.Errorf("resolve base asset %s: %w", baseAddr.Hex(), err)
 	}
@@ -89,18 +123,32 @@ func pairFromAddrs(client *ethclient.Client, blockchain string, quoteAddr, baseA
 
 // liquidityViaBalanceOf is the shared implementation of PoolLiquidity for DEXs
 // that custody their tokens at the pool address (everything except Uniswap V4).
-// It resolves the pair, then reads each token's ERC20 balance held by the pool.
+// It resolves the pair, then reads each token's balance held by the pool --
+// the native chain balance for a native-ETH leg (Curve), the ERC20 balanceOf
+// otherwise.
 func liquidityViaBalanceOf(ctx context.Context, client *ethclient.Client, pool models.Pool, resolver PoolAssetResolver) ([]models.AssetVolume, error) {
 	pair, err := resolver.PoolAssets(ctx, client, pool)
 	if err != nil {
 		return nil, err
 	}
-	poolAddr := common.HexToAddress(pool.Address)
+	poolAddr, err := parseAddress("pool.Address", pool.Address)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]models.AssetVolume, 0, 2)
 	for i, asset := range []models.Asset{pair.QuoteToken, pair.BaseToken} {
-		bal, err := tokenBalanceOf(ctx, client, common.HexToAddress(asset.Address), poolAddr)
+		var bal *big.Int
+		if isNative(common.HexToAddress(asset.Address)) {
+			bal, err = client.BalanceAt(ctx, poolAddr, nil)
+		} else {
+			var tokenAddr common.Address
+			tokenAddr, err = parseAddress("asset.Address", asset.Address)
+			if err == nil {
+				bal, err = tokenBalanceOf(ctx, client, tokenAddr, poolAddr)
+			}
+		}
 		if err != nil {
-			return nil, fmt.Errorf("balanceOf %s in pool %s: %w", asset.Symbol, poolAddr.Hex(), err)
+			return nil, fmt.Errorf("balance of %s in pool %s: %w", asset.Symbol, poolAddr.Hex(), err)
 		}
 		out = append(out, models.AssetVolume{
 			Asset:  asset,
@@ -112,7 +160,10 @@ func liquidityViaBalanceOf(ctx context.Context, client *ethclient.Client, pool m
 }
 
 // tokenBalanceOf reads an ERC20 token's balance held by owner, reusing the
-// generic token binding that models.GetAsset uses.
+// generic token binding that models.GetAsset uses. This duplicates what
+// models.Asset.GetBalance already does; the reason not to call it directly is
+// that it hardcodes a bare bind.CallOpts{} (no context), while this needs to
+// honour ctx for cancellation on a per-pool sweep.
 func tokenBalanceOf(ctx context.Context, client *ethclient.Client, token, owner common.Address) (*big.Int, error) {
 	caller, err := models.NewTokenCaller(token, client)
 	if err != nil {
@@ -132,7 +183,6 @@ func tokenBalanceOf(ctx context.Context, client *ethclient.Client, token, owner 
 	return bal, nil
 }
 
-// normalizeByDecimals turns a raw token amount into human units (amount / 10^decimals).
 func normalizeByDecimals(amount *big.Int, decimals uint8) float64 {
 	if amount == nil {
 		return 0
@@ -142,7 +192,8 @@ func normalizeByDecimals(amount *big.Int, decimals uint8) float64 {
 	return v
 }
 
-// normalizeFloatByDecimals is normalizeByDecimals for an amount already in big.Float.
+// normalizeFloatByDecimals mirrors normalizeByDecimals for virtualReserves'
+// big.Float output, avoiding a lossy round-trip through big.Int.
 func normalizeFloatByDecimals(amount *big.Float, decimals uint8) float64 {
 	if amount == nil {
 		return 0
@@ -178,7 +229,11 @@ func (uniswapV2AssetResolver) PoolAssets(ctx context.Context, client *ethclient.
 	if err != nil {
 		return models.Pair{}, err
 	}
-	caller, err := uniswap.NewUniswapV2PairCaller(common.HexToAddress(pool.Address), client)
+	poolAddr, err := parseAddress("pool.Address", pool.Address)
+	if err != nil {
+		return models.Pair{}, err
+	}
+	caller, err := uniswap.NewUniswapV2PairCaller(poolAddr, client)
 	if err != nil {
 		return models.Pair{}, fmt.Errorf("uniswapV2 pair caller: %w", err)
 	}
@@ -205,7 +260,11 @@ func (uniswapV3AssetResolver) PoolAssets(ctx context.Context, client *ethclient.
 	if err != nil {
 		return models.Pair{}, err
 	}
-	caller, err := UniswapV3Pair.NewUniswapV3PairCaller(common.HexToAddress(pool.Address), client)
+	poolAddr, err := parseAddress("pool.Address", pool.Address)
+	if err != nil {
+		return models.Pair{}, err
+	}
+	caller, err := UniswapV3Pair.NewUniswapV3PairCaller(poolAddr, client)
 	if err != nil {
 		return models.Pair{}, fmt.Errorf("uniswapV3 pair caller: %w", err)
 	}
@@ -245,11 +304,19 @@ func (r uniswapV4AssetResolver) PoolLiquidity(ctx context.Context, client *ethcl
 	// balance is not meaningful. Instead we read the pool's active liquidity and
 	// price from the StateView contract by poolId and express it as virtual
 	// reserves — a coarse magnitude (active liquidity only), enough for the
-	// "is this pool basically empty" threshold.
-	stateViewEnv := strings.ToUpper(pool.Exchange.Name) + "_STATE_VIEW_ADDRESS"
+	// "is this pool basically empty" threshold. Env naming matches the existing
+	// {EXCHANGE}_POOLSTATE convention used by UniswapV4Simulation.go; unlike the
+	// simulation there is no default here, since the StateView deployment
+	// address differs per chain (Ethereum vs Base etc.) and a wrong silent
+	// default would point calls at the wrong contract.
+	stateViewEnv := strings.ToUpper(pool.Exchange.Name) + "_POOLSTATE"
 	stateViewHex := utils.Getenv(stateViewEnv, "")
 	if stateViewHex == "" {
 		return nil, fmt.Errorf("%s not set", stateViewEnv)
+	}
+	stateViewAddr, err := parseAddress(stateViewEnv, stateViewHex)
+	if err != nil {
+		return nil, err
 	}
 
 	pair, err := r.PoolAssets(ctx, client, pool)
@@ -261,7 +328,7 @@ func (r uniswapV4AssetResolver) PoolLiquidity(ctx context.Context, client *ethcl
 		return nil, fmt.Errorf("uniswapV4 poolId: %w", err)
 	}
 
-	stateView, err := poolState.NewPoolStateCaller(common.HexToAddress(stateViewHex), client)
+	stateView, err := poolState.NewPoolStateCaller(stateViewAddr, client)
 	if err != nil {
 		return nil, fmt.Errorf("uniswapV4 state view caller: %w", err)
 	}
@@ -274,14 +341,26 @@ func (r uniswapV4AssetResolver) PoolLiquidity(ctx context.Context, client *ethcl
 	if err != nil {
 		return nil, fmt.Errorf("uniswapV4 getSlot0: %w", err)
 	}
+	// sqrtPriceX96 == 0 means the pool was never initialized (or the read
+	// itself came back empty) -- not "liquidity is genuinely zero". Reporting
+	// (0, 0) here would be indistinguishable from a drained pool and could
+	// silently trigger a deprecate decision, so surface it as an error instead.
+	if slot0.SqrtPriceX96 == nil || slot0.SqrtPriceX96.Sign() == 0 {
+		return nil, fmt.Errorf("uniswapV4 pool %s: sqrtPriceX96 is zero (uninitialized pool or bad read)", pool.Address)
+	}
 
 	amount0, amount1 := virtualReserves(liquidity, slot0.SqrtPriceX96)
 
-	// amount0/amount1 belong to the pool's canonical token0/token1 (lower address
-	// = token0). Assign them to quote/base accordingly.
+	// amount0/amount1 belong to the pool's canonical token0/token1 (lower
+	// address = token0, a PoolKey invariant). Assign them to quote/base
+	// accordingly. If quote > base here, the pool config lists the pair in the
+	// "wrong" order relative to that invariant -- which also means the
+	// streaming scraper's makeTradeUniV4 (UniswapV4.go), which trusts config
+	// order as token0/token1, is emitting inverted prices for this same pool.
 	q, b := pair.QuoteToken, pair.BaseToken
 	qAmt, bAmt := amount0, amount1
 	if bytes.Compare(common.HexToAddress(q.Address).Bytes(), common.HexToAddress(b.Address).Bytes()) > 0 {
+		log.Warnf("uniswapV4 pool %s: quote asset %s has a higher address than base asset %s; pool config order may be inverted relative to token0/token1, which would also affect streaming trade prices for this pool", pool.Address, q.Symbol, b.Symbol)
 		qAmt, bAmt = amount1, amount0
 	}
 	return []models.AssetVolume{
@@ -299,7 +378,11 @@ func (aerodromeV1AssetResolver) PoolAssets(ctx context.Context, client *ethclien
 	if err != nil {
 		return models.Pair{}, err
 	}
-	caller, err := velodrome.NewIPoolCaller(common.HexToAddress(pool.Address), client)
+	poolAddr, err := parseAddress("pool.Address", pool.Address)
+	if err != nil {
+		return models.Pair{}, err
+	}
+	caller, err := velodrome.NewIPoolCaller(poolAddr, client)
 	if err != nil {
 		return models.Pair{}, fmt.Errorf("aerodromeV1 pool caller: %w", err)
 	}
@@ -319,7 +402,10 @@ func (r aerodromeV1AssetResolver) PoolLiquidity(ctx context.Context, client *eth
 }
 
 // curveAssetResolver resolves the two coins of the pair encoded in pool.Order
-// (out index = quote, in index = base), matching the streaming scraper.
+// (out index = quote, in index = base), matching the streaming scraper. A
+// Curve pool can hold more than two coins; only the pair-scoped subset
+// PoolAssets/PoolLiquidity report on the two encoded in pool.Order, not the
+// full coin set.
 type curveAssetResolver struct{}
 
 func (curveAssetResolver) PoolAssets(ctx context.Context, client *ethclient.Client, pool models.Pool) (models.Pair, error) {
@@ -331,7 +417,10 @@ func (curveAssetResolver) PoolAssets(ctx context.Context, client *ethclient.Clie
 	if err != nil {
 		return models.Pair{}, fmt.Errorf("curve index code: %w", err)
 	}
-	poolAddr := common.HexToAddress(pool.Address)
+	poolAddr, err := parseAddress("pool.Address", pool.Address)
+	if err != nil {
+		return models.Pair{}, err
+	}
 	outAddr, err := coinAddressFromPool(ctx, client, poolAddr, outIdx)
 	if err != nil {
 		return models.Pair{}, err
