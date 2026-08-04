@@ -1,15 +1,19 @@
 package scrapers
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math"
 	"math/big"
+	"strings"
 
 	uniswap "github.com/diadata-org/lumina-library/contracts/uniswap/pair"
 	UniswapV3Pair "github.com/diadata-org/lumina-library/contracts/uniswapv3/uniswapV3Pair"
+	poolState "github.com/diadata-org/lumina-library/contracts/uniswapv4/poolState"
 	velodrome "github.com/diadata-org/lumina-library/contracts/velodrome"
 	models "github.com/diadata-org/lumina-library/models"
+	"github.com/diadata-org/lumina-library/utils"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -138,6 +142,34 @@ func normalizeByDecimals(amount *big.Int, decimals uint8) float64 {
 	return v
 }
 
+// normalizeFloatByDecimals is normalizeByDecimals for an amount already in big.Float.
+func normalizeFloatByDecimals(amount *big.Float, decimals uint8) float64 {
+	if amount == nil {
+		return 0
+	}
+	denom := new(big.Float).SetFloat64(math.Pow10(int(decimals)))
+	v, _ := new(big.Float).Quo(amount, denom).Float64()
+	return v
+}
+
+// virtualReserves expresses a concentrated-liquidity position (active liquidity
+// L at price sqrtPriceX96) as the token0/token1 amounts a constant-product pool
+// would hold at that price (in smallest units):
+//
+//	amount0 = L * 2^96 / sqrtPriceX96
+//	amount1 = L * sqrtPriceX96 / 2^96
+func virtualReserves(l, sqrtPriceX96 *big.Int) (amount0, amount1 *big.Float) {
+	if l == nil || sqrtPriceX96 == nil || sqrtPriceX96.Sign() == 0 {
+		return new(big.Float), new(big.Float)
+	}
+	q96 := new(big.Float).SetInt(new(big.Int).Lsh(big.NewInt(1), 96)) // 2^96
+	lf := new(big.Float).SetInt(l)
+	sp := new(big.Float).SetInt(sqrtPriceX96)
+	amount0 = new(big.Float).Quo(new(big.Float).Mul(lf, q96), sp)
+	amount1 = new(big.Float).Quo(new(big.Float).Mul(lf, sp), q96)
+	return
+}
+
 // uniswapV2AssetResolver reads token0/token1 on-chain from a Uniswap V2 pair.
 type uniswapV2AssetResolver struct{}
 
@@ -208,10 +240,54 @@ func (uniswapV4AssetResolver) PoolAssets(_ context.Context, client *ethclient.Cl
 	return pairFromAddrs(client, blockchain, t0, t1)
 }
 
-func (uniswapV4AssetResolver) PoolLiquidity(_ context.Context, _ *ethclient.Client, _ models.Pool) ([]models.AssetVolume, error) {
+func (r uniswapV4AssetResolver) PoolLiquidity(ctx context.Context, client *ethclient.Client, pool models.Pool) ([]models.AssetVolume, error) {
 	// V4 tokens are custodied by the singleton pool manager, so a per-pool ERC20
-	// balance is not meaningful. Needs a dedicated V4 state read; deferred.
-	return nil, fmt.Errorf("uniswapV4 pool liquidity not supported yet")
+	// balance is not meaningful. Instead we read the pool's active liquidity and
+	// price from the StateView contract by poolId and express it as virtual
+	// reserves — a coarse magnitude (active liquidity only), enough for the
+	// "is this pool basically empty" threshold.
+	stateViewEnv := strings.ToUpper(pool.Exchange.Name) + "_STATE_VIEW_ADDRESS"
+	stateViewHex := utils.Getenv(stateViewEnv, "")
+	if stateViewHex == "" {
+		return nil, fmt.Errorf("%s not set", stateViewEnv)
+	}
+
+	pair, err := r.PoolAssets(ctx, client, pool)
+	if err != nil {
+		return nil, err
+	}
+	poolID, err := ParsePoolIDHex(pool.Address)
+	if err != nil {
+		return nil, fmt.Errorf("uniswapV4 poolId: %w", err)
+	}
+
+	stateView, err := poolState.NewPoolStateCaller(common.HexToAddress(stateViewHex), client)
+	if err != nil {
+		return nil, fmt.Errorf("uniswapV4 state view caller: %w", err)
+	}
+	opts := &bind.CallOpts{Context: ctx}
+	liquidity, err := stateView.GetLiquidity(opts, poolID)
+	if err != nil {
+		return nil, fmt.Errorf("uniswapV4 getLiquidity: %w", err)
+	}
+	slot0, err := stateView.GetSlot0(opts, poolID)
+	if err != nil {
+		return nil, fmt.Errorf("uniswapV4 getSlot0: %w", err)
+	}
+
+	amount0, amount1 := virtualReserves(liquidity, slot0.SqrtPriceX96)
+
+	// amount0/amount1 belong to the pool's canonical token0/token1 (lower address
+	// = token0). Assign them to quote/base accordingly.
+	q, b := pair.QuoteToken, pair.BaseToken
+	qAmt, bAmt := amount0, amount1
+	if bytes.Compare(common.HexToAddress(q.Address).Bytes(), common.HexToAddress(b.Address).Bytes()) > 0 {
+		qAmt, bAmt = amount1, amount0
+	}
+	return []models.AssetVolume{
+		{Asset: q, Volume: normalizeFloatByDecimals(qAmt, q.Decimals), Index: 0},
+		{Asset: b, Volume: normalizeFloatByDecimals(bAmt, b.Decimals), Index: 1},
+	}, nil
 }
 
 // aerodromeV1AssetResolver reads token0/token1 on-chain from an Aerodrome V1
