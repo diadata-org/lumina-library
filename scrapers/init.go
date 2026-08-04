@@ -22,6 +22,7 @@ const (
 	BITSTAMP_EXCHANGE     = "Bitstamp"
 	
 	CURVE_EXCHANGE               = "Curve"
+	CURVE_BASE_EXCHANGE          = "Curve_Base"
 	UNISWAPV2_EXCHANGE           = "UniswapV2"
 	UNISWAPV2_BASE_EXCHANGE      = "UniswapV2_Base"
 	UNISWAPV3_EXCHANGE           = "UniswapV3"
@@ -56,6 +57,7 @@ func init() {
 	Exchanges[OKEX_EXCHANGE] = models.Exchange{Name: OKEX_EXCHANGE, Centralized: true}
 
 	Exchanges[CURVE_EXCHANGE] = models.Exchange{Name: CURVE_EXCHANGE, Centralized: false, Blockchain: utils.ETHEREUM}
+	Exchanges[CURVE_BASE_EXCHANGE] = models.Exchange{Name: CURVE_BASE_EXCHANGE, Centralized: false, Blockchain: utils.BASE}
 	Exchanges[PANCAKESWAPV3_EXCHANGE] = models.Exchange{Name: PANCAKESWAPV3_EXCHANGE, Centralized: false, Blockchain: utils.BINANCESMARTCHAIN}
 	Exchanges[UNISWAP_SIMULATION] = models.Exchange{Name: UNISWAP_SIMULATION, Centralized: false, Simulation: true, Blockchain: utils.ETHEREUM}
 	Exchanges[UNISWAPV2_EXCHANGE] = models.Exchange{Name: UNISWAPV2_EXCHANGE, Centralized: false, Blockchain: utils.ETHEREUM}
