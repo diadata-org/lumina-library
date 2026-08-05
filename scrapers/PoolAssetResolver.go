@@ -34,6 +34,7 @@ import (
 // index lookups, StateView reads) respect ctx, the symbol/name/decimals
 // lookups inside GetAsset do not.
 type PoolAssetResolver interface {
+	PoolBlockchain() string
 	PoolAssets(ctx context.Context, client *ethclient.Client, pool models.Pool) (models.Pair, error)
 
 	// PoolLiquidity returns how much of each underlying token the pool holds,
@@ -57,31 +58,31 @@ type PoolAssetResolver interface {
 // Pancakeswap V3 and Aerodrome Slipstream reuse the Uniswap V3 scraper, so they
 // resolve with the V3 resolver here too. The blockchain is looked up per pool
 // from the Exchanges registry, so chain variants (e.g. *_Base) share a resolver.
-func PoolAssetResolverFor(exchangeName string) (PoolAssetResolver, bool) {
+func PoolAssetResolverFor(exchangeName string, blockchain string) (PoolAssetResolver, bool) {
 	switch exchangeName {
 	case UNISWAPV2_EXCHANGE, UNISWAPV2_BASE_EXCHANGE:
-		return uniswapV2AssetResolver{}, true
+		return uniswapV2AssetResolver{
+			Blockchain: blockchain,
+		}, true
 	case UNISWAPV3_EXCHANGE, UNISWAPV3_BASE_EXCHANGE, PANCAKESWAPV3_EXCHANGE, AERODROMESLIPSTREAM_EXCHANGE:
-		return uniswapV3AssetResolver{}, true
+		return uniswapV3AssetResolver{
+			Blockchain: blockchain,
+		}, true
 	case UNISWAPV4_EXCHANGE, UNISWAPV4_BASE_EXCHANGE:
-		return uniswapV4AssetResolver{}, true
+		return uniswapV4AssetResolver{
+			Blockchain: blockchain,
+		}, true
 	case AERODROMEV1_EXCHANGE:
-		return aerodromeV1AssetResolver{}, true
+		return aerodromeV1AssetResolver{
+			Blockchain: blockchain,
+		}, true
 	case CURVE_EXCHANGE:
-		return curveAssetResolver{}, true
+		return curveAssetResolver{
+			Blockchain: blockchain,
+		}, true
 	default:
 		return nil, false
 	}
-}
-
-// blockchainForPool looks up the pool's chain from the Exchanges registry by
-// exchange name (e.g. "UniswapV3_Base" -> "Base", "Curve" -> "Ethereum").
-func blockchainForPool(pool models.Pool) (string, error) {
-	ex, ok := Exchanges[pool.Exchange.Name]
-	if !ok || ex.Blockchain == "" {
-		return "", fmt.Errorf("no blockchain registered for exchange %q", pool.Exchange.Name)
-	}
-	return ex.Blockchain, nil
 }
 
 // parseAddress validates and parses a hex address string. Unlike
@@ -222,13 +223,16 @@ func virtualReserves(l, sqrtPriceX96 *big.Int) (amount0, amount1 *big.Float) {
 }
 
 // uniswapV2AssetResolver reads token0/token1 on-chain from a Uniswap V2 pair.
-type uniswapV2AssetResolver struct{}
+type uniswapV2AssetResolver struct {
+	Blockchain string
+}
 
-func (uniswapV2AssetResolver) PoolAssets(ctx context.Context, client *ethclient.Client, pool models.Pool) (models.Pair, error) {
-	blockchain, err := blockchainForPool(pool)
-	if err != nil {
-		return models.Pair{}, err
-	}
+func (uniV2 uniswapV2AssetResolver) PoolBlockchain() string {
+	return uniV2.Blockchain
+}
+
+func (uniV2 uniswapV2AssetResolver) PoolAssets(ctx context.Context, client *ethclient.Client, pool models.Pool) (models.Pair, error) {
+
 	poolAddr, err := parseAddress("pool.Address", pool.Address)
 	if err != nil {
 		return models.Pair{}, err
@@ -245,21 +249,24 @@ func (uniswapV2AssetResolver) PoolAssets(ctx context.Context, client *ethclient.
 	if err != nil {
 		return models.Pair{}, fmt.Errorf("uniswapV2 token1: %w", err)
 	}
-	return pairFromAddrs(client, blockchain, t0, t1)
+	return pairFromAddrs(client, uniV2.PoolBlockchain(), t0, t1)
 }
 
-func (r uniswapV2AssetResolver) PoolLiquidity(ctx context.Context, client *ethclient.Client, pool models.Pool) ([]models.AssetVolume, error) {
-	return liquidityViaBalanceOf(ctx, client, pool, r)
+func (univ2 uniswapV2AssetResolver) PoolLiquidity(ctx context.Context, client *ethclient.Client, pool models.Pool) ([]models.AssetVolume, error) {
+	return liquidityViaBalanceOf(ctx, client, pool, univ2)
 }
 
 // uniswapV3AssetResolver reads token0/token1 on-chain from a Uniswap V3 pool.
-type uniswapV3AssetResolver struct{}
+type uniswapV3AssetResolver struct {
+	Blockchain string
+}
 
-func (uniswapV3AssetResolver) PoolAssets(ctx context.Context, client *ethclient.Client, pool models.Pool) (models.Pair, error) {
-	blockchain, err := blockchainForPool(pool)
-	if err != nil {
-		return models.Pair{}, err
-	}
+func (uniV3 uniswapV3AssetResolver) PoolBlockchain() string {
+	return uniV3.Blockchain
+}
+
+func (univ3 uniswapV3AssetResolver) PoolAssets(ctx context.Context, client *ethclient.Client, pool models.Pool) (models.Pair, error) {
+
 	poolAddr, err := parseAddress("pool.Address", pool.Address)
 	if err != nil {
 		return models.Pair{}, err
@@ -276,30 +283,32 @@ func (uniswapV3AssetResolver) PoolAssets(ctx context.Context, client *ethclient.
 	if err != nil {
 		return models.Pair{}, fmt.Errorf("uniswapV3 token1: %w", err)
 	}
-	return pairFromAddrs(client, blockchain, t0, t1)
+	return pairFromAddrs(client, univ3.PoolBlockchain(), t0, t1)
 }
 
-func (r uniswapV3AssetResolver) PoolLiquidity(ctx context.Context, client *ethclient.Client, pool models.Pool) ([]models.AssetVolume, error) {
-	return liquidityViaBalanceOf(ctx, client, pool, r)
+func (univ3 uniswapV3AssetResolver) PoolLiquidity(ctx context.Context, client *ethclient.Client, pool models.Pool) ([]models.AssetVolume, error) {
+	return liquidityViaBalanceOf(ctx, client, pool, univ3)
 }
 
 // uniswapV4AssetResolver takes the token addresses from the pool config, since a
 // V4 pool is identified by a poolId rather than a callable pair contract.
-type uniswapV4AssetResolver struct{}
+type uniswapV4AssetResolver struct {
+	Blockchain string
+}
 
-func (uniswapV4AssetResolver) PoolAssets(_ context.Context, client *ethclient.Client, pool models.Pool) (models.Pair, error) {
-	blockchain, err := blockchainForPool(pool)
-	if err != nil {
-		return models.Pair{}, err
-	}
+func (uniV4 uniswapV4AssetResolver) PoolBlockchain() string {
+	return uniV4.Blockchain
+}
+
+func (univ4 uniswapV4AssetResolver) PoolAssets(ctx context.Context, client *ethclient.Client, pool models.Pool) (models.Pair, error) {
 	t0, t1, err := getTokenAddrsFromPoolConfig(pool)
 	if err != nil {
 		return models.Pair{}, fmt.Errorf("uniswapV4 pool config: %w", err)
 	}
-	return pairFromAddrs(client, blockchain, t0, t1)
+	return pairFromAddrs(client, univ4.PoolBlockchain(), t0, t1)
 }
 
-func (r uniswapV4AssetResolver) PoolLiquidity(ctx context.Context, client *ethclient.Client, pool models.Pool) ([]models.AssetVolume, error) {
+func (univ4 uniswapV4AssetResolver) PoolLiquidity(ctx context.Context, client *ethclient.Client, pool models.Pool) ([]models.AssetVolume, error) {
 	// V4 tokens are custodied by the singleton pool manager, so a per-pool ERC20
 	// balance is not meaningful. Instead we read the pool's active liquidity and
 	// price from the StateView contract by poolId and express it as virtual
@@ -309,6 +318,8 @@ func (r uniswapV4AssetResolver) PoolLiquidity(ctx context.Context, client *ethcl
 	// simulation there is no default here, since the StateView deployment
 	// address differs per chain (Ethereum vs Base etc.) and a wrong silent
 	// default would point calls at the wrong contract.
+
+	// TO DO: I think pool.Exchange.Name is not known here.
 	stateViewEnv := strings.ToUpper(pool.Exchange.Name) + "_POOLSTATE"
 	stateViewHex := utils.Getenv(stateViewEnv, "")
 	if stateViewHex == "" {
@@ -318,8 +329,8 @@ func (r uniswapV4AssetResolver) PoolLiquidity(ctx context.Context, client *ethcl
 	if err != nil {
 		return nil, err
 	}
-
-	pair, err := r.PoolAssets(ctx, client, pool)
+	log.Info("statw: ", stateViewAddr.Hex())
+	pair, err := univ4.PoolAssets(ctx, client, pool)
 	if err != nil {
 		return nil, err
 	}
@@ -371,13 +382,15 @@ func (r uniswapV4AssetResolver) PoolLiquidity(ctx context.Context, client *ethcl
 
 // aerodromeV1AssetResolver reads token0/token1 on-chain from an Aerodrome V1
 // (velodrome-style) pool.
-type aerodromeV1AssetResolver struct{}
+type aerodromeV1AssetResolver struct {
+	Blockchain string
+}
 
-func (aerodromeV1AssetResolver) PoolAssets(ctx context.Context, client *ethclient.Client, pool models.Pool) (models.Pair, error) {
-	blockchain, err := blockchainForPool(pool)
-	if err != nil {
-		return models.Pair{}, err
-	}
+func (aeroV1 aerodromeV1AssetResolver) PoolBlockchain() string {
+	return aeroV1.Blockchain
+}
+
+func (aeroV1 aerodromeV1AssetResolver) PoolAssets(ctx context.Context, client *ethclient.Client, pool models.Pool) (models.Pair, error) {
 	poolAddr, err := parseAddress("pool.Address", pool.Address)
 	if err != nil {
 		return models.Pair{}, err
@@ -394,11 +407,11 @@ func (aerodromeV1AssetResolver) PoolAssets(ctx context.Context, client *ethclien
 	if err != nil {
 		return models.Pair{}, fmt.Errorf("aerodromeV1 token1: %w", err)
 	}
-	return pairFromAddrs(client, blockchain, t0, t1)
+	return pairFromAddrs(client, aeroV1.PoolBlockchain(), t0, t1)
 }
 
-func (r aerodromeV1AssetResolver) PoolLiquidity(ctx context.Context, client *ethclient.Client, pool models.Pool) ([]models.AssetVolume, error) {
-	return liquidityViaBalanceOf(ctx, client, pool, r)
+func (aeroV1 aerodromeV1AssetResolver) PoolLiquidity(ctx context.Context, client *ethclient.Client, pool models.Pool) ([]models.AssetVolume, error) {
+	return liquidityViaBalanceOf(ctx, client, pool, aeroV1)
 }
 
 // curveAssetResolver resolves the two coins of the pair encoded in pool.Order
@@ -406,13 +419,15 @@ func (r aerodromeV1AssetResolver) PoolLiquidity(ctx context.Context, client *eth
 // Curve pool can hold more than two coins; only the pair-scoped subset
 // PoolAssets/PoolLiquidity report on the two encoded in pool.Order, not the
 // full coin set.
-type curveAssetResolver struct{}
+type curveAssetResolver struct {
+	Blockchain string
+}
 
-func (curveAssetResolver) PoolAssets(ctx context.Context, client *ethclient.Client, pool models.Pool) (models.Pair, error) {
-	blockchain, err := blockchainForPool(pool)
-	if err != nil {
-		return models.Pair{}, err
-	}
+func (curve curveAssetResolver) PoolBlockchain() string {
+	return curve.Blockchain
+}
+
+func (curve curveAssetResolver) PoolAssets(ctx context.Context, client *ethclient.Client, pool models.Pool) (models.Pair, error) {
 	outIdx, inIdx, err := parseIndexCode(pool.Order)
 	if err != nil {
 		return models.Pair{}, fmt.Errorf("curve index code: %w", err)
@@ -429,9 +444,9 @@ func (curveAssetResolver) PoolAssets(ctx context.Context, client *ethclient.Clie
 	if err != nil {
 		return models.Pair{}, err
 	}
-	return pairFromAddrs(client, blockchain, outAddr, inAddr)
+	return pairFromAddrs(client, curve.PoolBlockchain(), outAddr, inAddr)
 }
 
-func (r curveAssetResolver) PoolLiquidity(ctx context.Context, client *ethclient.Client, pool models.Pool) ([]models.AssetVolume, error) {
-	return liquidityViaBalanceOf(ctx, client, pool, r)
+func (curve curveAssetResolver) PoolLiquidity(ctx context.Context, client *ethclient.Client, pool models.Pool) ([]models.AssetVolume, error) {
+	return liquidityViaBalanceOf(ctx, client, pool, curve)
 }

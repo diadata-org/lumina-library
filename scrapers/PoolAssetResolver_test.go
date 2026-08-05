@@ -4,8 +4,6 @@ import (
 	"math"
 	"math/big"
 	"testing"
-
-	"github.com/diadata-org/lumina-library/models"
 )
 
 func TestVirtualReserves(t *testing.T) {
@@ -108,26 +106,27 @@ func TestNormalizeFloatByDecimals(t *testing.T) {
 
 func TestPoolAssetResolverFor(t *testing.T) {
 	tests := []struct {
-		exchange string
-		wantOK   bool
-		wantType PoolAssetResolver
+		exchange   string
+		blockchain string
+		wantOK     bool
+		wantType   PoolAssetResolver
 	}{
-		{UNISWAPV2_EXCHANGE, true, uniswapV2AssetResolver{}},
-		{UNISWAPV2_BASE_EXCHANGE, true, uniswapV2AssetResolver{}},
-		{UNISWAPV3_EXCHANGE, true, uniswapV3AssetResolver{}},
-		{UNISWAPV3_BASE_EXCHANGE, true, uniswapV3AssetResolver{}},
-		{PANCAKESWAPV3_EXCHANGE, true, uniswapV3AssetResolver{}},
-		{AERODROMESLIPSTREAM_EXCHANGE, true, uniswapV3AssetResolver{}},
-		{UNISWAPV4_EXCHANGE, true, uniswapV4AssetResolver{}},
-		{UNISWAPV4_BASE_EXCHANGE, true, uniswapV4AssetResolver{}},
-		{AERODROMEV1_EXCHANGE, true, aerodromeV1AssetResolver{}},
-		{CURVE_EXCHANGE, true, curveAssetResolver{}},
-		{"NotARealExchange", false, nil},
-		{"", false, nil},
+		{UNISWAPV2_EXCHANGE, "Ethereum", true, uniswapV2AssetResolver{}},
+		{UNISWAPV2_BASE_EXCHANGE, "Base", true, uniswapV2AssetResolver{}},
+		{UNISWAPV3_EXCHANGE, "Ethereum", true, uniswapV3AssetResolver{}},
+		{UNISWAPV3_BASE_EXCHANGE, "Base", true, uniswapV3AssetResolver{}},
+		{PANCAKESWAPV3_EXCHANGE, "BinanceSmartChain", true, uniswapV3AssetResolver{}},
+		{AERODROMESLIPSTREAM_EXCHANGE, "Base", true, uniswapV3AssetResolver{}},
+		{UNISWAPV4_EXCHANGE, "Ethereum", true, uniswapV4AssetResolver{}},
+		{UNISWAPV4_BASE_EXCHANGE, "Base", true, uniswapV4AssetResolver{}},
+		{AERODROMEV1_EXCHANGE, "Base", true, aerodromeV1AssetResolver{}},
+		{CURVE_EXCHANGE, "Ethereum", true, curveAssetResolver{}},
+		{"NotARealExchange", "NotARealBlockchain", false, nil},
+		{"", "", false, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.exchange, func(t *testing.T) {
-			got, ok := PoolAssetResolverFor(tt.exchange)
+			got, ok := PoolAssetResolverFor(tt.exchange, tt.blockchain)
 			if ok != tt.wantOK {
 				t.Fatalf("PoolAssetResolverFor(%q) ok = %v, want %v", tt.exchange, ok, tt.wantOK)
 			}
@@ -139,38 +138,6 @@ func TestPoolAssetResolverFor(t *testing.T) {
 			}
 			if got != tt.wantType {
 				t.Errorf("PoolAssetResolverFor(%q) = %T, want %T", tt.exchange, got, tt.wantType)
-			}
-		})
-	}
-}
-
-func TestBlockchainForPool(t *testing.T) {
-	tests := []struct {
-		name      string
-		exchange  string
-		wantChain string
-		wantErr   bool
-	}{
-		{"unregistered exchange", "NotARealExchange", "", true},
-		{"known DEX", UNISWAPV2_EXCHANGE, Exchanges[UNISWAPV2_EXCHANGE].Blockchain, false},
-		{"known DEX on Base", UNISWAPV3_BASE_EXCHANGE, Exchanges[UNISWAPV3_BASE_EXCHANGE].Blockchain, false},
-		// CEX exchanges (e.g. Binance) are registered but have no Blockchain set.
-		{"CEX exchange has no blockchain", BINANCE_EXCHANGE, "", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := blockchainForPool(models.Pool{Exchange: models.Exchange{Name: tt.exchange}})
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("blockchainForPool(%q) expected error, got chain %q", tt.exchange, got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("blockchainForPool(%q) unexpected error: %v", tt.exchange, err)
-			}
-			if got != tt.wantChain {
-				t.Errorf("blockchainForPool(%q) = %q, want %q", tt.exchange, got, tt.wantChain)
 			}
 		})
 	}
