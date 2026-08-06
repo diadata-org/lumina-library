@@ -21,11 +21,14 @@ func New(client *ethclient.Client, log *logrus.Logger) *Simulator {
 	return &c
 }
 
-func (c *Simulator) Execute(caller *v4quoter.V4Quoter, params v4quoter.IV4QuoterQuoteExactSingleParams) (struct {
+func (c *Simulator) Execute(caller *v4quoter.V4Quoter, params v4quoter.IV4QuoterQuoteExactSingleParams, blockNumber *big.Int) (struct {
 	AmountOut   *big.Int
 	GasEstimate *big.Int
 }, error) {
-
-	amountOut, err := caller.QuoteExactInputSingle(&bind.CallOpts{Context: context.Background()}, params)
+	callOpts := &bind.CallOpts{Context: context.Background()}
+	if blockNumber.Cmp(big.NewInt(0)) != 0 {
+		callOpts.BlockNumber = blockNumber
+	}
+	amountOut, err := caller.QuoteExactInputSingle(callOpts, params)
 	return amountOut, err
 }
