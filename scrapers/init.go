@@ -9,7 +9,6 @@ import (
 const (
 	BINANCE_EXCHANGE      = "Binance"
 	BITMART_EXCHANGE      = "BitMart"
-	BITMEX_EXCHANGE       = "BitMex"
 	COINBASE_EXCHANGE     = "CoinBase"
 	BYBIT_EXCHANGE        = "ByBit"
 	CRYPTODOTCOM_EXCHANGE = "Crypto.com"
@@ -20,7 +19,7 @@ const (
 	MEXC_EXCHANGE         = "MEXC"
 	BITGET_EXCHANGE       = "Bitget"
 	BITSTAMP_EXCHANGE     = "Bitstamp"
-	
+
 	CURVE_EXCHANGE               = "Curve"
 	UNISWAPV2_EXCHANGE           = "UniswapV2"
 	UNISWAPV2_BASE_EXCHANGE      = "UniswapV2_Base"
@@ -45,7 +44,6 @@ func init() {
 	Exchanges[BITMART_EXCHANGE] = models.Exchange{Name: BITMART_EXCHANGE, Centralized: true}
 	Exchanges[BINANCE_EXCHANGE] = models.Exchange{Name: BINANCE_EXCHANGE, Centralized: true}
 	Exchanges[BITGET_EXCHANGE] = models.Exchange{Name: BITGET_EXCHANGE, Centralized: true}
-	Exchanges[BITMEX_EXCHANGE] = models.Exchange{Name: BITMEX_EXCHANGE, Centralized: true}
 	Exchanges[BITSTAMP_EXCHANGE] = models.Exchange{Name: BITSTAMP_EXCHANGE, Centralized: true}
 	Exchanges[COINBASE_EXCHANGE] = models.Exchange{Name: COINBASE_EXCHANGE, Centralized: true}
 	Exchanges[CRYPTODOTCOM_EXCHANGE] = models.Exchange{Name: CRYPTODOTCOM_EXCHANGE, Centralized: true}
