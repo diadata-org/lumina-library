@@ -120,6 +120,35 @@ func RunScraper(
 				}
 			}
 		}
+	case COINEX_EXCHANGE:
+		ctx, cancel := context.WithCancel(context.Background())
+		scraper := NewCoinExScraper(ctx, pairs, branchMarketConfig, wg)
+		watchdogDelay, err := strconv.Atoi(utils.Getenv("COINEX_WATCHDOG", "300"))
+		if err != nil || watchdogDelay <= 0 {
+			log.Errorf("parse COINEX_WATCHDOG: %v. Set to default 300.", err)
+			watchdogDelay = 300
+		}
+		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
+		lastTradeTime := time.Now()
+		for {
+			select {
+			case trade := <-scraper.TradesChannel():
+				lastTradeTime = time.Now()
+				tradesChannel <- trade
+			case <-watchdogTicker.C:
+				duration := time.Since(lastTradeTime)
+				if duration > time.Duration(watchdogDelay)*time.Second {
+					err := scraper.Close(cancel)
+					if err != nil {
+						log.Errorf("CoinEx - Close(): %v.", err)
+					}
+					log.Warnf("Closed CoinEx scraper as duration since last trade is %v.", duration)
+					failoverChannel <- COINEX_EXCHANGE
+					return
+				}
+			}
+		}
+
 	case BYBIT_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
 		scraper := NewByBitScraper(ctx, pairs, branchMarketConfig, wg)
@@ -331,24 +360,24 @@ func RunScraper(
 				}
 			}
 		}
-		
+
 	case BITMEX_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
 		scraper := NewBitMexScraper(ctx, pairs, branchMarketConfig, wg)
- 
+
 		watchdogDelay, err := strconv.Atoi(utils.Getenv("BITMEX_WATCHDOG", "300"))
 		if err != nil {
 			log.Errorf("parse BITMEX_WATCHDOG: %v.", err)
 		}
 		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
 		lastTradeTime := time.Now()
- 
+
 		for {
 			select {
 			case trade := <-scraper.TradesChannel():
 				lastTradeTime = time.Now()
 				tradesChannel <- trade
- 
+
 			case <-watchdogTicker.C:
 				duration := time.Since(lastTradeTime)
 				if duration > time.Duration(watchdogDelay)*time.Second {
