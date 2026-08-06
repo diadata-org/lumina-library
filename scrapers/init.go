@@ -20,7 +20,8 @@ const (
 	MEXC_EXCHANGE         = "MEXC"
 	BITGET_EXCHANGE       = "Bitget"
 	BITSTAMP_EXCHANGE     = "Bitstamp"
-	
+	COINEX_EXCHANGE       = "CoinEx"
+
 	CURVE_EXCHANGE               = "Curve"
 	UNISWAPV2_EXCHANGE           = "UniswapV2"
 	UNISWAPV2_BASE_EXCHANGE      = "UniswapV2_Base"
@@ -48,6 +49,7 @@ func init() {
 	Exchanges[BITMEX_EXCHANGE] = models.Exchange{Name: BITMEX_EXCHANGE, Centralized: true}
 	Exchanges[BITSTAMP_EXCHANGE] = models.Exchange{Name: BITSTAMP_EXCHANGE, Centralized: true}
 	Exchanges[COINBASE_EXCHANGE] = models.Exchange{Name: COINBASE_EXCHANGE, Centralized: true}
+	Exchanges[COINEX_EXCHANGE] = models.Exchange{Name: COINEX_EXCHANGE, Centralized: true}
 	Exchanges[CRYPTODOTCOM_EXCHANGE] = models.Exchange{Name: CRYPTODOTCOM_EXCHANGE, Centralized: true}
 	Exchanges[GATEIO_EXCHANGE] = models.Exchange{Name: GATEIO_EXCHANGE, Centralized: true}
 	Exchanges[KRAKEN_EXCHANGE] = models.Exchange{Name: KRAKEN_EXCHANGE, Centralized: true}
