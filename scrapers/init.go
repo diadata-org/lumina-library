@@ -20,6 +20,7 @@ const (
 	MEXC_EXCHANGE         = "MEXC"
 	BITGET_EXCHANGE       = "Bitget"
 	BITSTAMP_EXCHANGE     = "Bitstamp"
+	HYPERLIQUID_EXCHANGE  = "Hyperliquid"
 	
 	CURVE_EXCHANGE               = "Curve"
 	UNISWAPV2_EXCHANGE           = "UniswapV2"
@@ -50,6 +51,7 @@ func init() {
 	Exchanges[COINBASE_EXCHANGE] = models.Exchange{Name: COINBASE_EXCHANGE, Centralized: true}
 	Exchanges[CRYPTODOTCOM_EXCHANGE] = models.Exchange{Name: CRYPTODOTCOM_EXCHANGE, Centralized: true}
 	Exchanges[GATEIO_EXCHANGE] = models.Exchange{Name: GATEIO_EXCHANGE, Centralized: true}
+	Exchanges[HYPERLIQUID_EXCHANGE] = models.Exchange{Name: HYPERLIQUID_EXCHANGE, Centralized: true}
 	Exchanges[KRAKEN_EXCHANGE] = models.Exchange{Name: KRAKEN_EXCHANGE, Centralized: true}
 	Exchanges[KUCOIN_EXCHANGE] = models.Exchange{Name: KUCOIN_EXCHANGE, Centralized: true}
 	Exchanges[MEXC_EXCHANGE] = models.Exchange{Name: MEXC_EXCHANGE, Centralized: true}

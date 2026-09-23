@@ -437,6 +437,34 @@ func RunScraper(
 				}
 			}
 		}
+	case HYPERLIQUID_EXCHANGE:
+		ctx, cancel := context.WithCancel(context.Background())
+		scraper := NewHyperliquidScraper(ctx, pairs, branchMarketConfig, wg)
+		watchdogDelay, err := strconv.Atoi(utils.Getenv("HYPERLIQUID_WATCHDOG", "300"))
+		if err != nil || watchdogDelay <= 0 {
+			log.Errorf("parse HYPERLIQUID_WATCHDOG: %v. Set to default 300.", err)
+			watchdogDelay = 300
+		}
+		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
+		lastTradeTime := time.Now()
+		for {
+			select {
+			case trade := <-scraper.TradesChannel():
+				lastTradeTime = time.Now()
+				tradesChannel <- trade
+			case <-watchdogTicker.C:
+				duration := time.Since(lastTradeTime)
+				if duration > time.Duration(watchdogDelay)*time.Second {
+					err := scraper.Close(cancel)
+					if err != nil {
+						log.Errorf("Hyperliquid - Close(): %v.", err)
+					}
+					log.Warnf("Closed Hyperliquid scraper as duration since last trade is %v.", duration)
+					failoverChannel <- HYPERLIQUID_EXCHANGE
+					return
+				}
+			}
+		}
 	case UNISWAPV2_EXCHANGE:
 		NewUniswapV2Scraper(ctx, exchange, Exchanges[exchange].Blockchain, pools, tradesChannel, branchMarketConfig, wg)
 	case UNISWAPV2_BASE_EXCHANGE:
