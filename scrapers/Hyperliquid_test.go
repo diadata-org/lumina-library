@@ -48,7 +48,7 @@ func collectHyperliquidTrades(h *hyperliquidHooks, bs *BaseCEXScraper, mt int, d
 
 func TestHyperliquidOnMessage(t *testing.T) {
 	pair := models.Pair{
-		QuoteToken: models.Asset{Symbol: "BTC"},
+		QuoteToken: models.Asset{Symbol: "UBTC"},
 		BaseToken:  models.Asset{Symbol: "USDC"},
 	}
 
@@ -108,6 +108,21 @@ func TestHyperliquidOnMessage(t *testing.T) {
 			},
 		},
 		{
+			name: "NaN price dropped",
+			mt:   ws.TextMessage,
+			data: `{"channel":"trades","data":[{"coin":"@142","side":"B","px":"NaN","sz":"1","time":1700000000000,"tid":17}]}`,
+		},
+		{
+			name: "non-positive price dropped",
+			mt:   ws.TextMessage,
+			data: `{"channel":"trades","data":[{"coin":"@142","side":"B","px":"-1","sz":"1","time":1700000000000,"tid":18}]}`,
+		},
+		{
+			name: "infinite size dropped",
+			mt:   ws.TextMessage,
+			data: `{"channel":"trades","data":[{"coin":"@142","side":"B","px":"85000","sz":"Inf","time":1700000000000,"tid":19}]}`,
+		},
+		{
 			name: "multiple trades in one frame all emitted",
 			mt:   ws.TextMessage,
 			data: `{"channel":"trades","data":[{"coin":"@142","side":"B","px":"10","sz":"1","time":1700000000000,"tid":15},{"coin":"@142","side":"A","px":"11","sz":"2","time":1700000000001,"tid":16}]}`,
@@ -122,12 +137,12 @@ func TestHyperliquidOnMessage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &hyperliquidHooks{
 				coins:         make(map[string]string),
-				foreignByCoin: map[string]string{"@142": "BTC-USDC"},
+				foreignByCoin: map[string]string{"@142": "UBTC-USDC"},
 			}
 			bs := &BaseCEXScraper{
 				hooks:            h,
 				tradesChannel:    make(chan models.Trade),
-				tickerPairMap:    models.MakeTickerPairMap([]models.ExchangePair{{ForeignName: "BTC-USDC", UnderlyingPair: pair}}),
+				tickerPairMap:    models.MakeTickerPairMap([]models.ExchangePair{{ForeignName: "UBTC-USDC", UnderlyingPair: pair}}),
 				lastTradeTimeMap: make(map[string]time.Time),
 			}
 
@@ -141,15 +156,15 @@ func TestHyperliquidOnMessage(t *testing.T) {
 				if g.Price != want.Price || g.Volume != want.Volume || !g.Time.Equal(want.Time) || g.ForeignTradeID != want.ForeignTradeID {
 					t.Errorf("trade[%d] = %v %v %v %s, want %v %v %v %s", i, g.Price, g.Volume, g.Time, g.ForeignTradeID, want.Price, want.Volume, want.Time, want.ForeignTradeID)
 				}
-				if g.QuoteToken.Symbol != "BTC" || g.BaseToken.Symbol != "USDC" {
-					t.Errorf("trade[%d] pair = %s-%s, want BTC-USDC", i, g.QuoteToken.Symbol, g.BaseToken.Symbol)
+				if g.QuoteToken.Symbol != "UBTC" || g.BaseToken.Symbol != "USDC" {
+					t.Errorf("trade[%d] pair = %s-%s, want UBTC-USDC", i, g.QuoteToken.Symbol, g.BaseToken.Symbol)
 				}
 				if g.Exchange.Name != HYPERLIQUID_EXCHANGE {
 					t.Errorf("trade[%d].Exchange = %q, want %q", i, g.Exchange.Name, HYPERLIQUID_EXCHANGE)
 				}
 			}
-			if len(got) > 0 && !bs.lastTradeTimeMap["BTC-USDC"].Equal(got[len(got)-1].Time) {
-				t.Errorf("lastTradeTime = %v, want %v", bs.lastTradeTimeMap["BTC-USDC"], got[len(got)-1].Time)
+			if len(got) > 0 && !bs.lastTradeTimeMap["UBTC-USDC"].Equal(got[len(got)-1].Time) {
+				t.Errorf("lastTradeTime = %v, want %v", bs.lastTradeTimeMap["UBTC-USDC"], got[len(got)-1].Time)
 			}
 		})
 	}
@@ -183,7 +198,7 @@ func TestHyperliquidSubscribe(t *testing.T) {
 		wantCoin    string
 		wantErr     bool
 	}{
-		{foreignName: "BTC-USDC", subscribe: true, wantMethod: "subscribe", wantCoin: "@142"},
+		{foreignName: "UBTC-USDC", subscribe: true, wantMethod: "subscribe", wantCoin: "@142"},
 		{foreignName: "PURR-USDC", subscribe: true, wantMethod: "subscribe", wantCoin: "PURR/USDC"},
 		{foreignName: "HYPE-USDC", subscribe: false, wantMethod: "unsubscribe", wantCoin: "@107"},
 		{foreignName: "ETH-USDC", subscribe: true, wantErr: true},
@@ -217,8 +232,39 @@ func TestHyperliquidSubscribe(t *testing.T) {
 		}
 	}
 
-	// BTC-USDC loads spotMeta, PURR and HYPE hit the cache, ETH-USDC reloads it once.
+	// UBTC-USDC loads spotMeta, every other pair is served from that snapshot.
+	if n := metaRequests.Load(); n != 1 {
+		t.Errorf("spotMeta requests = %d, want 1", n)
+	}
+
+	h.mu.Lock()
+	h.fetchedAt = time.Now().Add(-2 * hyperliquidSpotMetaTTL)
+	h.mu.Unlock()
+
+	if err := h.Subscribe(bs, models.ExchangePair{ForeignName: "ETH-USDC"}, true, &lock); err == nil {
+		t.Error("ETH-USDC: expected error")
+	}
 	if n := metaRequests.Load(); n != 2 {
-		t.Errorf("spotMeta requests = %d, want 2", n)
+		t.Errorf("spotMeta requests after TTL = %d, want 2", n)
+	}
+}
+
+func TestHyperliquidSpotCoinsSkipsUnknownTokens(t *testing.T) {
+	const fixture = `{
+		"tokens": [{"name": "USDC", "index": 0}, {"name": "PURR", "index": 1}],
+		"universe": [
+			{"name": "PURR/USDC", "tokens": [1, 0]},
+			{"name": "@142", "tokens": [197, 0]}
+		]
+	}`
+
+	var meta hyperliquidSpotMeta
+	if err := json.Unmarshal([]byte(fixture), &meta); err != nil {
+		t.Fatal(err)
+	}
+
+	coins := hyperliquidSpotCoins(meta)
+	if len(coins) != 1 || coins["PURR/USDC"] != "PURR/USDC" {
+		t.Errorf("coins = %v, want only PURR/USDC", coins)
 	}
 }

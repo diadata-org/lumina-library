@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,13 +22,12 @@ const (
 	hyperliquidInfoURL = "https://api.hyperliquid.xyz/info"
 	// Hyperliquid closes connections that have not sent a message for 60s.
 	hyperliquidPingPeriodDefault = 30
+	// How long a spotMeta snapshot, which maps pair names onto subscription coins, is reused.
+	// A pair that is not in the snapshot fails without refetching until the snapshot expires,
+	// because the watchdog keeps retrying such pairs for as long as the process runs. Newly
+	// listed pairs are picked up within this window.
+	hyperliquidSpotMetaTTL = 10 * time.Minute
 )
-
-var hyperliquidTokenNames = map[string]string{
-	"BTC": "UBTC",
-	"ETH": "UETH",
-	"SOL": "USOL",
-}
 
 var hyperliquidHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
@@ -74,6 +74,7 @@ type hyperliquidHooks struct {
 	infoURL       string
 	mu            sync.RWMutex
 	coins         map[string]string // "UBTC/USDC" -> "@142"
+	fetchedAt     time.Time
 	foreignByCoin map[string]string // "@142" -> "BTC-USDC"
 }
 
@@ -165,6 +166,11 @@ func (h *hyperliquidHooks) OnMessage(bs *BaseCEXScraper, mt int, data []byte, lo
 			log.Errorf("HYPERLIQUID - parse size %q: %v.", t.Sz, err)
 			continue
 		}
+		if math.IsNaN(price) || math.IsInf(price, 0) || price <= 0 ||
+			math.IsNaN(volume) || math.IsInf(volume, 0) {
+			log.Warnf("HYPERLIQUID - dropping %s trade with price %q and size %q.", foreignName, t.Px, t.Sz)
+			continue
+		}
 		if t.Side == "A" {
 			volume = -volume
 		}
@@ -196,24 +202,29 @@ func (h *hyperliquidHooks) LastTradeTimeKeyFromForeign(foreign string) string {
 	return foreign
 }
 
-// coin maps a pair like "BTC-USDC" onto its Hyperliquid spot coin, e.g. "@142".
+// coin maps a pair like "UBTC-USDC" onto its Hyperliquid spot coin, e.g. "@142".
 func (h *hyperliquidHooks) coin(foreignName string) (string, error) {
 	symbols := strings.Split(foreignName, "-")
 	if len(symbols) != 2 {
 		return "", fmt.Errorf("bad pair format: %q", foreignName)
 	}
-	name := hyperliquidTokenName(symbols[0]) + "/" + hyperliquidTokenName(symbols[1])
+	name := symbols[0] + "/" + symbols[1]
 
 	h.mu.RLock()
 	coin, ok := h.coins[name]
+	expired := time.Since(h.fetchedAt) > hyperliquidSpotMetaTTL
 	h.mu.RUnlock()
 	if !ok {
+		if !expired {
+			return "", fmt.Errorf("%s is not listed on Hyperliquid spot", name)
+		}
 		coins, err := fetchHyperliquidSpotCoins(h.infoURL)
 		if err != nil {
 			return "", fmt.Errorf("fetch spotMeta: %w", err)
 		}
 		h.mu.Lock()
 		h.coins = coins
+		h.fetchedAt = time.Now()
 		h.mu.Unlock()
 		if coin, ok = coins[name]; !ok {
 			return "", fmt.Errorf("%s is not listed on Hyperliquid spot", name)
@@ -221,16 +232,12 @@ func (h *hyperliquidHooks) coin(foreignName string) (string, error) {
 	}
 
 	h.mu.Lock()
+	if previous, exists := h.foreignByCoin[coin]; exists && previous != foreignName {
+		log.Errorf("HYPERLIQUID - coin %s is mapped to %s, overwriting with %s. One of them will receive no trades.", coin, previous, foreignName)
+	}
 	h.foreignByCoin[coin] = foreignName
 	h.mu.Unlock()
 	return coin, nil
-}
-
-func hyperliquidTokenName(symbol string) string {
-	if name, ok := hyperliquidTokenNames[symbol]; ok {
-		return name
-	}
-	return symbol
 }
 
 func fetchHyperliquidSpotCoins(infoURL string) (map[string]string, error) {
@@ -263,9 +270,15 @@ func hyperliquidSpotCoins(meta hyperliquidSpotMeta) map[string]string {
 	}
 	coins := make(map[string]string, len(meta.Universe))
 	for _, p := range meta.Universe {
-		if len(p.Tokens) == 2 {
-			coins[names[p.Tokens[0]]+"/"+names[p.Tokens[1]]] = p.Name
+		if len(p.Tokens) != 2 {
+			continue
 		}
+		quote, okQuote := names[p.Tokens[0]]
+		base, okBase := names[p.Tokens[1]]
+		if !okQuote || !okBase {
+			continue
+		}
+		coins[quote+"/"+base] = p.Name
 	}
 	return coins
 }
