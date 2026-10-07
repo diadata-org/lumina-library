@@ -11,6 +11,8 @@ import (
 
 	"github.com/diadata-org/lumina-library/contracts/curve/curvefifactory"
 	curvefitwocryptooptimized "github.com/diadata-org/lumina-library/contracts/curve/curvefitwocrypto"
+	"github.com/diadata-org/lumina-library/contracts/curve/curvelendingpool"
+	"github.com/diadata-org/lumina-library/contracts/curve/curveplain"
 	"github.com/diadata-org/lumina-library/contracts/curve/curvepool"
 	models "github.com/diadata-org/lumina-library/models"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -761,6 +763,30 @@ func coinAddressFromPool(
 	// 2) TwoCrypto optimized pool
 	if c2, err := curvefitwocryptooptimized.NewCurvefitwocryptooptimized(pool, client); err == nil {
 		if addr, err := c2.Coins(&bind.CallOpts{Context: ctx}, bi); err == nil && addr != (common.Address{}) {
+			return addr, nil
+		}
+	}
+
+	// 3) Plain pool
+	if c3, err := curveplain.NewCurveplain(pool, client); err == nil {
+		if addr, err := c3.Coins(&bind.CallOpts{Context: ctx}, bi); err == nil && addr != (common.Address{}) {
+			return addr, nil
+		}
+	}
+
+	// 4) Factory-deployed pool (e.g. metapool factory)
+	if c4, err := curvefifactory.NewCurvefifactory(pool, client); err == nil {
+		if addr, err := c4.Coins(&bind.CallOpts{Context: ctx}, bi); err == nil && addr != (common.Address{}) {
+			return addr, nil
+		}
+	}
+
+	// 5) Lending pool
+	if c5, err := curvelendingpool.NewCurvelendingpool(pool, client); err == nil {
+		if addr, err := c5.Coins(&bind.CallOpts{Context: ctx}, bi); err == nil && addr != (common.Address{}) {
+			return addr, nil
+		}
+		if addr, err := c5.UnderlyingCoins(&bind.CallOpts{Context: ctx}, bi); err == nil && addr != (common.Address{}) {
 			return addr, nil
 		}
 	}
