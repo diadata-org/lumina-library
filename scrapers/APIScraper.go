@@ -331,37 +331,6 @@ func RunScraper(
 				}
 			}
 		}
-		
-	case BITMEX_EXCHANGE:
-		ctx, cancel := context.WithCancel(context.Background())
-		scraper := NewBitMexScraper(ctx, pairs, branchMarketConfig, wg)
- 
-		watchdogDelay, err := strconv.Atoi(utils.Getenv("BITMEX_WATCHDOG", "300"))
-		if err != nil {
-			log.Errorf("parse BITMEX_WATCHDOG: %v.", err)
-		}
-		watchdogTicker := time.NewTicker(time.Duration(watchdogDelay) * time.Second)
-		lastTradeTime := time.Now()
- 
-		for {
-			select {
-			case trade := <-scraper.TradesChannel():
-				lastTradeTime = time.Now()
-				tradesChannel <- trade
- 
-			case <-watchdogTicker.C:
-				duration := time.Since(lastTradeTime)
-				if duration > time.Duration(watchdogDelay)*time.Second {
-					err := scraper.Close(cancel)
-					if err != nil {
-						log.Errorf("BitMex - Close(): %v.", err)
-					}
-					log.Warnf("Closed BitMex scraper as duration since last trade is %v.", duration)
-					failoverChannel <- BITMEX_EXCHANGE
-					return
-				}
-			}
-		}
 
 	case BITMART_EXCHANGE:
 		ctx, cancel := context.WithCancel(context.Background())
